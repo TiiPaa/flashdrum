@@ -237,9 +237,9 @@ pub fn draw_header_bar(
                 header_vbar(ui);
 
                 // Master / Swing sliders + Groove select
-                header_param_slider(ui, setter, &params.master_volume, 172.0, "Master", true);
+                header_param_slider(ui, setter, &params.master_volume, 142.0, "Master", true);
                 header_vbar(ui);
-                header_param_slider(ui, setter, &params.swing, 172.0, "Swing", true);
+                header_param_slider(ui, setter, &params.swing, 142.0, "Swing", true);
                 ui.add_space(8.0);
                 enum_combo(ui, setter, &params.groove_type, "");
 
@@ -284,10 +284,32 @@ pub fn draw_header_bar(
 
                 header_vbar(ui);
 
-                // Push the Presets + Clear All + Settings keycaps to the right
-                // edge. Trailing block: Presets (80) + vbar (28) + Clear All
-                // (72) + vbar (28) + Settings (84).
-                ui.add_space((ui.available_width() - 292.0).max(0.0));
+                // Push the Help + Presets + Clear All + Settings keycaps to the
+                // right edge. Trailing block: Help (52) + gap (6) + Presets (80)
+                // + vbar (28) + Clear All (72) + vbar (28) + Settings (84).
+                // [283] Help took its room from Master and Swing (172 -> 142).
+                ui.add_space((ui.available_width() - 350.0).max(0.0));
+                let help_on = state.global_config.help_mode;
+                if crate::ui::controls::keycap_button(
+                    ui,
+                    "Help",
+                    52.0,
+                    if help_on {
+                        crate::ui::widgets::KeycapState::PressedAmber
+                    } else {
+                        crate::ui::widgets::KeycapState::Rest
+                    },
+                    true,
+                    f_sans_med(10.5),
+                )
+                .on_hover_text(crate::ui::help::HELP_KEYCAP)
+                .clicked()
+                {
+                    state.global_config.help_mode = !help_on;
+                    crate::ui::help::set(ui.ctx(), !help_on);
+                    let _ = state.global_config.save();
+                }
+                ui.add_space(6.0);
                 if crate::ui::controls::keycap_button(
                     ui,
                     "Presets",

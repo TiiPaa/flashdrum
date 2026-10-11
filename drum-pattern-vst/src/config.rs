@@ -22,6 +22,10 @@ pub struct GlobalConfig {
     /// Active UI skin name (see `ui::theme::SKINS`).
     #[serde(default = "default_skin")]
     pub skin: String,
+    /// [283] Help mode: explanatory tooltips over the features (header
+    /// "Help" keycap). Off by default; older config files load it off.
+    #[serde(default)]
+    pub help_mode: bool,
 }
 
 fn default_skin() -> String {
@@ -35,6 +39,7 @@ impl Default for GlobalConfig {
             default_analog: 0.5,
             global_midi_channel: 10,
             skin: default_skin(),
+            help_mode: false,
         }
     }
 }
@@ -151,5 +156,22 @@ mod tests {
         let mut chan = GlobalConfig::default();
         chan.global_midi_channel = 0;
         assert_eq!(chan.clamped().global_midi_channel, 1);
+    }
+
+    /// [283] A config written before the help mode existed loads with the
+    /// help mode off, and the setting survives a save/load round trip.
+    #[test]
+    fn help_mode_defaults_off_and_roundtrips() {
+        let old = r#"{"default_analog":0.5,"global_midi_channel":10,"skin":"Dark"}"#;
+        let cfg: GlobalConfig = serde_json::from_str(old).unwrap();
+        assert!(!cfg.help_mode);
+
+        let on = GlobalConfig {
+            help_mode: true,
+            ..Default::default()
+        };
+        let back: GlobalConfig =
+            serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
+        assert!(back.help_mode);
     }
 }

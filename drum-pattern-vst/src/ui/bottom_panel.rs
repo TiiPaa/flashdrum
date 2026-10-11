@@ -9,6 +9,7 @@ use crate::ui::controls::{
 };
 use crate::ui::editor_state::EditorUIState;
 use crate::ui::header::header_param_slider;
+use crate::ui::help;
 use crate::ui::pattern_bank::load_pattern_for_ui_with_length;
 use crate::ui::song::draw_song_editor;
 use crate::ui::theme::*;
@@ -281,38 +282,53 @@ fn draw_generator_bar(
         ui.horizontal(|ui| {
             ui.set_height(CTL_HEIGHT);
             ui.spacing_mut().item_spacing.x = 0.0;
-            genrow_label(ui, "Type", 40.0);
-            enum_combo_compact(ui, setter, &params.generator_type, "gen_type", GEN_TYPE_W);
+            // [283] Each control explains itself in help mode.
+            help::zone(ui, "gen_type", help::GEN_TYPE, |ui| {
+                genrow_label(ui, "Type", 40.0);
+                enum_combo_compact(ui, setter, &params.generator_type, "gen_type", GEN_TYPE_W);
+            });
             ui.add_space(16.0);
-            genrow_label(ui, "A", 12.0);
-            ui.add_space(5.0);
-            enum_combo_compact(ui, setter, &params.style_primary, "style_a", STYLE_W);
+            help::zone(ui, "style_a", help::GEN_STYLE_A, |ui| {
+                genrow_label(ui, "A", 12.0);
+                ui.add_space(5.0);
+                enum_combo_compact(ui, setter, &params.style_primary, "style_a", STYLE_W);
+            });
             ui.add_space(14.0);
-            header_param_slider(ui, setter, &params.style_mix, 110.0, "Mix A/B", false);
+            help::zone(ui, "style_mix", help::GEN_MIX, |ui| {
+                header_param_slider(ui, setter, &params.style_mix, 110.0, "Mix A/B", false);
+            });
             ui.add_space(14.0);
-            genrow_label(ui, "B", 12.0);
-            ui.add_space(5.0);
-            enum_combo_compact(ui, setter, &params.style_secondary, "style_b", STYLE_W);
+            help::zone(ui, "style_b", help::GEN_STYLE_B, |ui| {
+                genrow_label(ui, "B", 12.0);
+                ui.add_space(5.0);
+                enum_combo_compact(ui, setter, &params.style_secondary, "style_b", STYLE_W);
+            });
         });
 
         // Row 2 — amounts + GENERATE (right).
         ui.horizontal(|ui| {
             ui.set_height(CTL_HEIGHT);
             ui.spacing_mut().item_spacing.x = 0.0;
-            header_param_slider(ui, setter, &params.gen_density, 150.0, "Density", false);
+            help::zone(ui, "gen_density", help::GEN_DENSITY, |ui| {
+                header_param_slider(ui, setter, &params.gen_density, 150.0, "Density", false);
+            });
             ui.add_space(18.0);
-            header_param_slider(ui, setter, &params.gen_variation, 150.0, "Variation", false);
+            help::zone(ui, "gen_variation", help::GEN_VARIATION, |ui| {
+                header_param_slider(ui, setter, &params.gen_variation, 150.0, "Variation", false);
+            });
 
             let space = (ui.available_width() - GEN_BTN_W).max(10.0);
             ui.add_space(space);
-            let gen_btn_response = crate::ui::controls::keycap_button(
-                ui,
-                "GENERATE",
-                GEN_BTN_W,
-                crate::ui::widgets::KeycapState::PressedAmber,
-                true,
-                f_sans_sb(11.0),
-            );
+            let gen_btn_response = help::zone(ui, "generate", help::GEN_GENERATE, |ui| {
+                crate::ui::controls::keycap_button(
+                    ui,
+                    "GENERATE",
+                    GEN_BTN_W,
+                    crate::ui::widgets::KeycapState::PressedAmber,
+                    true,
+                    f_sans_sb(11.0),
+                )
+            });
             if gen_btn_response.clicked() {
                 params.plock_state.state.clear_all();
                 params.seq_plock_state.state.clear_all();

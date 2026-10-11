@@ -21,6 +21,7 @@ mod envelope_viz;
 mod fmt;
 mod grid;
 mod header;
+mod help;
 mod local_param_slider;
 mod macros_panel;
 mod menus;
@@ -251,6 +252,10 @@ pub fn create_editor(
             } else if (audio_slot as usize) < SLOT_COUNT {
                 state.last_loaded_slot = Some(audio_slot as usize);
             }
+
+            // [283] Help mode follows the persisted setting (the header keycap
+            // flips both).
+            help::set(egui_ctx, state.global_config.help_mode);
 
             ResizableWindow::new("drum-pattern-generator")
                 .min_size(Vec2::new(1480.0, 800.0))
