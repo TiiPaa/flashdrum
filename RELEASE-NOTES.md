@@ -2,6 +2,17 @@
 
 Downloads: [releases page](https://github.com/TiiPaa/flashdrum/releases).
 
+## 0.9.4 — 2026-10-11 (beta)
+
+- **Diagnostic log for the slowdown reported in Bitwig** (the DAW getting slower and slower after about 15 minutes). Off by default: nothing changes unless you turn it on. To help us find the cause:
+  1. Close your DAW.
+  2. Windows search → **Edit environment variables for your account** → **New…** → name `FLASH_DRUM_PERF_LOG`, value `1` → OK.
+  3. Start the DAW, open Flash Drum's window and work as usual until the slowdown appears (20 minutes or more).
+  4. Send us the file `flash-drum-perf.log` from your temp folder (type `%TEMP%` in the Explorer address bar), through [Issues](https://github.com/TiiPaa/flashdrum/issues).
+  5. Delete the variable afterwards.
+
+  Every 30 seconds while the window is open, the log records the host's memory use, Windows handle counts and CPU time. It contains no audio, no project data and no personal information.
+
 ## 0.9.3 — 2026-10-02 (beta)
 
 - **Included presets**: 4 instrument presets and 18 patterns are now bundled with the plugin. They were missing from the 0.9.2 download.

@@ -227,6 +227,10 @@ pub fn create_editor(
             #[cfg(target_os = "windows")]
             nih_plug_egui::set_keyboard_focus(egui_ctx.wants_keyboard_input());
 
+            // [281] Opt-in resource sampling (FLASH_DRUM_PERF_LOG=1) for the
+            // Bitwig progressive-lag report. One cached flag load when off.
+            crate::perf_log::sample_frame();
+
             // [253] Free the textures the audio thread retired since the last
             // frame (the queue push is RT-safe, the drop is not). Cheap when
             // empty: one atomic load.

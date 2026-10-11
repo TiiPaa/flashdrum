@@ -20,6 +20,7 @@ mod midi_export;
 mod param_id;
 mod paths;
 mod pattern_bank;
+mod perf_log;
 mod plock;
 mod preset_dumps;
 mod presets;
