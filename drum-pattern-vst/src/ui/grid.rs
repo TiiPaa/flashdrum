@@ -7,6 +7,7 @@ use crate::track::{TrackInstrumentKind, TrackLayoutState, TrackSlot};
 use crate::ui::controls::*;
 use crate::ui::editor_state::*;
 use crate::ui::header::header_param_slider;
+use crate::ui::help::{self, HelpExt};
 use crate::ui::popups::draw_page_popup_if_any;
 use crate::ui::slider;
 use crate::ui::theme::*;
@@ -70,6 +71,10 @@ pub fn draw_grid_v2(
             *selection_start = None;
         }
     }
+
+    // [283] A linked lane's own morphs follow the fused groups it borrows:
+    // drop those whose group is gone (deleted, moved, lane unlinked).
+    pattern.retain_linked_morphs(|slot| params.track_layout.state.grid_slot(slot));
 
     let mut fusion_editing_started_this_frame = false;
 
@@ -237,7 +242,7 @@ pub fn draw_grid_v2(
     ui.horizontal(|ui| {
         ui.set_height(28.0);
         ui.spacing_mut().item_spacing.x = 12.0;
-        ui.label(
+        let mode_label = ui.label(
             RichText::new("P-Lock Mode")
                 .font(f_sans_sb(10.5))
                 .color(INK3()),
@@ -247,10 +252,16 @@ pub fn draw_grid_v2(
         if new_selected != selected {
             state.sequencer_mode = new_selected == 1;
         }
-        ui.label(
+        let mode_hint = ui.label(
             RichText::new("Right-click a step to edit its p-lock")
                 .size(10.5)
                 .color(INK3()),
+        );
+        help::rect(
+            ui,
+            mode_label.rect.union(mode_hint.rect),
+            "plock_mode",
+            help::PLOCK_MODE,
         );
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -262,6 +273,9 @@ pub fn draw_grid_v2(
                 state,
                 fusion_mode_active,
             ));
+            if let Some(rect) = fusion_edit_box_rect {
+                help::rect(ui, rect, "fusion_box", help::FUSION_BOX);
+            }
         });
     });
 
@@ -321,11 +335,11 @@ fn draw_legacy_slot_lane_v2(
         let grip_response = if is_follower {
             grip_response
                 .on_hover_cursor(egui::CursorIcon::NotAllowed)
-                .on_hover_text(
-                    "A linked lane follows the one above it, so it cannot be moved on its own. Move that lane instead: it takes its linked lanes with it.",
-                )
+                .help_or(help::LANE_GRIP_FOLLOWER, help::LANE_GRIP_FOLLOWER)
         } else {
-            grip_response.on_hover_cursor(egui::CursorIcon::Grab)
+            grip_response
+                .on_hover_cursor(egui::CursorIcon::Grab)
+                .help(help::LANE_GRIP)
         };
         if !is_follower
             && (grip_response.is_pointer_button_down_on() || grip_response.drag_started())
@@ -345,9 +359,17 @@ fn draw_legacy_slot_lane_v2(
         // real `slot_idx` so they remain independent per lane.
         let grid_idx = layout_state.grid_slot(slot_idx);
         let is_linked = grid_idx != slot_idx;
+        // [283] The other lanes of this link chain (same shown steps), as
+        // a bit mask: their p-locks are drawn here as pips.
+        let partner_lanes: u16 = (0..crate::track::MAX_TRACKS)
+            .filter(|&s| {
+                s != slot_idx && layout_state.slots[s].active && layout_state.grid_slot(s) == grid_idx
+            })
+            .fold(0, |mask, s| mask | (1 << s));
         let linked_fusions_storage;
         let fusions: &[FusedGroup] = if is_linked {
-            linked_fusions_storage = pattern.load_fusions(grid_idx);
+            // [283] The shared groups, with this lane's own morph.
+            linked_fusions_storage = pattern.load_lane_fusions(slot_idx, grid_idx);
             &linked_fusions_storage
         } else {
             fusions
@@ -368,6 +390,7 @@ fn draw_legacy_slot_lane_v2(
                 egui::pos2(r.right() + gap, r.bottom() - 4.0),
             );
             crate::ui::skeuo::link_arrow(ui.painter(), slot, BLUE());
+            help::rect(ui, slot, ("lane_link", slot_idx), help::LANE_LINK_ARROW);
         }
 
         let slot_name = {
@@ -402,7 +425,8 @@ fn draw_legacy_slot_lane_v2(
         } else {
             0.0
         };
-        let name_response = draw_lane_name_v2(ui, name_w, selected, &slot_name, flash);
+        let name_response =
+            draw_lane_name_v2(ui, name_w, selected, &slot_name, flash).help(help::LANE_NAME);
 
         if name_response.clicked() {
             select_legacy_track(state, slot_idx);
@@ -429,7 +453,7 @@ fn draw_legacy_slot_lane_v2(
             // the Track tab Type dropdown.
             let current_kind = layout_state.slots[slot_idx].kind;
             let mut picked_kind = None;
-            ui.menu_button(
+            let instrument_menu = ui.menu_button(
                 RichText::new("Instrument").font(f_sans_med(10.5)).color(INK()),
                 |ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
@@ -439,19 +463,27 @@ fn draw_legacy_slot_lane_v2(
                     picked_kind = crate::ui::menus::instrument_category_menu(ui, Some(current_kind));
                 },
             );
+            instrument_menu.response.help(help::MENU_INSTRUMENT);
             if let Some(kind) = picked_kind {
                 change_slot_kind(params, sound_settings, state, slot_idx, kind);
                 ui.close_menu();
             }
             context_menu_separator(ui);
-            if context_menu_button(ui, "Copy Lane", INK(), true).clicked() {
+            if context_menu_button(ui, "Copy Lane", INK(), true)
+                .help(help::MENU_COPY_LANE)
+                .clicked()
+            {
                 state.copy_lane(params, slot_idx, sound_settings, pattern, plock);
                 state.lane_clear_grid_confirm = None;
                 state.lane_delete_confirm = None;
                 ui.close_menu();
             }
             let can_paste = state.lane_clipboard.is_some();
-            if context_menu_button(ui, "Paste Lane", INK(), can_paste).clicked() && can_paste {
+            if context_menu_button(ui, "Paste Lane", INK(), can_paste)
+                .help(help::MENU_PASTE_LANE)
+                .clicked()
+                && can_paste
+            {
                 if state.paste_lane(setter, params, slot_idx, sound_settings, pattern, plock) {
                     // Flash visual feedback
                     state.slot_flash_until[slot_idx] = ui.ctx().input(|i| i.time) + 0.5;
@@ -460,7 +492,11 @@ fn draw_legacy_slot_lane_v2(
                 state.lane_delete_confirm = None;
                 ui.close_menu();
             }
-            if context_menu_button(ui, "Paste Grid", INK(), can_paste).clicked() && can_paste {
+            if context_menu_button(ui, "Paste Grid", INK(), can_paste)
+                .help(help::MENU_PASTE_GRID)
+                .clicked()
+                && can_paste
+            {
                 if state.paste_grid(params, slot_idx, pattern) {
                     // Flash visual feedback
                     state.slot_flash_until[slot_idx] = ui.ctx().input(|i| i.time) + 0.5;
@@ -471,12 +507,18 @@ fn draw_legacy_slot_lane_v2(
             }
             // Grid link (layering): mirror the steps + fusions of the lane above.
             if layout_state.slots[slot_idx].linked_up {
-                if context_menu_button(ui, "Unlink steps", INK(), true).clicked() {
+                if context_menu_button(ui, "Unlink steps", INK(), true)
+                    .help(help::MENU_UNLINK)
+                    .clicked()
+                {
                     set_lane_linked_up(params, slot_idx, false);
                     ui.close_menu();
                 }
             } else if layout_state.can_link_up(slot_idx) {
-                if context_menu_button(ui, "Link steps to lane above", INK(), true).clicked() {
+                if context_menu_button(ui, "Link steps to lane above", INK(), true)
+                    .help(help::MENU_LINK)
+                    .clicked()
+                {
                     set_lane_linked_up(params, slot_idx, true);
                     ui.close_menu();
                 }
@@ -489,7 +531,7 @@ fn draw_legacy_slot_lane_v2(
                 RED(),
                 true,
             )
-            .on_hover_text(if confirm_clear_grid {
+            .help_or(help::MENU_CLEAR_LANE, if confirm_clear_grid {
                 "Click again to clear this lane's steps, fusions and plocks"
             } else {
                 "Clear this lane's steps, fusions and plocks; keeps instrument, sound, routing and lane controls"
@@ -511,7 +553,10 @@ fn draw_legacy_slot_lane_v2(
                 RED(),
                 true,
             )
-            .on_hover_text("Deactivate this lane; the slot becomes empty and can be reactivated later")
+            .help_or(
+                help::MENU_DELETE_LANE,
+                "Deactivate this lane; the slot becomes empty and can be reactivated later",
+            )
             .clicked()
             {
                 if confirm_delete {
@@ -535,17 +580,21 @@ fn draw_legacy_slot_lane_v2(
                             )
                             .with_width(72.0)
                             .without_value()
-                            .reset_value(0.3),
+                            .reset_value(crate::ui::editor_state::DEFAULT_RANDOMIZE_DENSITY),
                         )
                     })
                     .inner
                 });
+                help::rect(ui, response.response.rect, "menu_density", help::MENU_DENSITY);
                 if response.inner.changed() {
                     state.randomize_density = density;
                 }
             }
             if context_menu_button(ui, "Randomize Lane", INK(), true)
-                .on_hover_text("Fill this lane with random steps (clears fusions and plocks) at the Density above")
+                .help_or(
+                    help::MENU_RANDOMIZE,
+                    "Fill this lane with random steps (clears fusions and plocks) at the Density above",
+                )
                 .clicked()
             {
                 state.randomize_lane(params, slot_idx, pattern, plock);
@@ -559,7 +608,8 @@ fn draw_legacy_slot_lane_v2(
         let inst_state = &sound_settings.instruments[slot_idx];
         let mut lane_vol = f32::from_bits(inst_state.volume.load(Ordering::Relaxed));
         let lane_vol_response =
-            draw_mini_value_slider(ui, &mut lane_vol, 0.0, 2.0, 1.0, vol_w, BLUE(), "");
+            draw_mini_value_slider(ui, &mut lane_vol, 0.0, 2.0, 1.0, vol_w, BLUE(), "")
+                .help(help::LANE_VOL);
         if lane_vol_response.clicked() || lane_vol_response.dragged() {
             select_legacy_track(state, slot_idx);
         }
@@ -581,6 +631,7 @@ fn draw_legacy_slot_lane_v2(
                 Color32::WHITE,
                 "",
             )
+            .help(help::LANE_MUTE)
             .clicked()
                 && params.auto_edit.value()
             {
@@ -595,6 +646,7 @@ fn draw_legacy_slot_lane_v2(
                 SOLO_FILL(),
                 "",
             )
+            .help(help::LANE_SOLO)
             .clicked()
                 && params.auto_edit.value()
             {
@@ -604,7 +656,7 @@ fn draw_legacy_slot_lane_v2(
             // Its MIDI lamp moved to the name plate, above.
         });
 
-        ui.horizontal(|ui| {
+        let steps_rect = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = GAP_TIGHT;
 
             // Long-press drag: update target, apply move on release, and activate
@@ -642,7 +694,9 @@ fn draw_legacy_slot_lane_v2(
                         state.step_drag = None;
                         if was_active {
                             if from != to {
-                                move_step_with_plocks(pattern, plock, params, slot_idx, from, to);
+                                move_step_with_plocks(
+                                    pattern, plock, params, slot_idx, grid_idx, from, to,
+                                );
                                 state.mark_pattern_dirty();
                             }
                             drag_just_completed = true;
@@ -693,6 +747,15 @@ fn draw_legacy_slot_lane_v2(
                         .seq_plock_state
                         .state
                         .is_solo(slot_idx, source_step);
+                // [283] Linked lanes share their steps but keep their own
+                // p-locks: a p-lock on a partner lane at this step shows here
+                // as a pip in its colour.
+                let partner = |pred: &dyn Fn(usize) -> bool| {
+                    !beyond_len && (0..crate::track::MAX_TRACKS).any(|s| partner_lanes & (1 << s) != 0 && pred(s))
+                };
+                let partner_sound = partner(&|s| plock.masks.is_active(s, source_step));
+                let partner_seq =
+                    partner(&|s| params.seq_plock_state.state.is_active(s, source_step));
                 // [210] Not gated on the modifier: the mark must stay visible
                 // while the user reaches for the second cell.
                 let selection_start =
@@ -792,16 +855,20 @@ fn draw_legacy_slot_lane_v2(
                     None => true,
                 };
                 if !beyond_len && pip_cell {
-                    let other = if state.sequencer_mode {
-                        if has_sound_plock { Some(PL_LINK()) } else { None }
-                    } else if has_seq_plock {
-                        Some(SEQPL())
-                    } else {
-                        None
-                    };
-                    if let Some(color) = other {
-                        crate::ui::skeuo::plock_pip(ui.painter(), response.rect, color);
+                    // A kind already shown by the cell's own fill needs no pip.
+                    let sound_filled = !state.sequencer_mode && has_sound_plock;
+                    let seq_filled = state.sequencer_mode && has_seq_plock;
+                    let mut pips = [Color32::TRANSPARENT; 2];
+                    let mut n = 0;
+                    if (has_sound_plock || partner_sound) && !sound_filled {
+                        pips[n] = PL_LINK();
+                        n += 1;
                     }
+                    if (has_seq_plock || partner_seq) && !seq_filled {
+                        pips[n] = SEQPL();
+                        n += 1;
+                    }
+                    crate::ui::skeuo::plock_pips(ui.painter(), response.rect, &pips[..n]);
                 }
 
                 // Step-solo marker: a small 'S' in the top-left corner of soloed
@@ -897,7 +964,7 @@ fn draw_legacy_slot_lane_v2(
                     // Clicking outside the currently edited fusion exits edit mode.
                     if let Some((edit_inst, edit_idx)) = state.fusion_editing {
                         let editing_this_group = fusion_info
-                            .map(|(idx, _)| edit_inst == slot_idx && edit_idx == idx)
+                            .map(|(idx, _)| edit_inst == grid_idx && edit_idx == idx)
                             .unwrap_or(false);
                         if !editing_this_group {
                             finish_fusion_editing_for_ui(pattern, state);
@@ -964,7 +1031,10 @@ fn draw_legacy_slot_lane_v2(
                     }
                 }
             }
-        });
+        })
+        .response
+        .rect;
+        help::rect(ui, steps_rect, ("lane_steps", slot_idx), help::LANE_STEPS);
 
         let hum_response = draw_param_mini_slider_with_value(
             ui,
@@ -976,7 +1046,8 @@ fn draw_legacy_slot_lane_v2(
             BLUE(),
             "Humanize",
             |value| format!("{:>3}%", (value * 100.0).round() as i32),
-        );
+        )
+        .help(help::LANE_HUM);
         if hum_response.clicked() || hum_response.dragged() || hum_response.double_clicked() {
             select_legacy_track(state, slot_idx);
         }
@@ -990,7 +1061,8 @@ fn draw_legacy_slot_lane_v2(
             BLUE(),
             "Push/Pull",
             |value| format!("{:+.0} ms", value),
-        );
+        )
+        .help(help::LANE_PUSH);
         if push_response.clicked() || push_response.dragged() || push_response.double_clicked() {
             select_legacy_track(state, slot_idx);
         }
@@ -1029,8 +1101,9 @@ fn draw_empty_slot_lane_v2(
         // Empty lanes are draggable too: moving one just reorders slot data
         // (`apply_lane_reorder_move` is slot-generic). No track selection here —
         // an inactive slot has no Sound Editor tab to select.
-        let grip_response =
-            draw_seq_grip_v2(ui, grip_w, LANE_H).on_hover_cursor(egui::CursorIcon::Grab);
+        let grip_response = draw_seq_grip_v2(ui, grip_w, LANE_H)
+            .on_hover_cursor(egui::CursorIcon::Grab)
+            .help(help::LANE_GRIP);
         if grip_response.is_pointer_button_down_on() || grip_response.drag_started() {
             state.lane_drag_source = Some(slot_idx);
         }
@@ -1068,6 +1141,7 @@ fn draw_empty_slot_lane_v2(
         picker
             .response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .help(help::EMPTY_SLOT)
             .context_menu(|ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 ui.set_min_width(118.0);
@@ -1292,13 +1366,15 @@ fn apply_lane_reorder_move(
     let order = lane_move_order_block(from, len.max(1), to);
 
     let old_step_masks = pattern.step_masks();
-    let old_fusions: [Vec<FusedGroup>; crate::track::MAX_TRACKS] =
-        std::array::from_fn(|slot| pattern.load_fusions(slot));
+    // [283] With their linked-lane morphs.
+    let old_fusions: [(Vec<FusedGroup>, Vec<FusedGroup>); crate::track::MAX_TRACKS] =
+        std::array::from_fn(|slot| (pattern.load_fusions(slot), pattern.load_linked_morphs(slot)));
     for (step, mask) in old_step_masks.iter().copied().enumerate() {
         pattern.set_step_mask(step, move_mask_bits(mask, &order));
     }
     for (new_idx, &old_idx) in order.iter().enumerate() {
-        pattern.store_fusions(new_idx, &old_fusions[old_idx]);
+        let (groups, morphs) = &old_fusions[old_idx];
+        pattern.store_fusions_and_morphs(new_idx, groups, morphs);
     }
 
     let sound_values = sound_settings.read_all();
@@ -1673,7 +1749,7 @@ fn draw_page_bar_v2(
                     egui::StrokeKind::Outside,
                 );
             }
-            let response = response.on_hover_text(if looped_page == Some(page) {
+            let response = response.help_or(help::PAGE_KEYCAP, if looped_page == Some(page) {
                 if song_mode {
                     "This page is set to loop, but Song mode plays the chain: the loop is ignored until Song is off. Double-click to release."
                 } else {
@@ -1711,6 +1787,7 @@ fn draw_page_bar_v2(
             crate::ui::widgets::KeycapState::Rest
         };
         if crate::ui::controls::keycap_button(ui, follow_label, 78.0, follow_state, true, f_sans_sb(11.0))
+            .help(help::PAGE_FOLLOW)
             .clicked()
         {
             state.follow_mode = !state.follow_mode;
@@ -1724,8 +1801,10 @@ fn draw_page_bar_v2(
             |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 ui.label(RichText::new("Len").font(f_sans_sb(10.5)).color(INK3()));
-                header_param_slider(ui, setter, &params.pattern_length, 132.0, "", false);
-                draw_len_value_fixed(ui, master_length, LEN_VALUE_W);
+                help::zone(ui, "pattern_len", help::PATTERN_LEN, |ui| {
+                    header_param_slider(ui, setter, &params.pattern_length, 132.0, "", false);
+                    draw_len_value_fixed(ui, master_length, LEN_VALUE_W);
+                });
                 for &len in &[16, 32, 48, 64] {
                     let active = master_length == len;
                     if crate::ui::controls::keycap_button(
@@ -1740,6 +1819,7 @@ fn draw_page_bar_v2(
                         true,
                         f_mono_med(10.5),
                     )
+                    .help(help::PATTERN_LEN)
                     .clicked()
                     {
                         setter.set_parameter(&params.pattern_length, len as i32);
@@ -1754,6 +1834,7 @@ fn draw_page_bar_v2(
                     can_double,
                     f_mono_med(10.5),
                 )
+                .help(help::PATTERN_X2)
                 .clicked()
                 {
                     for i in 0..master_length {
@@ -1853,7 +1934,7 @@ fn draw_seq_header_v2(
                 f_mono(12.0),
                 color,
             );
-            let resp = resp.on_hover_text(hover);
+            let resp = resp.help_or(help::GRID_SHIFT, hover);
             if resp.clicked() {
                 let len = master_length.clamp(1, 64);
                 if straddling_fusions(pattern, len, delta).is_empty() {
@@ -1868,16 +1949,18 @@ fn draw_seq_header_v2(
         ui.add_sized(
             Vec2::new(vol_w, 16.0),
             egui::Label::new(RichText::new("Vol").font(f_sans_sb(9.5)).color(INK3())),
-        );
+        )
+        .help(help::LANE_VOL);
         // M / S / T column headings (aligned with the lane tags below)
         ui.allocate_ui(Vec2::new(mst_w, 16.0), |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = GAP_TIGHT;
-                for t in ["M", "S"] {
+                for (t, text) in [("M", help::LANE_MUTE), ("S", help::LANE_SOLO)] {
                     ui.add_sized(
                         Vec2::new(STEP_H, 16.0),
                         egui::Label::new(RichText::new(t).font(f_mono(9.0)).color(INK3())),
-                    );
+                    )
+                    .help(text);
                 }
             });
         });
@@ -1899,14 +1982,20 @@ fn draw_seq_header_v2(
                             .font(f_mono(9.0))
                             .color(color),
                     ),
-                );
+                )
+                .help(help::GRID_STEP_NUMBERS);
             }
         });
-        for label in ["Hum", "Push", "Len"] {
+        for (label, text) in [
+            ("Hum", help::LANE_HUM),
+            ("Push", help::LANE_PUSH),
+            ("Len", help::LANE_LEN),
+        ] {
             ui.add_sized(
                 Vec2::new(extra_w, 16.0),
                 egui::Label::new(RichText::new(label).font(f_sans_sb(9.5)).color(INK3())),
-            );
+            )
+            .help(text);
         }
     });
 }
@@ -1980,16 +2069,11 @@ fn handle_wav_drop(
                         let resp = egui::Frame::NONE
                             .inner_margin(egui::Margin::symmetric(8, 4))
                             .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(reason).font(f_sans_med(9.5)).color(INK()),
-                                );
+                                ui.label(RichText::new(reason).font(f_sans_med(9.5)).color(INK()));
                             });
                         ui.painter().set(
                             bg,
-                            crate::ui::skeuo::plate_shape(
-                                resp.response.rect,
-                                RADIUS_PANEL as f32,
-                            ),
+                            crate::ui::skeuo::plate_shape(resp.response.rect, RADIUS_PANEL as f32),
                         );
                     });
             }
@@ -2656,9 +2740,9 @@ fn shift_grid(
     }
 
     // 2) Fusions: shift both endpoints; a group that would straddle the wrap
-    // is dropped (start must stay <= end).
-    for slot in 0..crate::track::MAX_TRACKS {
-        let groups = pattern.load_fusions(slot);
+    // is dropped (start must stay <= end). A linked lane's own morphs ([283])
+    // shift with the groups they belong to.
+    let shift = |groups: Vec<FusedGroup>| -> Vec<FusedGroup> {
         let mut shifted = Vec::with_capacity(groups.len());
         for group in groups {
             let start = wrap(group.start_cell as isize + delta) as u8;
@@ -2670,18 +2754,23 @@ fn shift_grid(
                 shifted.push(group);
             }
         }
-        pattern.store_fusions(slot, &shifted);
+        shifted
+    };
+    for slot in 0..crate::track::MAX_TRACKS {
+        pattern.store_fusions_and_morphs(
+            slot,
+            &shift(pattern.load_fusions(slot)),
+            &shift(pattern.load_linked_morphs(slot)),
+        );
     }
 
     // 3) Sound p-locks: values + activity masks + field masks rotate per step
     // (link/snapshot mode preserved, like move_step_with_plocks).
     for slot in 0..crate::track::MAX_TRACKS {
-        let active: [bool; 64] =
-            std::array::from_fn(|s| plock.masks.is_active(slot, s));
+        let active: [bool; 64] = std::array::from_fn(|s| plock.masks.is_active(slot, s));
         let field_masks: [u64; 64] = std::array::from_fn(|s| plock.field_masks.get(slot, s));
-        let values: [[f32; crate::plock::FIELD_COUNT]; 64] = std::array::from_fn(|s| {
-            std::array::from_fn(|f| plock.values.get(slot, s, f))
-        });
+        let values: [[f32; crate::plock::FIELD_COUNT]; 64] =
+            std::array::from_fn(|s| std::array::from_fn(|f| plock.values.get(slot, s, f)));
         for step in 0..len {
             let src = wrap(step as isize - delta);
             if active[src] {
@@ -2716,10 +2805,14 @@ fn shift_grid(
 
 /// Move a single step (with its sound and sequencer plocks) from `source` to
 /// `target` within the same slot. Fused cells are left untouched.
-fn move_step_with_plocks(    pattern: &SharedPattern,
+/// `grid` is the lane whose steps `slot` shows (itself, or the lane above for
+/// a linked lane, [283]); the p-locks are `slot`'s own.
+fn move_step_with_plocks(
+    pattern: &SharedPattern,
     plock: &PlockState,
     params: &DrumFlashParams,
     slot: usize,
+    grid: usize,
     source: usize,
     target: usize,
 ) {
@@ -2728,9 +2821,9 @@ fn move_step_with_plocks(    pattern: &SharedPattern,
     }
 
     // Copy step state.
-    let active = pattern.is_active(source, slot);
-    set_step_active_for_ui(pattern, target, slot, active);
-    set_step_active_for_ui(pattern, source, slot, false);
+    let active = pattern.is_active(source, grid);
+    set_step_active_for_ui(pattern, target, grid, active);
+    set_step_active_for_ui(pattern, source, grid, false);
 
     // Copy sound plock field-by-field so link/snapshot mode is preserved.
     if plock.masks.is_active(slot, source) {
@@ -2918,10 +3011,27 @@ fn draw_fusion_edit_box(
 
     if let Some((instrument, index, group)) = edited_fusion_for_ui(pattern_for_ui, state) {
         let range = format!("Fusion {}–{}", group.start_cell + 1, group.end_cell + 1);
-        let morph = if group.morph_count > 0 {
+        // [283] The morph of the lane the box was opened from: a linked lane
+        // shares the group but keeps its own morph.
+        let lane = if params
+            .track_layout
+            .state
+            .grid_slot(state.fusion_editing_lane)
+            == instrument
+        {
+            state.fusion_editing_lane
+        } else {
+            instrument
+        };
+        let morph_group = pattern_for_ui
+            .load_lane_fusions(lane, instrument)
+            .get(index)
+            .copied()
+            .unwrap_or(group);
+        let morph = if morph_group.morph_count > 0 {
             let morphable =
-                crate::instrument_registry::morphable_fields(schema_voice_idx(params, instrument));
-            let names: Vec<&str> = group.morph_targets[..group.morph_count as usize]
+                crate::instrument_registry::morphable_fields(schema_voice_idx(params, lane));
+            let names: Vec<&str> = morph_group.morph_targets[..morph_group.morph_count as usize]
                 .iter()
                 .map(|t| {
                     morphable
@@ -3022,12 +3132,14 @@ fn draw_fusion_edit_box(
             state.fusion_editing = None;
         }
         let mono = f_mono_med(10.5);
+        // [283] English like the rest of the plugin, and the real gesture:
+        // Shift + click on two cells (it used to say "drag", in French).
         let hint = if fusion_mode_active {
-            "Sélectionne 2 cellules"
+            "click 2 cells, same page"
         } else {
-            "+ glisser pour fusionner"
+            "+ click 2 cells to fuse"
         };
-        let majw = 40.0_f32;
+        let majw = 46.0_f32;
         let content = fusion_text_w(ui, "FUSION", mono.clone())
             + g
             + majw
@@ -3048,7 +3160,7 @@ fn draw_fusion_edit_box(
                 fusion_key(
                     ui,
                     majw,
-                    "Maj",
+                    "Shift",
                     KeycapState::PressedAmber,
                     rgb(255, 240, 214),
                     egui::Sense::hover(),
@@ -3468,8 +3580,21 @@ mod tests {
                     // A horizontal hugs its content: its rect IS the header's.
                     let header = ui.horizontal(|ui| {
                         draw_seq_header_v2(
-                            ui, &params, &pattern, plock, &mut state, 0, usize::MAX, 16,
-                            grip_w, name_w, vol_w, mst_w, extra_w, gap, cell_w,
+                            ui,
+                            &params,
+                            &pattern,
+                            plock,
+                            &mut state,
+                            0,
+                            usize::MAX,
+                            16,
+                            grip_w,
+                            name_w,
+                            vol_w,
+                            mst_w,
+                            extra_w,
+                            gap,
+                            cell_w,
                         );
                     });
                     width = header.response.rect.width();
@@ -3510,10 +3635,7 @@ mod tests {
         pattern.set_step_mask(0, 0b0001);
         pattern.set_step_mask(15, 0b0101);
         plock.set_field(0, 0, 2, 0.42);
-        params
-            .seq_plock_state
-            .state
-            .set_probability(0, 15, 0.25);
+        params.seq_plock_state.state.set_probability(0, 15, 0.25);
         pattern.store_fusions(
             0,
             &[FusedGroup {
@@ -3528,11 +3650,16 @@ mod tests {
         super::shift_grid(&params, &pattern, plock, &mut state, master_length, 1);
         assert_eq!(pattern.step_masks()[1], 0b0001);
         assert_eq!(pattern.step_masks()[0], 0b0101, "step 15 wrapped to 0");
-        assert_eq!(pattern.step_masks()[15], 0, "step 14 moved to 15? no: only 0 and 15 were on");
+        assert_eq!(
+            pattern.step_masks()[15],
+            0,
+            "step 14 moved to 15? no: only 0 and 15 were on"
+        );
         assert_eq!(plock.values.get(0, 1, 2), 0.42, "plock followed its step");
         assert!(!plock.masks.is_active(0, 0));
         let prob = f32::from_bits(
-            params.seq_plock_state.state.probabilities[0][0].load(std::sync::atomic::Ordering::Relaxed),
+            params.seq_plock_state.state.probabilities[0][0]
+                .load(std::sync::atomic::Ordering::Relaxed),
         );
         assert_eq!(prob, 0.25, "seq plock wrapped with its step");
         let fusions = pattern.load_fusions(0);
@@ -3572,7 +3699,10 @@ mod tests {
         // Pushing right: only the 14-15 group straddles.
         let straddling = super::straddling_fusions(&pattern, 16, 1);
         assert_eq!(straddling.len(), 1);
-        assert_eq!((straddling[0].1.start_cell, straddling[0].1.end_cell), (14, 15));
+        assert_eq!(
+            (straddling[0].1.start_cell, straddling[0].1.end_cell),
+            (14, 15)
+        );
         // Pushing left: nothing straddles (14-15 → 13-14, 4-6 → 3-5, both fine).
         assert!(super::straddling_fusions(&pattern, 16, -1).is_empty());
         // A group at the start straddles only when pushing left.

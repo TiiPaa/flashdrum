@@ -9,6 +9,7 @@ use crate::track::{TrackInstrumentKind, TrackLayoutState, TrackSlot};
 use crate::ui::controls::keycap_button;
 use crate::ui::editor_state::{EditorUIState, PresetBrowserState};
 use crate::ui::grid::change_slot_kind;
+use crate::ui::help::{self, HelpExt};
 use crate::ui::menus::{page_menu_frame, plock_menu_action_row};
 use crate::ui::sound_editor::{apply_lane_layout_preset, store_field};
 use crate::ui::theme::*;
@@ -95,7 +96,14 @@ pub fn draw_preset_browser_if_any(
                         } else {
                             KeycapState::Rest
                         };
+                        let tab_help = match kind {
+                            PresetKind::Instrument => help::PRESET_TAB_INSTRUMENT,
+                            PresetKind::Pattern => help::PRESET_TAB_PATTERN,
+                            PresetKind::Grid => help::PRESET_TAB_GRID,
+                            PresetKind::Song => help::PRESET_TAB_SONG,
+                        };
                         if keycap_button(ui, kind.label(), 88.0, kc, true, f_sans_med(10.5))
+                            .help(tab_help)
                             .clicked()
                         {
                             browser.kind = kind;
@@ -120,6 +128,7 @@ pub fn draw_preset_browser_if_any(
                         "Save current",
                         if can_save { BLUE() } else { INK3() },
                     )
+                    .help(help::PRESET_SAVE)
                     .clicked()
                         && can_save
                     {
@@ -138,17 +147,19 @@ pub fn draw_preset_browser_if_any(
                 // Patterns: choose whether loading also installs the lane kit.
                 if browser.kind == PresetKind::Pattern {
                     ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Load lanes too")
-                                .font(f_sans_med(10.5))
-                                .color(INK3()),
-                        );
-                        ui.add_space((ui.available_width() - 34.0).max(0.0));
-                        let on = browser.load_with_kit;
-                        if ui.add(crate::ui::widgets::ToggleSwitch::new(on)).clicked() {
-                            browser.load_with_kit = !on;
-                        }
+                    help::zone(ui, "preset_load_lanes", help::PRESET_LOAD_LANES, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Load lanes too")
+                                    .font(f_sans_med(10.5))
+                                    .color(INK3()),
+                            );
+                            ui.add_space((ui.available_width() - 34.0).max(0.0));
+                            let on = browser.load_with_kit;
+                            if ui.add(crate::ui::widgets::ToggleSwitch::new(on)).clicked() {
+                                browser.load_with_kit = !on;
+                            }
+                        })
                     });
                 }
                 ui.add_space(8.0);
@@ -203,6 +214,7 @@ pub fn draw_preset_browser_if_any(
                                                         true,
                                                         f_sans_med(9.5),
                                                     )
+                                                    .help(help::PRESET_GRID_FACTORY)
                                                     .clicked()
                                                     {
                                                         if idx == 0 && !confirming {
@@ -245,6 +257,7 @@ pub fn draw_preset_browser_if_any(
                                                         true,
                                                         f_sans_med(9.5),
                                                     )
+                                                    .help(help::PRESET_LOAD)
                                                     .clicked()
                                                     {
                                                         load_factory = Some(json);
@@ -328,6 +341,7 @@ pub fn draw_preset_browser_if_any(
                                                     true,
                                                     f_sans_med(9.5),
                                                 )
+                                                .help(help::PRESET_DELETE)
                                                 .clicked()
                                                 {
                                                     if confirming {
@@ -346,6 +360,7 @@ pub fn draw_preset_browser_if_any(
                                                     true,
                                                     f_sans_med(9.5),
                                                 )
+                                                .help(help::PRESET_LOAD)
                                                 .clicked()
                                                 {
                                                     load_user = Some(info.path.clone());
@@ -359,6 +374,7 @@ pub fn draw_preset_browser_if_any(
                                                     true,
                                                     f_sans_med(9.5),
                                                 )
+                                                .help(help::PRESET_RENAME)
                                                 .clicked()
                                                 {
                                                     browser.renaming = Some(info.path.clone());
@@ -834,9 +850,6 @@ fn apply_pattern(
     if !preset.sounds.is_empty() {
         sound_settings.bump_version();
     }
-
-    // Not a bank slot: the dirty-star logic compares against the bank.
-    state.last_loaded_slot = None;
 }
 
 /// Debug-only: export the current state as a factory preset JSON into the

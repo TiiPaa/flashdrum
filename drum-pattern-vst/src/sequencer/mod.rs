@@ -12,6 +12,7 @@ pub(crate) mod pattern;
 use std::sync::Arc;
 
 use crate::groove::{self, GrooveType};
+use pattern::with_linked_morph;
 pub use pattern::{FusedGroup, MorphTarget, Pattern, SharedPattern, MAX_FUSIONS};
 
 const MAX_TRACKS: usize = crate::track::MAX_TRACKS;
@@ -83,6 +84,11 @@ impl FusionTrack {
         self.count = pattern.load_fusions_into(instrument, &mut self.groups);
     }
 
+    /// [283] This track holds the instrument's linked-lane morphs instead.
+    fn set_linked_morphs_from_pattern(&mut self, pattern: &SharedPattern, instrument: usize) {
+        self.count = pattern.load_linked_morphs_into(instrument, &mut self.groups);
+    }
+
     fn containing(&self, step: usize) -> Option<FusedGroup> {
         for i in 0..self.count {
             let group = self.groups[i];
@@ -141,8 +147,14 @@ enum CellFire {
     },
 }
 
-fn classify_cell(fusions: &FusionTrack, step: usize) -> CellFire {
-    match fusions.containing(step) {
+/// `own_morphs`: for a linked lane, its own morphs - it plays the fused groups
+/// of the lane it follows but never that lane's morph ([283]).
+fn classify_cell(fusions: &FusionTrack, own_morphs: Option<&FusionTrack>, step: usize) -> CellFire {
+    let group = fusions.containing(step).map(|group| match own_morphs {
+        Some(morphs) => with_linked_morph(group, &morphs.groups[..morphs.count]),
+        None => group,
+    });
+    match group {
         Some(group) if group.is_start(step) => CellFire::Fire {
             source_step: group.start_cell as usize,
             fusion_pulse_count: group.step_count.clamp(1, 64),
@@ -180,6 +192,8 @@ pub struct Sequencer {
     slot_voices: [Option<usize>; MAX_TRACKS],
     /// Per-instrument fused cell groups (Step Fusion), copied from SharedPattern once per buffer.
     fusions: [FusionTrack; MAX_TRACKS],
+    /// [283] Per-slot morphs of a LINKED lane for the fused groups it borrows.
+    linked_morphs: [FusionTrack; MAX_TRACKS],
     /// Per-slot grid source: a lane linked to the one above plays that lane's
     /// steps + fusions (layering). Identity by default; refreshed each buffer
     /// from the track layout via `set_grid_slots`.
@@ -252,6 +266,7 @@ impl Sequencer {
             loop_count: 0,
             slot_voices: [None; MAX_TRACKS],
             fusions: [FusionTrack::default(); MAX_TRACKS],
+            linked_morphs: [FusionTrack::default(); MAX_TRACKS],
             grid_slots: std::array::from_fn(|i| i),
             microtimings: [[0.0; SEQ_STEP_COUNT]; MAX_TRACKS],
             page_loop: None,
@@ -369,6 +384,7 @@ impl Sequencer {
     pub fn sync_fusions_from_pattern(&mut self) {
         for slot in 0..MAX_TRACKS {
             self.fusions[slot].set_from_pattern(&self.pattern, slot);
+            self.linked_morphs[slot].set_linked_morphs_from_pattern(&self.pattern, slot);
         }
     }
 
@@ -440,6 +456,7 @@ impl Sequencer {
             // Grid source: a linked lane plays the steps + fusions of the
             // lane above it (layering); identity otherwise.
             let grid = self.grid_slots[slot];
+            let own_morphs = (grid != slot).then(|| &self.linked_morphs[slot]);
 
             // 1) Microtiming late-fire: a positively nudged cell whose delayed
             // fire time has arrived.
@@ -481,7 +498,7 @@ impl Sequencer {
                     fusion_span_cells,
                     morph_count,
                     morph_targets,
-                } = classify_cell(&self.fusions[grid], current_step)
+                } = classify_cell(&self.fusions[grid], own_morphs, current_step)
                 {
                     let trig = Self::eval_trigger(
                         &self.pattern,
@@ -529,7 +546,7 @@ impl Sequencer {
                     track.step_counter.wrapping_add(1) % track.track_length.max(1)
                 };
                 if let CellFire::Fire { source_step, .. } =
-                    classify_cell(&self.fusions[grid], next_step)
+                    classify_cell(&self.fusions[grid], own_morphs, next_step)
                 {
                     let micro = self.microtimings[slot][source_step].clamp(-100.0, 100.0);
                     if micro < 0.0 {
@@ -550,7 +567,7 @@ impl Sequencer {
                                 fusion_span_cells,
                                 morph_count,
                                 morph_targets,
-                            } = classify_cell(&self.fusions[grid], next_step)
+                            } = classify_cell(&self.fusions[grid], own_morphs, next_step)
                             {
                                 let mut trig = Self::eval_trigger(
                                     &self.pattern,
@@ -1239,6 +1256,55 @@ mod tests {
         assert_eq!(hits[0].fusion_pulse_count, 3);
         assert_eq!(hits[0].fusion_span_cells, 4);
         assert!(hits[0].is_fusion());
+    }
+
+    /// [283] A linked lane plays the fused groups of the lane it follows, but
+    /// with its own morph (none until it creates one), never that lane's.
+    #[test]
+    fn linked_lane_plays_shared_fusion_with_its_own_morph() {
+        let shared_pattern = SharedPattern::new(&Pattern::empty());
+        shared_pattern.set_step_mask(0, 0b1);
+        let mut group = FusedGroup {
+            start_cell: 0,
+            end_cell: 3,
+            step_count: 3,
+            ..Default::default()
+        };
+        group.set_morph_target(0, 300.0);
+        shared_pattern.store_fusions(0, &[group]);
+
+        let first_hits = |pattern: &Arc<SharedPattern>| {
+            let mut seq = Sequencer::new(pattern.clone());
+            let mut grid_slots: [usize; MAX_TRACKS] = std::array::from_fn(|i| i);
+            grid_slots[1] = 0;
+            seq.set_grid_slots(grid_slots);
+            seq.sync_fusions_from_pattern();
+            seq.play();
+            let samples_per_step = (60.0 / 120.0 / 4.0 * 44100.0) as usize;
+            let mut hits = [None, None];
+            for _ in 0..samples_per_step {
+                let triggers = seq.process_sample(120.0, 44100.0, 0.0, GrooveType::Straight);
+                for lane in 0..2 {
+                    if triggers[lane].should_trigger && hits[lane].is_none() {
+                        hits[lane] = Some(triggers[lane]);
+                    }
+                }
+            }
+            hits.map(|hit| hit.expect("both lanes fire the shared fusion"))
+        };
+
+        let [lead, linked] = first_hits(&shared_pattern);
+        assert_eq!((lead.fusion_pulse_count, linked.fusion_pulse_count), (3, 3));
+        assert_eq!(lead.morph_count, 1);
+        assert_eq!(linked.morph_count, 0, "not the followed lane's morph");
+
+        let mut own = group;
+        own.morph_targets[0].end_value = 7.0;
+        shared_pattern.store_lane_fusion(1, 0, 0, own);
+        let [lead, linked] = first_hits(&shared_pattern);
+        assert_eq!(lead.morph_targets[0].end_value, 300.0);
+        assert_eq!(linked.morph_count, 1);
+        assert_eq!(linked.morph_targets[0].end_value, 7.0);
     }
 
     // -- Microtiming (per-cell nudge) -----------------------------------------

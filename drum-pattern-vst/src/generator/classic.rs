@@ -1,7 +1,7 @@
 //! Classic pattern generator (Technique D).
 //! Starts from iconic hardcoded patterns, then applies musically-aware variations.
 
-use super::styles::{MusicalTemplate, Style};
+use super::styles::{density_gain, MusicalTemplate, Style, DEFAULT_DENSITY};
 use crate::sequencer::pattern::{Pattern, INSTRUMENT_COUNT, STEP_COUNT};
 
 fn pattern_amen() -> Pattern {
@@ -100,6 +100,30 @@ pub fn generate(
     let mut p = classics[idx].clone();
     let var = variation.clamp(0.0, 1.0);
     let template = MusicalTemplate::for_style(style);
+
+    // [283] Density, whatever the Variation: below the default the groove
+    // thins out to its hits on the beats; above it, the style's candidate
+    // hits come on top.
+    let gain = density_gain(density);
+    let default_gain = density_gain(DEFAULT_DENSITY);
+    let keep = (gain / default_gain).min(1.0);
+    for step in 0..STEP_COUNT {
+        for inst in 0..INSTRUMENT_COUNT {
+            if p.steps[step].instruments[inst] && step % 4 != 0 && rng() >= keep {
+                p.steps[step].instruments[inst] = false;
+            }
+        }
+    }
+    let extra = (gain - default_gain).max(0.0);
+    if extra > 0.0 {
+        for (inst, role) in template.roles.iter().enumerate() {
+            for &step in role.candidates {
+                if rng() < (role.candidate_prob * extra).min(0.9) {
+                    p.steps[step].instruments[inst] = true;
+                }
+            }
+        }
+    }
 
     // Musically-aware variation
     for step in 0..STEP_COUNT {

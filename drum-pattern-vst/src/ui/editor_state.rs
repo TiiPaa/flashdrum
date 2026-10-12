@@ -168,6 +168,10 @@ pub struct EditorUIState {
     pub fusion_selection_start: [Option<usize>; crate::track::MAX_TRACKS],
     /// Currently editing fusion group: (instrument, group_index).
     pub fusion_editing: Option<(usize, usize)>,
+    /// [283] The lane the fusion edit box was opened from: a linked lane
+    /// edits the group of the lane it follows but shows its own morph.
+    #[serde(skip)]
+    pub fusion_editing_lane: usize,
     /// True when a fusion group just entered edit mode this frame; requests focus on the step-count field.
     pub fusion_edit_focus_request: bool,
     /// Current value of the track-name field in the Track tab.
@@ -233,9 +237,10 @@ pub struct EditorUIState {
     /// Clipboard for a song step: (slot, repeat).
     #[serde(default)]
     pub song_clipboard: Option<(i8, u8)>,
-    /// True when the user clicked "Clear All" and must confirm.
-    #[serde(default)]
-    pub song_clear_confirm: bool,
+    /// Song "Clear All" armed (time of the first click): the next click
+    /// empties the song. Disarms after 3 s or on a click elsewhere ([283]).
+    #[serde(skip)]
+    pub song_clear_confirm: Option<f64>,
     /// Last song sequence published to the audio-thread controller, used to avoid
     /// pushing redundant snapshots every frame.
     #[serde(skip)]
@@ -275,15 +280,19 @@ pub struct EditorUIState {
     /// Density of Randomize Lane (fraction of steps turned on).
     #[serde(default = "default_randomize_density")]
     pub randomize_density: f32,
-    /// Header "Clear" button armed: the next click wipes the whole program
-    /// (grid + pattern bank + song).
+    /// Header "Clear All" armed (time of the first click): the next click
+    /// wipes the whole program (grid + pattern bank + song + lanes). Disarms
+    /// after 3 s or on a click elsewhere ([283]).
     #[serde(skip)]
-    pub clear_program_confirm: bool,
+    pub clear_program_confirm: Option<f64>,
 }
 
+/// Randomize Lane density of a fresh state and of a double-click reset (user
+/// request: 80 %).
+pub const DEFAULT_RANDOMIZE_DENSITY: f32 = 0.8;
+
 fn default_randomize_density() -> f32 {
-    // User request 2026-09-26: 80 % by default.
-    0.8
+    DEFAULT_RANDOMIZE_DENSITY
 }
 
 /// State of the Presets modal ([150]).
@@ -594,10 +603,11 @@ pub enum SoundScratch {
 }
 
 impl EditorUIState {
-    /// Randomize Lane density; 0.0 means "unset" (fresh/legacy state) → 30 %.
+    /// Randomize Lane density; 0.0 means "unset" (fresh/legacy state) → the
+    /// 80 % default.
     pub fn randomize_density(&self) -> f32 {
         if self.randomize_density <= 0.0 {
-            0.3
+            DEFAULT_RANDOMIZE_DENSITY
         } else {
             self.randomize_density.clamp(0.05, 1.0)
         }
@@ -625,8 +635,10 @@ impl EditorUIState {
 
         let settings = settings_state.get_settings_for_slot(slot);
         let algo = params.algos()[slot].value();
-        let steps = std::array::from_fn(|step| pattern.is_active(step, slot));
-        let fusions = pattern.load_fusions(slot);
+        // [283] A linked lane copies the steps it shows (the lane above's).
+        let grid = lane_grid_slot(params, slot);
+        let steps = std::array::from_fn(|step| pattern.is_active(step, grid));
+        let fusions = pattern.load_fusions(grid);
         let sound_plocks = copy_lane_sound_plocks(plock, slot);
         let seq_plocks = copy_lane_seq_plocks(&params.seq_plock_state.state, slot);
         let humanize = params.humanizes()[slot].value();
@@ -704,8 +716,10 @@ impl EditorUIState {
             None => params.user_textures.clear(target_slot),
         }
 
-        paste_lane_steps(pattern, target_slot, &clipboard.steps);
-        pattern.store_fusions(target_slot, &clipboard.fusions);
+        // [283] A linked lane's steps are the shared ones it shows.
+        let grid = lane_grid_slot(params, target_slot);
+        paste_lane_steps(pattern, grid, &clipboard.steps);
+        pattern.store_fusions(grid, &clipboard.fusions);
         paste_lane_sound_plocks(plock, target_slot, &clipboard.sound_plocks);
         paste_lane_seq_plocks(
             &params.seq_plock_state.state,
@@ -746,7 +760,11 @@ impl EditorUIState {
             return false;
         };
 
-        paste_lane_steps(pattern, target_slot, &clipboard.steps);
+        paste_lane_steps(
+            pattern,
+            lane_grid_slot(params, target_slot),
+            &clipboard.steps,
+        );
         select_legacy_track(self, target_slot);
         self.mark_pattern_dirty();
         true
@@ -764,13 +782,19 @@ impl EditorUIState {
             return false;
         }
 
-        clear_grid_steps(pattern, slot);
-        pattern.store_fusions(slot, &[]);
+        // [283] A linked lane clears the steps it shows (shared with the lane
+        // above); its p-locks are its own.
+        let grid = lane_grid_slot(params, slot);
+        clear_grid_steps(pattern, grid);
+        pattern.store_fusions(grid, &[]);
         clear_grid_sound_plocks(plock, slot);
         clear_grid_seq_plocks(&params.seq_plock_state.state, slot);
 
         self.fusion_selection_start[slot] = None;
-        self.fusion_editing = self.fusion_editing.filter(|(idx, _)| *idx != slot);
+        self.fusion_selection_start[grid] = None;
+        self.fusion_editing = self
+            .fusion_editing
+            .filter(|(idx, _)| *idx != slot && *idx != grid);
         self.plock_popup = self.plock_popup.filter(|popup| popup.instrument != slot);
         // [184] The lane's p-locks were just wiped: stop pointing at one.
         self.sound_edit_target = self.sound_edit_target.filter(|cell| cell.slot != slot);
@@ -792,14 +816,20 @@ impl EditorUIState {
             return false;
         }
 
-        clear_grid_steps(pattern, slot);
-        pattern.store_fusions(slot, &[]);
+        // [283] A linked lane randomizes the steps it shows (shared with the
+        // lane above); its p-locks are its own.
+        let grid = lane_grid_slot(params, slot);
+        clear_grid_steps(pattern, grid);
+        pattern.store_fusions(grid, &[]);
         clear_grid_sound_plocks(plock, slot);
         clear_grid_seq_plocks(&params.seq_plock_state.state, slot);
-        randomize_lane_steps(pattern, slot, self.randomize_density());
+        randomize_lane_steps(pattern, grid, self.randomize_density());
 
         self.fusion_selection_start[slot] = None;
-        self.fusion_editing = self.fusion_editing.filter(|(idx, _)| *idx != slot);
+        self.fusion_selection_start[grid] = None;
+        self.fusion_editing = self
+            .fusion_editing
+            .filter(|(idx, _)| *idx != slot && *idx != grid);
         self.plock_popup = self.plock_popup.filter(|popup| popup.instrument != slot);
         // [184] The lane's p-locks were just wiped: stop pointing at one.
         self.sound_edit_target = self.sound_edit_target.filter(|cell| cell.slot != slot);
@@ -808,6 +838,12 @@ impl EditorUIState {
         self.mark_pattern_dirty();
         true
     }
+}
+
+/// [283] The lane whose steps and fusions `slot` shows: itself, or for a
+/// lane linked to the one above, the head of its chain (as the grid draws it).
+fn lane_grid_slot(params: &DrumFlashParams, slot: usize) -> usize {
+    PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.grid_slot(slot))
 }
 
 pub fn copy_lane_sound_plocks(plock: &PlockState, slot: usize) -> LaneSoundPlocks {
@@ -973,6 +1009,48 @@ pub mod serde_pos2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [283] A lane linked to the one above shows and plays that lane's
+    /// steps: its lane-menu actions act on those shared steps, not on the
+    /// hidden ones it had before the link.
+    #[test]
+    fn lane_actions_on_a_linked_lane_act_on_the_steps_it_shows() {
+        let params = DrumFlashParams::default();
+        let mut layout = TrackLayoutState::modular_default_layout();
+        layout.slots[1].linked_up = true;
+        PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
+        let pattern = params.pattern_state.shared();
+        let plock = &params.plock_state.state;
+        let settings = params.sound_settings.state.clone();
+        let mut state = EditorUIState::default();
+        let lane = |lane: usize| {
+            (0..STEP_COUNT)
+                .filter(|&s| pattern.is_active(s, lane))
+                .count()
+        };
+
+        pattern.load_step_masks(&[0; STEP_COUNT]);
+        // Hidden steps of lane 2 (index 1), shown steps of lane 1 (index 0).
+        pattern.set_step_mask(3, 0b10);
+        pattern.set_step_mask(0, 0b01);
+
+        state.copy_lane(&params, 1, &settings, &pattern, plock);
+        let copied = state.lane_clipboard.as_ref().unwrap().steps;
+        assert!(copied[0] && !copied[3], "copies the shown steps");
+
+        state.clear_lane(&params, 1, &pattern, plock);
+        assert_eq!(lane(0), 0, "clears the shown steps");
+        assert_eq!(lane(1), 1, "the hidden steps are left alone");
+
+        state.randomize_density = 1.0;
+        state.randomize_lane(&params, 1, &pattern, plock);
+        assert_eq!(lane(0), STEP_COUNT, "randomizes the shown steps");
+        assert_eq!(lane(1), 1);
+
+        state.paste_grid(&params, 1, &pattern);
+        assert_eq!(lane(0), 1, "pastes onto the shown steps");
+        assert!(pattern.is_active(0, 0));
+    }
 
     const PANEL_SLOT: usize = 3;
     const LANE_LEN: usize = 16;

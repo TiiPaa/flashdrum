@@ -17,6 +17,7 @@ use crate::ui::envelope_viz::{
     draw_texture_graph,
 };
 use crate::ui::fmt::{freq_to_note, note_name, note_to_freq};
+use crate::ui::help::{self, HelpExt};
 use crate::ui::param_source::{GlobalSource, ParamSource, PlockSource};
 use crate::ui::pattern_bank::load_pattern_for_ui;
 use crate::ui::slider;
@@ -508,7 +509,10 @@ fn row_gutter(ui: &mut egui::Ui, overridden: bool) -> bool {
     ui.painter()
         .rect_filled(bar, 1.0, if hovered { INK() } else { PL_LINK() });
     response
-        .on_hover_text("Overrides the lane - click to follow the lane again")
+        .help_or(
+            help::EDITOR_GUTTER,
+            "Overrides the lane - click to follow the lane again",
+        )
         .clicked()
 }
 
@@ -598,7 +602,12 @@ fn draw_plain_special_row(
     let mut value = src.get(id);
     let inherited = src.inherited(id);
     let logarithmic = def.min > 0.0 && def.max / def.min >= 20.0;
-    let (reverted, edited) =
+    let help_text = row_help(
+        &*src,
+        id,
+        format!("{}{}", help::special_param(def.name), help::SLIDER_GESTURES),
+    );
+    let (reverted, edited) = help::zone(ui, ("plain_special", def.name), &help_text, |ui| {
         row_scoped(ui, src.is_overridden(id), src.supports(id).reason(), |ui| {
             let row = draw_editor_slider_row_curved(
                 ui,
@@ -613,7 +622,8 @@ fn draw_plain_special_row(
             );
             page_lock_menu(&row, plock, slot, page, id, def.min, def.max, logarithmic);
             row.changed()
-        });
+        })
+    });
     if reverted {
         src.clear(id);
     } else if edited {
@@ -920,9 +930,20 @@ fn row_scoped<R>(
 ) -> (bool, R) {
     let inner = ui.add_enabled_ui(unsupported.is_none(), |ui| with_gutter(ui, overridden, row));
     if let Some(reason) = unsupported {
-        inner.response.on_hover_text(reason);
+        // [283] Disabled: only the disabled variant ever shows.
+        inner.response.on_disabled_hover_text(reason);
     }
     inner.inner
+}
+
+/// [283] The help of a row, or nothing when the row is greyed with a reason
+/// of its own (`row_scoped` shows it; two tooltips would stack).
+fn row_help(src: &dyn ParamSource, id: ParamId, text: String) -> String {
+    if src.supports(id).reason().is_some() {
+        String::new()
+    } else {
+        text
+    }
 }
 
 /// Wraps one row so it carries its gutter, without touching the row helpers'
@@ -1055,85 +1076,89 @@ fn draw_track_tab(
 
     // Name — same 146×26 keycap box as the Type/Aux Out dropdowns so the right
     // edges line up.
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        editor_label(ui, "Name");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (rect, _) =
-                ui.allocate_exact_size(Vec2::new(146.0, CTL_HEIGHT), egui::Sense::hover());
-            crate::ui::widgets::keycap_tex(ui, rect, crate::ui::widgets::KeycapState::Rest);
-            let response = ui
-                .allocate_new_ui(
-                    egui::UiBuilder::new()
-                        .max_rect(rect.shrink2(Vec2::new(8.0, 0.0)))
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                    |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut state.track_name_input)
-                                .id(egui::Id::new(("track_name", slot_idx)))
-                                .char_limit(6)
-                                .desired_width(f32::INFINITY)
-                                .font(f_sans_med(12.0))
-                                .text_color(Color32::WHITE)
-                                .frame(false),
-                        )
-                    },
-                )
-                .inner;
-            if state.track_name_focus_request {
-                state.track_name_focus_request = false;
-                response.request_focus();
-            }
-            if response.changed() {
-                new_state.slots[slot_idx].name = state.track_name_input.clone();
-                changed = true;
-            }
-        });
+    help::zone(ui, "track_name", help::TRACK_NAME, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            editor_label(ui, "Name");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(146.0, CTL_HEIGHT), egui::Sense::hover());
+                crate::ui::widgets::keycap_tex(ui, rect, crate::ui::widgets::KeycapState::Rest);
+                let response = ui
+                    .allocate_new_ui(
+                        egui::UiBuilder::new()
+                            .max_rect(rect.shrink2(Vec2::new(8.0, 0.0)))
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.track_name_input)
+                                    .id(egui::Id::new(("track_name", slot_idx)))
+                                    .char_limit(6)
+                                    .desired_width(f32::INFINITY)
+                                    .font(f_sans_med(12.0))
+                                    .text_color(Color32::WHITE)
+                                    .frame(false),
+                            )
+                        },
+                    )
+                    .inner;
+                if state.track_name_focus_request {
+                    state.track_name_focus_request = false;
+                    response.request_focus();
+                }
+                if response.changed() {
+                    new_state.slots[slot_idx].name = state.track_name_input.clone();
+                    changed = true;
+                }
+            });
+        })
     });
 
     // Type (instrument kind) — shared category▸kind cascade, identical to the
     // empty-lane Add-Module popup and the lane right-click menu.
     let current_kind = slot.kind;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        editor_label(ui, "Type");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Same 146×CTL_HEIGHT field as the Aux Out / Choke selectors, but it
-            // opens the SHARED category▸kind cascade (identical to the empty-lane
-            // +N chip and the lane right-click).
-            let type_btn = egui::Button::new(
-                RichText::new(format!("{}", current_kind.default_name()))
-                    .font(f_mono_med(11.0))
-                    .color(INK()),
-            )
-            .fill(P_ACTIVE())
-            .stroke(egui::Stroke::new(1.0, LINE2()))
-            .corner_radius(RADIUS_CTL)
-            .min_size(Vec2::new(146.0, CTL_HEIGHT));
-            let picker = egui::menu::menu_custom_button(ui, type_btn, |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                ui.set_min_width(130.0);
-                crate::ui::menus::instrument_category_menu(ui, Some(current_kind))
-            });
-            if let Some(kind) = picker.inner.flatten() {
-                if kind != current_kind {
-                    let label = kind.default_name();
-                    new_state.slots[slot_idx].kind = kind;
-                    new_state.slots[slot_idx].name = label.to_string();
-                    new_state.slots[slot_idx].midi_note = kind.default_midi_note();
-                    state.track_name_input = label.to_string();
-                    changed = true;
-                    // New kind → new voice: seed the slot's settings from the new
-                    // instrument's defaults (the audio thread reinitializes it).
-                    sound_settings.reset_slot_to_defaults(
-                        slot_idx,
-                        kind,
-                        state.global_config.default_analog,
-                    );
-                    state.selected_instrument = slot_idx;
+    help::zone(ui, "track_type", help::TRACK_TYPE, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            editor_label(ui, "Type");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Same 146×CTL_HEIGHT field as the Aux Out / Choke selectors, but it
+                // opens the SHARED category▸kind cascade (identical to the empty-lane
+                // +N chip and the lane right-click).
+                let type_btn = egui::Button::new(
+                    RichText::new(format!("{}", current_kind.default_name()))
+                        .font(f_mono_med(11.0))
+                        .color(INK()),
+                )
+                .fill(P_ACTIVE())
+                .stroke(egui::Stroke::new(1.0, LINE2()))
+                .corner_radius(RADIUS_CTL)
+                .min_size(Vec2::new(146.0, CTL_HEIGHT));
+                let picker = egui::menu::menu_custom_button(ui, type_btn, |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.set_min_width(130.0);
+                    crate::ui::menus::instrument_category_menu(ui, Some(current_kind))
+                });
+                if let Some(kind) = picker.inner.flatten() {
+                    if kind != current_kind {
+                        let label = kind.default_name();
+                        new_state.slots[slot_idx].kind = kind;
+                        new_state.slots[slot_idx].name = label.to_string();
+                        new_state.slots[slot_idx].midi_note = kind.default_midi_note();
+                        state.track_name_input = label.to_string();
+                        changed = true;
+                        // New kind → new voice: seed the slot's settings from the new
+                        // instrument's defaults (the audio thread reinitializes it).
+                        sound_settings.reset_slot_to_defaults(
+                            slot_idx,
+                            kind,
+                            state.global_config.default_analog,
+                        );
+                        state.selected_instrument = slot_idx;
+                    }
                 }
-            }
-        });
+            });
+        })
     });
 
     // ---- Preset ----
@@ -1145,69 +1170,73 @@ fn draw_track_tab(
         state.track_preset_entries = crate::presets::list_instrument_presets(preset_kind.index());
         state.track_preset_cache_key = Some(preset_cache_key);
     }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        editor_label(ui, "Load");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if state.track_preset_entries.is_empty() {
-                ui.label(
-                    RichText::new("No presets")
-                        .font(f_sans_med(11.0))
-                        .color(INK3()),
-                );
-            } else {
-                // Action dropdown: index 0 is a placeholder, 1.. are the presets.
-                let mut pending: Option<crate::presets::InstrumentPreset> = None;
-                {
-                    let mut labels: Vec<&str> =
-                        Vec::with_capacity(state.track_preset_entries.len() + 1);
-                    labels.push("Load preset…");
-                    for e in &state.track_preset_entries {
-                        labels.push(e.name.as_str());
-                    }
-                    if let (_, Some(i)) = crate::ui::widgets::styled_select(
-                        ui,
-                        "track_inst_preset",
-                        0,
-                        &labels,
-                        146.0,
-                    ) {
-                        if i >= 1 {
-                            pending = state
-                                .track_preset_entries
-                                .get(i - 1)
-                                .and_then(crate::presets::load_instrument_preset);
+    help::zone(ui, "track_preset", help::TRACK_PRESET, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            editor_label(ui, "Load");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if state.track_preset_entries.is_empty() {
+                    ui.label(
+                        RichText::new("No presets")
+                            .font(f_sans_med(11.0))
+                            .color(INK3()),
+                    );
+                } else {
+                    // Action dropdown: index 0 is a placeholder, 1.. are the presets.
+                    let mut pending: Option<crate::presets::InstrumentPreset> = None;
+                    {
+                        let mut labels: Vec<&str> =
+                            Vec::with_capacity(state.track_preset_entries.len() + 1);
+                        labels.push("Load preset…");
+                        for e in &state.track_preset_entries {
+                            labels.push(e.name.as_str());
+                        }
+                        if let (_, Some(i)) = crate::ui::widgets::styled_select(
+                            ui,
+                            "track_inst_preset",
+                            0,
+                            &labels,
+                            146.0,
+                        ) {
+                            if i >= 1 {
+                                pending = state
+                                    .track_preset_entries
+                                    .get(i - 1)
+                                    .and_then(crate::presets::load_instrument_preset);
+                            }
                         }
                     }
+                    if let Some(preset) = pending {
+                        crate::ui::preset_browser::apply_instrument_preset_to_slot(
+                            setter,
+                            params,
+                            sound_settings,
+                            state,
+                            slot_idx,
+                            &preset,
+                        );
+                    }
                 }
-                if let Some(preset) = pending {
-                    crate::ui::preset_browser::apply_instrument_preset_to_slot(
-                        setter,
-                        params,
-                        sound_settings,
-                        state,
-                        slot_idx,
-                        &preset,
-                    );
-                }
-            }
-        });
+            });
+        })
     });
 
     // ---- Routing ----
     editor_section_header(ui, "Routing");
 
     // Main Mix (toggle)
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        editor_label(ui, "Main Mix");
-        let avail = ui.available_width();
-        ui.add_space((avail - 34.0).max(0.0));
-        let checked = slot.routing.main_on;
-        if ui.add(ToggleSwitch::new(checked)).clicked() {
-            new_state.slots[slot_idx].routing.main_on = !checked;
-            changed = true;
-        }
+    help::zone(ui, "track_main_mix", help::TRACK_MAIN_MIX, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            editor_label(ui, "Main Mix");
+            let avail = ui.available_width();
+            ui.add_space((avail - 34.0).max(0.0));
+            let checked = slot.routing.main_on;
+            if ui.add(ToggleSwitch::new(checked)).clicked() {
+                new_state.slots[slot_idx].routing.main_on = !checked;
+                changed = true;
+            }
+        })
     });
 
     // Aux Out (dropdown)
@@ -1229,26 +1258,28 @@ fn draw_track_tab(
         })
         .collect();
     let out_refs: Vec<&str> = out_labels.iter().map(|s| s.as_str()).collect();
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        editor_label(ui, "Aux Out");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if let (_, Some(i)) = crate::ui::widgets::styled_select(
-                ui,
-                "track_out",
-                current_out as usize,
-                &out_refs,
-                146.0,
-            ) {
-                if i as u8 != current_out {
-                    new_state.assign_slot_output(
-                        slot_idx,
-                        crate::track::TrackAudioOut::from_index(i as u8),
-                    );
-                    changed = true;
+    help::zone(ui, "track_aux", help::TRACK_AUX, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            editor_label(ui, "Aux Out");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let (_, Some(i)) = crate::ui::widgets::styled_select(
+                    ui,
+                    "track_out",
+                    current_out as usize,
+                    &out_refs,
+                    146.0,
+                ) {
+                    if i as u8 != current_out {
+                        new_state.assign_slot_output(
+                            slot_idx,
+                            crate::track::TrackAudioOut::from_index(i as u8),
+                        );
+                        changed = true;
+                    }
                 }
-            }
-        });
+            });
+        })
     });
 
     // Choke group (dropdown) — when this slot triggers, every other active
@@ -1258,55 +1289,61 @@ fn draw_track_tab(
         .choke_group
         .min(crate::track::CHOKE_GROUP_COUNT) as usize;
     let choke_labels = ["None", "1", "2", "3", "4"];
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        editor_label(ui, "Choke");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if let (_, Some(i)) = crate::ui::widgets::styled_select(
-                ui,
-                "track_choke",
-                current_choke,
-                &choke_labels,
-                146.0,
-            ) {
-                if i != current_choke {
-                    new_state.slots[slot_idx].routing.choke_group = i as u8;
-                    changed = true;
+    help::zone(ui, "track_choke", help::TRACK_CHOKE, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            editor_label(ui, "Choke");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let (_, Some(i)) = crate::ui::widgets::styled_select(
+                    ui,
+                    "track_choke",
+                    current_choke,
+                    &choke_labels,
+                    146.0,
+                ) {
+                    if i != current_choke {
+                        new_state.slots[slot_idx].routing.choke_group = i as u8;
+                        changed = true;
+                    }
                 }
-            }
-        });
+            });
+        })
     });
 
     // ---- MIDI ----
     editor_section_header(ui, "MIDI");
 
     // Channel (global, read-only)
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        editor_label(ui, "Channel");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                RichText::new(format!("{}", layout_state.global_midi_channel))
-                    .font(f_mono_med(12.0))
-                    .color(Color32::WHITE),
-            );
-        });
+    help::zone(ui, "track_channel", help::TRACK_CHANNEL, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            editor_label(ui, "Channel");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("{}", layout_state.global_midi_channel))
+                        .font(f_mono_med(12.0))
+                        .color(Color32::WHITE),
+                );
+            });
+        })
     });
 
     // Note
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        editor_label(ui, "Note");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mut note = slot.midi_note as i32;
-            if ui
-                .add(egui::DragValue::new(&mut note).range(0..=127).speed(1.0))
-                .changed()
-            {
-                new_state.slots[slot_idx].midi_note = note.clamp(0, 127) as u8;
-                changed = true;
-            }
-        });
+    help::zone(ui, "track_note", help::TRACK_NOTE, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            editor_label(ui, "Note");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut note = slot.midi_note as i32;
+                if ui
+                    .add(egui::DragValue::new(&mut note).range(0..=127).speed(1.0))
+                    .changed()
+                {
+                    new_state.slots[slot_idx].midi_note = note.clamp(0, 127) as u8;
+                    changed = true;
+                }
+            });
+        })
     });
 
     // ---- Sequencing ----
@@ -1338,15 +1375,18 @@ pub fn apply_lane_layout_preset(
     sound_settings: &SoundSettingsState,
     pattern: &SharedPattern,
     state: &mut EditorUIState,
-    layout: TrackLayoutState,
+    mut layout: TrackLayoutState,
     clear_pattern_data: bool,
 ) {
+    // [283] A preset replaces the lanes, not the global MIDI channel set in
+    // Settings (it used to come back as 10).
+    let current = PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());
+    layout.keep_globals_of(&current);
     if clear_pattern_data {
         load_pattern_for_ui(pattern, &crate::sequencer::pattern::Pattern::empty());
         params.plock_state.state.clear_all();
         params.seq_plock_state.state.clear_all();
         crate::ui::grid::clear_all_fusions(pattern);
-        state.last_loaded_slot = None;
     }
 
     // The new layout can deactivate lanes: drop every mute/solo so none keeps
@@ -1466,7 +1506,10 @@ pub fn draw_sound_panel(
     let lane_master_length = params.pattern_length.value().clamp(1, 64) as usize;
     let lane_length =
         crate::ui::editor_state::effective_lane_length_for_ui(params, slot, lane_master_length);
-    let fusions = pattern.load_fusions(slot);
+    // [283] A linked lane plays the fused groups of the lane it follows, with
+    // its own morph.
+    let grid = params.track_layout.state.grid_slot(slot);
+    let fusions = pattern.load_lane_fusions(slot, grid);
     let resolved = crate::ui::editor_state::resolve_edit_scope(
         state.sound_edit_target,
         slot,
@@ -1506,17 +1549,20 @@ pub fn draw_sound_panel(
             step,
             fusion_index,
             end,
-        } => Box::new(crate::ui::param_source::MorphSource::new(
-            pattern,
-            fusion_index,
-            fusions[fusion_index],
-            end,
-            PlockSource::new(
-                plock,
-                step,
-                GlobalSource::new(sound_settings, slot, voice_idx, &panel_algo),
-            ),
-        )),
+        } => Box::new(
+            crate::ui::param_source::MorphSource::new(
+                pattern,
+                fusion_index,
+                fusions[fusion_index],
+                end,
+                PlockSource::new(
+                    plock,
+                    step,
+                    GlobalSource::new(sound_settings, slot, voice_idx, &panel_algo),
+                ),
+            )
+            .following(grid),
+        ),
     };
     // Badge content for the header below: `Some(step)` = editing that step's
     // p-lock, `None` = editing the lane.
@@ -1630,23 +1676,27 @@ pub fn draw_sound_panel(
             // Volume en tête (sans titre de section) — pleine largeur, comme les
             // sections sans graphe.
             let vol_id = ParamId::Std(StandardField::Volume);
-            let (vol_reverted, vol_changed) = row_scoped(
-                ui,
-                src.is_overridden(vol_id),
-                src.supports(vol_id).reason(),
-                |ui| {
-                    draw_editor_slider_row(
-                        ui,
-                        "Volume",
-                        &mut vol,
-                        0.0,
-                        2.0,
-                        VoiceSettings::default().volume,
-                        false,
-                        Some(""),
-                    )
-                    .changed()
-                });
+            let vol_help = row_help(&*src, vol_id, help::std_param(voice_idx, StandardField::Volume));
+            let (vol_reverted, vol_changed) = help::zone(ui, "vol_row", &vol_help, |ui| {
+                row_scoped(
+                    ui,
+                    src.is_overridden(vol_id),
+                    src.supports(vol_id).reason(),
+                    |ui| {
+                        draw_editor_slider_row(
+                            ui,
+                            "Volume",
+                            &mut vol,
+                            0.0,
+                            2.0,
+                            VoiceSettings::default().volume,
+                            false,
+                            Some(""),
+                        )
+                        .changed()
+                    },
+                )
+            });
             if vol_reverted {
                 src.clear(vol_id);
                 changed = true;
@@ -2062,8 +2112,8 @@ fn draw_action_strip(
                 .iter()
                 .position(|tab| *tab == state.fusion_tab)
                 .unwrap_or(0);
-            let picked = ui
-                .add_enabled_ui(morph_available, |ui| {
+            let picked = help::zone(ui, "fusion_tab", help::EDITOR_FUSION_TAB, |ui| {
+                ui.add_enabled_ui(morph_available, |ui| {
                     crate::ui::skeuo::segmented(
                         ui,
                         ("fusion_tab", slot),
@@ -2071,7 +2121,8 @@ fn draw_action_strip(
                         selected,
                     )
                 })
-                .inner;
+                .inner
+            });
             if morph_available && picked != selected {
                 state.fusion_tab = tabs[picked.min(tabs.len() - 1)];
             }
@@ -2219,11 +2270,8 @@ fn draw_action_strip(
                     )
                 })
                 .inner
-                .on_hover_text(if stored {
-                    "Restore the snapshot saved with Store (A/B while tweaking)."
-                } else {
-                    "Nothing stored for this lane yet — use Store first."
-                });
+                .on_hover_text("Restore the snapshot saved with Store (A/B while tweaking).")
+                .on_disabled_hover_text("Nothing stored for this lane yet — use Store first.");
             if restore_resp.clicked() {
                 if let Some(scratch) = &state.sound_scratchpad[slot] {
                     match scratch {
@@ -2254,14 +2302,13 @@ fn draw_action_strip(
                             fusion_index,
                             group,
                         } => {
-                            // Same publish path as MorphSource::commit:
-                            // load, replace, store (store_fusions drops invalid
-                            // groups, so only replace in place).
-                            let mut groups = pattern.load_fusions(slot);
-                            if let Some(existing) = groups.get_mut(*fusion_index) {
-                                *existing = *group;
-                                pattern.store_fusions(slot, &groups);
-                            }
+                            // Same publish path as MorphSource::commit.
+                            pattern.store_lane_fusion(
+                                slot,
+                                params.track_layout.state.grid_slot(slot),
+                                *fusion_index,
+                                *group,
+                            );
                         }
                     }
                 }
@@ -2543,11 +2590,17 @@ fn draw_filter_type_row(
             let names: &[&str] = def.options.unwrap_or(&["LP", "HP", "BP"]);
             let current =
                 (src.get(id).round().max(0.0) as usize).min(names.len().saturating_sub(1));
-            let (reverted, picked) =
-                row_scoped(ui, src.is_overridden(id), src.supports(id).reason(), |ui| {
-                    editor_label(ui, def.label);
-                    right_aligned_select(ui, (def.name, row_salt), current, names)
-                });
+            let (reverted, picked) = help::zone(
+                ui,
+                ("filter_type", def.name),
+                &row_help(&**src, id, help::special_param(def.name).to_string()),
+                |ui| {
+                    row_scoped(ui, src.is_overridden(id), src.supports(id).reason(), |ui| {
+                        editor_label(ui, def.label);
+                        right_aligned_select(ui, (def.name, row_salt), current, names)
+                    })
+                },
+            );
             if reverted {
                 src.clear(id);
                 changed = true;
@@ -2632,138 +2685,171 @@ fn draw_standard_rows(
             {
                 continue;
             }
-            ui.horizontal(|ui| {
-                let label_text =
-                    if def.field == crate::instrument_registry::StandardField::FilterFreq {
-                        let ft = crate::instrument_registry::filter_type_label(voice_idx);
-                        if ft.is_empty() {
-                            def.label.to_string()
-                        } else {
-                            format!("{} ({})", def.label, ft)
-                        }
-                    } else {
-                        def.label.to_string()
-                    };
-
-                let is_bass_drum = instrument.freq_as_notes;
-                let freq_in_notes = is_bass_drum
-                    && def.field == crate::instrument_registry::StandardField::Freq
-                    && src.get(ParamId::FreqMode) >= 0.5;
-
-                match (&def.widget, def.field) {
-                    (
-                        crate::instrument_registry::ParamWidget::Slider {
-                            min,
-                            max,
-                            logarithmic,
-                            suffix,
-                        },
-                        field,
-                    ) => {
-                        // Bass drums can display frequency as Hz or musical notes.
-                        if is_bass_drum && field == crate::instrument_registry::StandardField::Freq
-                        {
-                            let ratio = instrument.freq_display_ratio;
-                            let id = ParamId::Std(field);
-                            let (reverted, row) = row_scoped(
-                                ui,
-                                src.is_overridden(id),
-                                src.supports(id).reason(),
-                                |ui| {
-                                    draw_editor_frequency_row(
-                                        ui,
-                                        ("freq_mode", row_salt),
-                                        &label_text,
-                                        &mut freq,
-                                        *min,
-                                        *max,
-                                        VoiceSettings::default().frequency,
-                                        *logarithmic,
-                                        ratio,
-                                        freq_in_notes,
-                                    )
-                                },
-                            );
-                            if reverted {
-                                src.clear(id);
-                                changed = true;
-                            } else if row.value_changed || row.response.changed() {
-                                src.set(id, freq);
-                                changed = true;
+            let row_rect = ui
+                .horizontal(|ui| {
+                    let label_text =
+                        if def.field == crate::instrument_registry::StandardField::FilterFreq {
+                            let ft = crate::instrument_registry::filter_type_label(voice_idx);
+                            if ft.is_empty() {
+                                def.label.to_string()
+                            } else {
+                                format!("{} ({})", def.label, ft)
                             }
-                            if let Some(new_mode) = row.mode_change {
-                                src.set(ParamId::FreqMode, new_mode as u8 as f32);
-                                if new_mode {
-                                    let snapped_note = freq_to_note(freq * ratio).round();
-                                    freq = note_to_freq(snapped_note) / ratio;
-                                    src.set(ParamId::Std(field), freq);
+                        } else {
+                            def.label.to_string()
+                        };
+
+                    let is_bass_drum = instrument.freq_as_notes;
+                    let freq_in_notes = is_bass_drum
+                        && def.field == crate::instrument_registry::StandardField::Freq
+                        && src.get(ParamId::FreqMode) >= 0.5;
+
+                    match (&def.widget, def.field) {
+                        (
+                            crate::instrument_registry::ParamWidget::Slider {
+                                min,
+                                max,
+                                logarithmic,
+                                suffix,
+                            },
+                            field,
+                        ) => {
+                            // Bass drums can display frequency as Hz or musical notes.
+                            if is_bass_drum
+                                && field == crate::instrument_registry::StandardField::Freq
+                            {
+                                let ratio = instrument.freq_display_ratio;
+                                let id = ParamId::Std(field);
+                                let (reverted, row) = row_scoped(
+                                    ui,
+                                    src.is_overridden(id),
+                                    src.supports(id).reason(),
+                                    |ui| {
+                                        draw_editor_frequency_row(
+                                            ui,
+                                            ("freq_mode", row_salt),
+                                            &label_text,
+                                            &mut freq,
+                                            *min,
+                                            *max,
+                                            VoiceSettings::default().frequency,
+                                            *logarithmic,
+                                            ratio,
+                                            freq_in_notes,
+                                        )
+                                    },
+                                );
+                                if reverted {
+                                    src.clear(id);
+                                    changed = true;
+                                } else if row.value_changed || row.response.changed() {
+                                    src.set(id, freq);
+                                    changed = true;
+                                }
+                                if let Some(new_mode) = row.mode_change {
+                                    src.set(ParamId::FreqMode, new_mode as u8 as f32);
+                                    if new_mode {
+                                        let snapped_note = freq_to_note(freq * ratio).round();
+                                        freq = note_to_freq(snapped_note) / ratio;
+                                        src.set(ParamId::Std(field), freq);
+                                        changed = true;
+                                    }
+                                }
+                            } else {
+                                let value: &mut f32 = match field {
+                                    crate::instrument_registry::StandardField::Freq => &mut freq,
+                                    crate::instrument_registry::StandardField::Decay => &mut decay,
+                                    crate::instrument_registry::StandardField::Volume => &mut vol,
+                                    crate::instrument_registry::StandardField::FilterFreq => {
+                                        &mut filt
+                                    }
+                                    crate::instrument_registry::StandardField::Attack => {
+                                        &mut attack
+                                    }
+                                    crate::instrument_registry::StandardField::Release => {
+                                        &mut release
+                                    }
+                                    crate::instrument_registry::StandardField::DecayCurve => {
+                                        &mut decay_curve
+                                    }
+                                    crate::instrument_registry::StandardField::ReleaseCurve => {
+                                        &mut release_curve
+                                    }
+                                    crate::instrument_registry::StandardField::Hold => &mut hold,
+                                    crate::instrument_registry::StandardField::FilterEnvAmount => {
+                                        &mut filter_env_amount
+                                    }
+                                    crate::instrument_registry::StandardField::FilterEnvDecay => {
+                                        &mut filter_env_decay
+                                    }
+                                    crate::instrument_registry::StandardField::Analog => {
+                                        &mut analog
+                                    }
+                                    crate::instrument_registry::StandardField::Stereo => {
+                                        &mut stereo
+                                    }
+                                };
+                                // [184] One definition of "the default":
+                                // `param_default` keeps both branches
+                                // (per-voice table for the samplers and
+                                // SDrex, shared defaults otherwise).
+                                let default_value = src.inherited(ParamId::Std(field));
+                                // Relative-pitch voices: the Pitch slider
+                                // steps by 1 semitone (Pitch Fine covers
+                                // the cents).
+                                let smp_pitch = field
+                                    == crate::instrument_registry::StandardField::Freq
+                                    && crate::instrument_registry::is_sampler(voice_idx);
+                                let id = ParamId::Std(field);
+                                let (reverted, edited) = row_scoped(
+                                    ui,
+                                    src.is_overridden(id),
+                                    src.supports(id).reason(),
+                                    |ui| {
+                                        let row = draw_editor_slider_row_full(
+                                            ui,
+                                            &label_text,
+                                            value,
+                                            *min,
+                                            *max,
+                                            default_value,
+                                            *logarithmic,
+                                            *suffix,
+                                            if smp_pitch { 1.0 } else { 0.0 },
+                                        );
+                                        page_lock_menu(
+                                            &row,
+                                            plock,
+                                            slot,
+                                            page,
+                                            id,
+                                            *min,
+                                            *max,
+                                            *logarithmic,
+                                        );
+                                        row.changed()
+                                    },
+                                );
+                                if reverted {
+                                    src.clear(id);
+                                    changed = true;
+                                } else if edited {
+                                    src.set(id, *value);
                                     changed = true;
                                 }
                             }
-                        } else {
+                        }
+                        (crate::instrument_registry::ParamWidget::Checkbox, field) => {
                             let value: &mut f32 = match field {
-                                crate::instrument_registry::StandardField::Freq => &mut freq,
-                                crate::instrument_registry::StandardField::Decay => &mut decay,
-                                crate::instrument_registry::StandardField::Volume => &mut vol,
-                                crate::instrument_registry::StandardField::FilterFreq => &mut filt,
-                                crate::instrument_registry::StandardField::Attack => &mut attack,
-                                crate::instrument_registry::StandardField::Release => &mut release,
-                                crate::instrument_registry::StandardField::DecayCurve => {
-                                    &mut decay_curve
-                                }
-                                crate::instrument_registry::StandardField::ReleaseCurve => {
-                                    &mut release_curve
-                                }
-                                crate::instrument_registry::StandardField::Hold => &mut hold,
-                                crate::instrument_registry::StandardField::FilterEnvAmount => {
-                                    &mut filter_env_amount
-                                }
-                                crate::instrument_registry::StandardField::FilterEnvDecay => {
-                                    &mut filter_env_decay
-                                }
-                                crate::instrument_registry::StandardField::Analog => &mut analog,
                                 crate::instrument_registry::StandardField::Stereo => &mut stereo,
+                                _ => &mut stereo,
                             };
-                            // [184] One definition of "the default":
-                            // `param_default` keeps both branches
-                            // (per-voice table for the samplers and
-                            // SDrex, shared defaults otherwise).
-                            let default_value = src.inherited(ParamId::Std(field));
-                            // Relative-pitch voices: the Pitch slider
-                            // steps by 1 semitone (Pitch Fine covers
-                            // the cents).
-                            let smp_pitch = field
-                                == crate::instrument_registry::StandardField::Freq
-                                && crate::instrument_registry::is_sampler(voice_idx);
                             let id = ParamId::Std(field);
                             let (reverted, edited) = row_scoped(
                                 ui,
                                 src.is_overridden(id),
                                 src.supports(id).reason(),
-                                |ui| {
-                                    let row = draw_editor_slider_row_full(
-                                        ui,
-                                        &label_text,
-                                        value,
-                                        *min,
-                                        *max,
-                                        default_value,
-                                        *logarithmic,
-                                        *suffix,
-                                        if smp_pitch { 1.0 } else { 0.0 },
-                                    );
-                                    page_lock_menu(
-                                        &row,
-                                        plock,
-                                        slot,
-                                        page,
-                                        id,
-                                        *min,
-                                        *max,
-                                        *logarithmic,
-                                    );
-                                    row.changed()
-                                },
+                                |ui| draw_editor_switch_row(ui, &label_text, value).changed(),
                             );
                             if reverted {
                                 src.clear(id);
@@ -2774,28 +2860,25 @@ fn draw_standard_rows(
                             }
                         }
                     }
-                    (crate::instrument_registry::ParamWidget::Checkbox, field) => {
-                        let value: &mut f32 = match field {
-                            crate::instrument_registry::StandardField::Stereo => &mut stereo,
-                            _ => &mut stereo,
-                        };
-                        let id = ParamId::Std(field);
-                        let (reverted, edited) = row_scoped(
-                            ui,
-                            src.is_overridden(id),
-                            src.supports(id).reason(),
-                            |ui| draw_editor_switch_row(ui, &label_text, value).changed(),
-                        );
-                        if reverted {
-                            src.clear(id);
-                            changed = true;
-                        } else if edited {
-                            src.set(id, *value);
-                            changed = true;
-                        }
-                    }
-                }
-            });
+                })
+                .response
+                .rect;
+            // [283] Every slider row but the Hz / Note frequency one carries
+            // the page menu, so its help says so.
+            let mut std_help = help::std_param(voice_idx, def.field);
+            let note_row = instrument.freq_as_notes
+                && def.field == crate::instrument_registry::StandardField::Freq;
+            if matches!(
+                def.widget,
+                crate::instrument_registry::ParamWidget::Slider { .. }
+            ) && !note_row
+            {
+                std_help.push_str(help::SLIDER_GESTURES);
+            }
+            // A row greyed with a reason shows that reason, not the help.
+            if src.supports(ParamId::Std(def.field)).reason().is_none() {
+                help::rect(ui, row_rect, ("std_row", def.label), &std_help);
+            }
             // Multisample voices: Pitch Fine lives directly under
             // the Pitch slider (it tunes the same parameter).
             if def.field == crate::instrument_registry::StandardField::Freq
@@ -2803,22 +2886,33 @@ fn draw_standard_rows(
             {
                 let fine_id = ParamId::Special(9);
                 let mut fine = src.get(fine_id);
-                let (reverted, edited) = row_scoped(
+                let (reverted, edited) = help::zone(
                     ui,
-                    src.is_overridden(fine_id),
-                    src.supports(fine_id).reason(),
+                    "pitch_fine",
+                    &row_help(
+                        &**src,
+                        fine_id,
+                        help::special_param("_fine_tune").to_string(),
+                    ),
                     |ui| {
-                        draw_editor_slider_row(
+                        row_scoped(
                             ui,
-                            "Pitch Fine",
-                            &mut fine,
-                            -100.0,
-                            100.0,
-                            0.0,
-                            false,
-                            Some(" ct"),
+                            src.is_overridden(fine_id),
+                            src.supports(fine_id).reason(),
+                            |ui| {
+                                draw_editor_slider_row(
+                                    ui,
+                                    "Pitch Fine",
+                                    &mut fine,
+                                    -100.0,
+                                    100.0,
+                                    0.0,
+                                    false,
+                                    Some(" ct"),
+                                )
+                                .changed()
+                            },
                         )
-                        .changed()
                     },
                 );
                 if reverted {
@@ -2947,11 +3041,8 @@ fn draw_special_rows(
                 |ui| {
                     ui.add_enabled_ui(is_stereo_file, |ui| {
                         draw_editor_switch_row(ui, "Stereo", &mut stereo)
-                            .on_hover_text(if is_stereo_file {
-                                "Stereo: play the file's left and right channels as they are. Off, both are mixed to mono."
-                            } else {
-                                "Only bites on a stereo user file: this file has one channel."
-                            })
+                            .on_hover_text("Stereo: play the file's left and right channels as they are. Off, both are mixed to mono.")
+                            .on_disabled_hover_text("Only bites on a stereo user file: this file has one channel.")
                             .changed()
                     })
                     .inner
@@ -3078,11 +3169,23 @@ fn draw_special_rows(
             },
         );
         set_sub_indent(0.0);
+        if unsupported.is_none() {
+            let mut row_help = help::special_param(def.name).to_string();
+            if def.continuous && def.options.is_none() {
+                row_help.push_str(help::SLIDER_GESTURES);
+            }
+            help::rect(
+                ui,
+                row_area.response.rect,
+                ("special_row", def.name),
+                &row_help,
+            );
+        }
         if let Some(reason) = unsupported {
             // The greyed row explains itself over its WHOLE area.
             // (An `ui.label("")` allocates nothing, so the hover
             // text it carried was unreachable.)
-            row_area.response.on_hover_text(reason);
+            row_area.response.on_disabled_hover_text(reason);
         }
         // [228] Under the Texture menu, always: the lane's own
         // file and Load / Clear. Loading selects "Custom".
@@ -3118,11 +3221,8 @@ fn draw_special_rows(
                 |ui| {
                     ui.add_enabled_ui(is_stereo_file, |ui| {
                         draw_editor_switch_row(ui, "Stereo", &mut stereo)
-                            .on_hover_text(if is_stereo_file {
-                                "Stereo: play the file's left and right channels as they are. Off, both are mixed to mono. Stereo Spread adds its offset on top."
-                            } else {
-                                "Only bites on a stereo user file: this texture has one channel. Use Stereo Spread for width."
-                            })
+                            .on_hover_text("Stereo: play the file's left and right channels as they are. Off, both are mixed to mono. Stereo Spread adds its offset on top.")
+                            .on_disabled_hover_text("Only bites on a stereo user file: this texture has one channel. Use Stereo Spread for width.")
                             .changed()
                     })
                     .inner
@@ -3428,12 +3528,14 @@ fn draw_algorithm_row(
             // `algo_count_matches_the_named_algorithms`.
             if algos.len() > 1 {
                 let algo_param = params.algos()[state.selected_instrument];
-                ui.horizontal(|ui| {
-                    editor_label(ui, "Algorithm");
-                    let algo_names: Vec<&str> = algos.iter().map(|a| a.name).collect();
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        algo_combo(ui, setter, algo_param, &algo_names)
-                    });
+                help::zone(ui, "algorithm", help::EDITOR_ALGORITHM, |ui| {
+                    ui.horizontal(|ui| {
+                        editor_label(ui, "Algorithm");
+                        let algo_names: Vec<&str> = algos.iter().map(|a| a.name).collect();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            algo_combo(ui, setter, algo_param, &algo_names)
+                        });
+                    })
                 });
             }
         }
@@ -3769,22 +3871,29 @@ fn draw_gate_row(
                     let gate_id = ParamId::Special(def.special_index);
                     let mut value = src.get(gate_id);
                     let logarithmic = def.min > 0.0 && def.max / def.min >= 20.0;
-                    let (reverted, edited) = row_scoped(
+                    let (reverted, edited) = help::zone(
                         ui,
-                        src.is_overridden(gate_id),
-                        src.supports(gate_id).reason(),
+                        ("gate_row", def.name),
+                        &row_help(&**src, gate_id, help::special_param(def.name).to_string()),
                         |ui| {
-                            draw_editor_slider_row(
+                            row_scoped(
                                 ui,
-                                def.label,
-                                &mut value,
-                                def.min,
-                                def.max,
-                                def.default,
-                                logarithmic,
-                                def.unit,
+                                src.is_overridden(gate_id),
+                                src.supports(gate_id).reason(),
+                                |ui| {
+                                    draw_editor_slider_row(
+                                        ui,
+                                        def.label,
+                                        &mut value,
+                                        def.min,
+                                        def.max,
+                                        def.default,
+                                        logarithmic,
+                                        def.unit,
+                                    )
+                                    .changed()
+                                },
                             )
-                            .changed()
                         },
                     );
                     if reverted {

@@ -44,24 +44,29 @@ fn bjorklund(hits: usize, steps: usize) -> Vec<bool> {
     result
 }
 
+/// Hits per role over the 64 steps at full density; [283] density scales them
+/// down to a fifth (sparse, never empty).
+const MAX_HITS: [usize; INSTRUMENT_COUNT] = [
+    12, // Kick
+    6,  // Snare
+    32, // HiHat
+    8,  // Open HiHat
+    4,  // Tom 1
+    3,  // Tom 2
+    3,  // Tom 3
+    4,  // Clap
+    24, // Ride
+    2,  // Cymbal
+    0,  // Snare 606 — user-only, no auto-generation
+    12, // 808 Kick
+    6,  // Perc1
+    4,  // Extra slot
+];
+
 fn euclidean_params(density: f32) -> [(usize, usize); INSTRUMENT_COUNT] {
     let d = density.clamp(0.0, 1.0);
-    [
-        ((2.0 + d * 3.0).round() as usize, STEP_COUNT),
-        ((2.0 + d * 2.0).round() as usize, STEP_COUNT),
-        ((4.0 + d * 12.0).round() as usize, STEP_COUNT),
-        ((d * 4.0).round() as usize, STEP_COUNT),
-        ((d * 3.0).round() as usize, STEP_COUNT),
-        ((d * 3.0).round() as usize, STEP_COUNT),
-        ((d * 2.0).round() as usize, STEP_COUNT),
-        ((d * 2.0).round() as usize, STEP_COUNT), // Clap
-        ((4.0 + d * 8.0).round() as usize, STEP_COUNT), // Ride
-        ((d * 2.0).round() as usize, STEP_COUNT), // Cymbal
-        (0, STEP_COUNT),                          // Snare 606 — user-only, no auto-generation
-        ((2.0 + d * 3.0).round() as usize, STEP_COUNT), // 808 Kick
-        ((d * 2.0).round() as usize, STEP_COUNT), // Perc1
-        ((d * 2.0).round() as usize, STEP_COUNT), // Extra slot
-    ]
+    let fill = 0.2 + 0.8 * d;
+    MAX_HITS.map(|max| ((max as f32 * fill).round() as usize, STEP_COUNT))
 }
 
 pub fn generate(
@@ -84,33 +89,34 @@ pub fn generate(
             row.rotate_left(rot);
         }
 
-        // Style variation: probabilistically flip some steps
-        let variation = 0.05 + (1.0 - density) * 0.1;
+        // Style variation: drop a few hits and add a few, more as the density
+        // rises ([283]: added hits used to outweigh the density).
+        let drop = 0.08;
+        let add = 0.02 + 0.04 * density.clamp(0.0, 1.0);
         for step in 0..STEP_COUNT {
             let active = row[step % steps];
-            pattern.steps[step].instruments[inst] = if active {
-                rng() > variation
-            } else {
-                rng() < variation
-            };
+            pattern.steps[step].instruments[inst] = if active { rng() > drop } else { rng() < add };
         }
     }
 
-    // Post-process: apply musical coherence rules from template
-    for inst in 0..INSTRUMENT_COUNT {
-        let role = &template.roles[inst];
-        for &step in role.exclusions {
-            pattern.steps[step].instruments[inst] = false;
-        }
-        for &step in role.anchors {
-            pattern.steps[step].instruments[inst] = true;
+    // Post-process: apply musical coherence rules from template, on every bar
+    // (the template describes one 16-step bar; [283] only the first got them).
+    for bar in (0..STEP_COUNT).step_by(16) {
+        for inst in 0..INSTRUMENT_COUNT {
+            let role = &template.roles[inst];
+            for &step in role.exclusions {
+                pattern.steps[bar + step].instruments[inst] = false;
+            }
+            for &step in role.anchors {
+                pattern.steps[bar + step].instruments[inst] = true;
+            }
         }
     }
 
     // Kick/snare exclusion
     for step in 0..STEP_COUNT {
         if pattern.steps[step].instruments[0] && pattern.steps[step].instruments[1] {
-            if step == 4 || step == 12 {
+            if step % 16 == 4 || step % 16 == 12 {
                 pattern.steps[step].instruments[0] = false;
             } else {
                 pattern.steps[step].instruments[1] = false;

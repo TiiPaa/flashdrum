@@ -2,6 +2,7 @@
 
 use crate::ui::controls::chip_button;
 use crate::ui::editor_state::EditorUIState;
+use crate::ui::help::{self, HelpExt};
 use crate::ui::midi::{export_midi_to_documents, start_external_midi_drag};
 use crate::ui::theme::*;
 use crate::{
@@ -40,7 +41,8 @@ pub fn draw_pattern_bank(
             true,
             f_mono_med(10.5),
         )
-        .on_hover_text(
+        .help_or(
+            help::BANK_SAVE,
             RichText::new(if state.save_mode_active {
                 "Click a slot (P1-P16) to save the current pattern there"
             } else {
@@ -144,7 +146,10 @@ pub fn draw_pattern_bank(
             } else {
                 format!("P{}: empty", i + 1)
             };
-            let response = response.on_hover_text(RichText::new(tooltip).size(11.0).monospace());
+            let response = response.help_or(
+                help::BANK_SLOT,
+                RichText::new(tooltip).size(11.0).monospace(),
+            );
 
             if response.clicked_by(egui::PointerButton::Primary) {
                 state.clear_confirm_mode = false;
@@ -200,7 +205,8 @@ pub fn draw_pattern_bank(
         let is_clear_confirm = state.clear_confirm_mode;
         if is_clear_confirm {
             let grid_response = chip_button(ui, "Grid", true, BLUE(), egui::Sense::click())
-                .on_hover_text(
+                .help_or(
+                    help::BANK_CLEAR_GRID,
                     RichText::new("Clear the current grid only — the slot keeps its saved pattern")
                         .size(11.0)
                         .monospace(),
@@ -211,7 +217,8 @@ pub fn draw_pattern_bank(
             }
             if state.last_loaded_slot.is_some() {
                 let slot_response = chip_button(ui, "Slot", true, RED(), egui::Sense::click())
-                    .on_hover_text(
+                    .help_or(
+                        help::BANK_CLEAR_SLOT,
                         RichText::new(
                             "Clear the current grid AND empty the bank slot it was loaded from",
                         )
@@ -231,13 +238,17 @@ pub fn draw_pattern_bank(
                 }
             }
             let cancel_response = chip_button(ui, "X", false, INK3(), egui::Sense::click())
-                .on_hover_text(RichText::new("Cancel").size(11.0).monospace());
+                .help_or(
+                    help::BANK_CLEAR_CANCEL,
+                    RichText::new("Cancel").size(11.0).monospace(),
+                );
             if cancel_response.clicked() {
                 state.clear_confirm_mode = false;
             }
         } else {
             let clear_response = chip_button(ui, "Clr", false, BLUE(), egui::Sense::click())
-                .on_hover_text(
+                .help_or(
+                    help::BANK_CLEAR,
                     RichText::new("Clear the current grid or empty the current bank slot")
                         .size(11.0)
                         .monospace(),
@@ -251,7 +262,7 @@ pub fn draw_pattern_bank(
         // Export / Drag (MIDI export, separate concern) pushed to the right edge.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let drag_response = chip_button(ui, "Drag", false, BLUE(), egui::Sense::click())
-                .on_hover_text("Drag the current pattern into your DAW");
+                .help_or(help::BANK_DRAG, "Drag the current pattern into your DAW");
             if drag_response.clicked() {
                 let bpm = params.bpm.value();
                 let pattern_length = params.pattern_length.value() as usize;
@@ -280,7 +291,10 @@ pub fn draw_pattern_bank(
                     }
                 }
             }
-            if chip_button(ui, "Export", false, BLUE(), egui::Sense::click()).clicked() {
+            if chip_button(ui, "Export", false, BLUE(), egui::Sense::click())
+                .help(help::BANK_EXPORT)
+                .clicked()
+            {
                 let bpm = params.bpm.value();
                 let pattern_length = params.pattern_length.value() as usize;
                 let swing = params.swing.value();
@@ -324,6 +338,7 @@ pub fn draw_pattern_bank(
         pattern,
         state,
         load_pattern_request,
+        audio_last_loaded_slot,
     );
 
     // [271] MIDI export confirmation.
@@ -373,8 +388,10 @@ pub(crate) fn clear_current_grid(pattern: &SharedPattern, params: &DrumFlashPara
 }
 
 /// True when the working grid differs from the pattern stored in the loaded
-/// slot (steps or length). Drives the `P1*` marker and the unsaved-changes
-/// warning on slot switch.
+/// slot: steps, length, fusions, sound or sequencer p-locks ([283]: it used to
+/// compare only steps and length, so an edit of p-locks or fusions alone was
+/// lost on a slot switch without a warning). Drives the `P1*` marker and the
+/// unsaved-changes warning on slot switch.
 pub(crate) fn pattern_is_dirty(
     params: &DrumFlashParams,
     pattern: &SharedPattern,
@@ -383,9 +400,16 @@ pub(crate) fn pattern_is_dirty(
     let current_masks = pattern.step_masks();
     let grid_has_content = current_masks.iter().any(|&m| m != 0);
     let current_len = params.pattern_length.value() as u8;
+    let matches = |slot: &crate::pattern_bank::PatternSlot| {
+        slot.matches_live(
+            pattern,
+            &params.plock_state.state,
+            &params.seq_plock_state.state,
+            current_len,
+        )
+    };
     match state.last_loaded_slot {
-        // No slot association (e.g. a project reopened, or a freshly generated
-        // pattern): unsaved ONLY if the grid has content AND doesn't already
+        // No slot association (e.g. a project reopened): unsaved ONLY if the grid has content AND doesn't already
         // match a stored slot. A reopened project whose pattern was saved to
         // some Pn before quitting matches that slot → NOT dirty (no false alert).
         None => {
@@ -393,9 +417,7 @@ pub(crate) fn pattern_is_dirty(
                 return false;
             }
             if let Ok(bank) = params.pattern_bank.bank.lock() {
-                let saved_somewhere = bank.slots.iter().any(|s| {
-                    s.occupied && s.step_masks == current_masks && s.pattern_length == current_len
-                });
+                let saved_somewhere = bank.slots.iter().any(|s| s.occupied && matches(s));
                 !saved_somewhere
             } else {
                 false
@@ -408,13 +430,7 @@ pub(crate) fn pattern_is_dirty(
                     // Positioned on an EMPTY slot: dirty if the grid has content.
                     return grid_has_content;
                 }
-                if slot.step_masks != current_masks {
-                    return true;
-                }
-                if slot.pattern_length != current_len {
-                    return true;
-                }
-                false
+                !matches(slot)
             } else {
                 false
             }

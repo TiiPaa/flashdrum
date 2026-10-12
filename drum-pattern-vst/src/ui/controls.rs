@@ -64,11 +64,15 @@ pub fn draw_track_length_control(
             .range(1..=64),
     );
     let changed = response.changed();
-    let response = response.on_hover_text(if locked {
-        "Locked lane length. Right-click to follow pattern length."
-    } else {
-        "Follows pattern length. Drag to lock this lane."
-    });
+    let response = crate::ui::help::HelpExt::help_or(
+        response,
+        crate::ui::help::LANE_LEN,
+        if locked {
+            "Locked lane length. Right-click to follow pattern length."
+        } else {
+            "Follows pattern length. Drag to lock this lane."
+        },
+    );
     let interacted =
         changed || response.clicked() || response.dragged() || response.secondary_clicked();
 
@@ -379,4 +383,95 @@ pub fn p_lock_mode_segmented(ui: &mut egui::Ui, selected: usize) -> usize {
 
 pub fn generator_song_segmented(ui: &mut egui::Ui, selected: usize) -> usize {
     crate::ui::skeuo::segmented(ui, "gen_song_mode", &["Generator", "Song"], selected)
+}
+
+/// [283] How long a two-click "Sure?" button stays armed (same as the Lane
+/// Editor's Default).
+pub const CONFIRM_TIMEOUT_S: f64 = 3.0;
+
+/// Two-click confirmations: whether the button armed at `armed_at` is still
+/// armed. Call before drawing it; past [`CONFIRM_TIMEOUT_S`] it disarms, and
+/// while armed a repaint is scheduled so its label reverts on its own.
+pub fn confirm_armed(ui: &egui::Ui, armed_at: &mut Option<f64>) -> bool {
+    let now = ui.input(|i| i.time);
+    if let Some(t) = *armed_at {
+        let left = CONFIRM_TIMEOUT_S - (now - t);
+        if left <= 0.0 {
+            *armed_at = None;
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(left));
+        }
+    }
+    armed_at.is_some()
+}
+
+/// Call after drawing an armed button that was not clicked: a press anywhere
+/// else disarms it.
+pub fn confirm_disarm_elsewhere(
+    ui: &egui::Ui,
+    armed_at: &mut Option<f64>,
+    button: &egui::Response,
+) {
+    if armed_at.is_some() && !button.hovered() && ui.input(|i| i.pointer.any_pressed()) {
+        *armed_at = None;
+    }
+}
+
+#[cfg(test)]
+mod confirm_tests {
+    use super::*;
+
+    fn frame(
+        ctx: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+        armed: &mut Option<f64>,
+    ) -> bool {
+        let input = egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 300.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut still = false;
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                still = confirm_armed(ui, armed);
+                let button = ui.add_sized(egui::vec2(80.0, 30.0), egui::Button::new("Sure?"));
+                if !button.clicked() {
+                    confirm_disarm_elsewhere(ui, armed, &button);
+                }
+            });
+        });
+        still
+    }
+
+    #[test]
+    fn an_armed_confirm_disarms_after_the_timeout() {
+        let ctx = egui::Context::default();
+        let mut armed = Some(10.0);
+        assert!(frame(&ctx, 12.0, vec![], &mut armed));
+        assert!(!frame(&ctx, 13.1, vec![], &mut armed));
+        assert_eq!(armed, None);
+    }
+
+    #[test]
+    fn an_armed_confirm_disarms_on_a_click_elsewhere() {
+        let ctx = egui::Context::default();
+        let mut armed = Some(10.0);
+        let far = egui::pos2(300.0, 250.0);
+        frame(&ctx, 10.1, vec![egui::Event::PointerMoved(far)], &mut armed);
+        let press = egui::Event::PointerButton {
+            pos: far,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&ctx, 10.2, vec![press], &mut armed);
+        assert_eq!(armed, None);
+    }
 }

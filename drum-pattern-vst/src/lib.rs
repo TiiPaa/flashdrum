@@ -1555,7 +1555,11 @@ impl Default for DrumFlashParams {
             style_primary: EnumParam::new("Style A", Style::Rock),
             style_secondary: EnumParam::new("Style B", Style::Rock),
             style_mix: FloatParam::new("Style Mix", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
-            gen_density: FloatParam::new("Density", 0.7, FloatRange::Linear { min: 0.0, max: 1.0 }),
+            gen_density: FloatParam::new(
+                "Density",
+                generator::styles::DEFAULT_DENSITY,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            ),
             gen_variation: FloatParam::new(
                 "Variation",
                 0.3,
@@ -3500,6 +3504,43 @@ impl DrumFlashVst {
         }
     }
 
+    /// [283] MIDI Pat switches at once, without the UI's unsaved-changes
+    /// warning: the grid's edits are first saved into the slot it came from,
+    /// as Song mode does, so nothing is lost. Nothing is saved when the grid
+    /// already matches that slot, when it comes from no slot, or when the
+    /// target slot is empty (the switch will not happen). RT-safe: `try_lock`
+    /// and `capture` into the slot's preallocated buffers.
+    fn keep_edits_before_midi_switch(&mut self, target: usize) -> PatternBankActionResult {
+        let current = self.audio_last_loaded_slot.load(Ordering::Relaxed) as usize;
+        if current >= pattern_bank::SLOT_COUNT || target >= pattern_bank::SLOT_COUNT {
+            return PatternBankActionResult::Skipped;
+        }
+        let plock = &self.params.plock_state.state;
+        let seq_plock = &self.params.seq_plock_state.state;
+        let length = self.params.pattern_length.value() as u8;
+        let mut bank = match self.params.pattern_bank.bank.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => return PatternBankActionResult::Busy,
+            Err(TryLockError::Poisoned(_)) => return PatternBankActionResult::Skipped,
+        };
+        if !bank.slots[target].occupied {
+            return PatternBankActionResult::Skipped;
+        }
+        let slot = &mut bank.slots[current];
+        let grid_empty = self.pattern.step_masks().iter().all(|&m| m == 0);
+        if (!slot.occupied && grid_empty)
+            || slot.matches_live(&self.pattern, plock, seq_plock, length)
+        {
+            return PatternBankActionResult::Skipped;
+        }
+        slot.capture(&self.pattern, plock, seq_plock, length);
+        drop(bank);
+        // RT-safe: the persisted snapshot is rebuilt lazily off the audio
+        // callback (see `save_pattern_to_slot`).
+        self.params.pattern_bank.mark_snapshot_dirty();
+        PatternBankActionResult::Applied
+    }
+
     fn apply_midi_pattern_switch(&mut self) {
         // Apply a MIDI pattern-switch request received during the audio block.
         // Only active when not in Song mode, so the two live-switch mechanisms
@@ -3513,6 +3554,10 @@ impl DrumFlashVst {
         // pattern (page 1 for a 1-page pattern).
         if self.params.midi_pattern_switch.value() && !self.params.song_mode.value() {
             if let Some(slot) = self.pending_midi_pattern_slot.take() {
+                if let PatternBankActionResult::Busy = self.keep_edits_before_midi_switch(slot) {
+                    self.pending_midi_pattern_slot = Some(slot);
+                    return;
+                }
                 match self.load_pattern_from_slot(slot) {
                     PatternBankActionResult::Loaded(_) | PatternBankActionResult::Applied => {
                         self.audio_last_loaded_slot
@@ -4011,6 +4056,50 @@ nih_export_vst3!(DrumFlashVst);
 
 #[cfg(test)]
 mod tests {
+    /// [283] MIDI Pat keeps the grid's edits: they are saved into the slot
+    /// the grid came from before the switch, and only when there is a change
+    /// and the switch will happen.
+    #[test]
+    fn midi_pattern_switch_saves_edits_into_their_slot_first() {
+        let mut plugin = DrumFlashVst::default();
+        let params = plugin.params.clone();
+        let plock = &params.plock_state.state;
+        let seq = &params.seq_plock_state.state;
+        let length = params.pattern_length.value() as u8;
+        plugin.pattern.set_step_mask(0, 0b1);
+        {
+            let mut bank = params.pattern_bank.bank.lock().unwrap();
+            bank.slots[0].capture(&plugin.pattern, plock, seq, length);
+            bank.slots[1].capture(&plugin.pattern, plock, seq, length);
+        }
+        plugin.audio_last_loaded_slot.store(0, Ordering::Relaxed);
+
+        // No change: nothing to save.
+        assert!(matches!(
+            plugin.keep_edits_before_midi_switch(1),
+            PatternBankActionResult::Skipped
+        ));
+
+        // A p-lock edit only (no step change): saved into P1.
+        plock.masks.set_active(0, 0, true);
+        plock.field_masks.set_raw(0, 0, 1);
+        plock.values.set(0, 0, 0, 0.42);
+        // Target empty: the switch will not happen, so nothing is saved.
+        assert!(matches!(
+            plugin.keep_edits_before_midi_switch(5),
+            PatternBankActionResult::Skipped
+        ));
+        assert!(matches!(
+            plugin.keep_edits_before_midi_switch(1),
+            PatternBankActionResult::Applied
+        ));
+        let plock = &params.plock_state.state;
+        let seq = &params.seq_plock_state.state;
+        let bank = params.pattern_bank.bank.lock().unwrap();
+        assert!(bank.slots[0].matches_live(&plugin.pattern, plock, seq, length));
+        assert!(!bank.slots[1].matches_live(&plugin.pattern, plock, seq, length));
+    }
+
     use super::*;
     use nih_plug::params::persist::{deserialize_field, PersistentField};
     use std::collections::BTreeMap;

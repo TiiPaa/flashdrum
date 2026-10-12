@@ -4,6 +4,7 @@ use crate::plock::PlockState;
 use crate::sequencer::SharedPattern;
 use crate::track::TrackLayoutState;
 use crate::ui::editor_state::{EditorUIState, PageMenuAction};
+use crate::ui::help::{self, HelpExt};
 use crate::ui::local_param_slider::LocalParamSlider;
 use crate::ui::menus::{page_menu_frame, page_menu_header, plock_menu_action_row};
 use crate::ui::theme;
@@ -49,7 +50,11 @@ pub fn draw_page_popup_if_any(
                     "Loop this page"
                 };
                 let loop_color = if song_mode { INK3() } else { AMBER() };
-                if plock_menu_action_row(ui, loop_label, loop_color).clicked() && !song_mode {
+                if plock_menu_action_row(ui, loop_label, loop_color)
+                    .help(help::PAGE_MENU_LOOP)
+                    .clicked()
+                    && !song_mode
+                {
                     crate::ui::grid::set_page_loop_param(
                         setter,
                         params,
@@ -58,7 +63,10 @@ pub fn draw_page_popup_if_any(
                     state.page_popup = None;
                 }
 
-                if plock_menu_action_row(ui, "Copy", accent).clicked() {
+                if plock_menu_action_row(ui, "Copy", accent)
+                    .help(help::PAGE_MENU_COPY)
+                    .clicked()
+                {
                     state.page_clipboard = Some(crate::ui::grid::copy_page_to_clipboard(
                         pattern, plock, params, page,
                     ));
@@ -91,7 +99,11 @@ pub fn draw_page_popup_if_any(
                 } else {
                     let paste_enabled = has_clipboard;
                     let paste_color = if paste_enabled { AMBER() } else { INK3() };
-                    if plock_menu_action_row(ui, "Paste", paste_color).clicked() && paste_enabled {
+                    if plock_menu_action_row(ui, "Paste", paste_color)
+                        .help(help::PAGE_MENU_PASTE)
+                        .clicked()
+                        && paste_enabled
+                    {
                         popup.confirm_action = Some(PageMenuAction::Paste);
                         state.page_popup = Some(popup);
                     }
@@ -111,7 +123,10 @@ pub fn draw_page_popup_if_any(
                         state.page_popup = None;
                     }
                 } else {
-                    if plock_menu_action_row(ui, "Clear", RED()).clicked() {
+                    if plock_menu_action_row(ui, "Clear", RED())
+                        .help(help::PAGE_MENU_CLEAR)
+                        .clicked()
+                    {
                         popup.confirm_action = Some(PageMenuAction::Clear);
                         state.page_popup = Some(popup);
                     }
@@ -131,6 +146,14 @@ pub fn draw_page_popup_if_any(
     if clicked_outside {
         state.page_popup = None;
     }
+}
+
+/// [283] Where the Lane 1 Root Note waits for Auto-assign. One fixed id: the
+/// field and the button sit in different child `Ui`s, and `ui.id()` differs
+/// from one to the other, so the button used to read nothing and always
+/// started from 36.
+fn root_note_id() -> egui::Id {
+    egui::Id::new("flash_drum_midi_auto_assign_base")
 }
 
 /// Global settings popup (default analog value, MIDI settings, skin).
@@ -221,6 +244,7 @@ pub fn draw_settings_popup_if_any(
                         true,
                         f_sans_med(12.0),
                     )
+                    .help(help::SET_CLOSE)
                     .clicked()
                     {
                         state.settings_open = false;
@@ -248,7 +272,8 @@ pub fn draw_settings_popup_if_any(
                         true,
                         f_sans_med(9.5),
                     )
-                    .on_hover_text(
+                    .help_or(
+                        help::SET_OUTPUTS,
                         "Route every active lane to the aux output of its own number, now: lane 1 to Out 1, lane 2 to Out 2, and so on. Each assigned lane leaves the main mix, as with any aux assignment; switch its Main Mix back on by hand if you want both. A one-time action, not a mode.",
                     )
                     .clicked()
@@ -259,7 +284,7 @@ pub fn draw_settings_popup_if_any(
                 ui.add_space(10.0);
 
                 // Default Analog
-                ui.label(
+                let analog_label = ui.label(
                     RichText::new("Default Analog")
                         .font(f_sans_med(10.5))
                         .color(INK3()),
@@ -268,7 +293,14 @@ pub fn draw_settings_popup_if_any(
                 let mut value = state.global_config.default_analog;
                 let slider =
                     LocalParamSlider::new(&mut value, 0.0..=1.0).reset_value(0.5);
-                if ui.add(slider).changed() {
+                let slider = ui.add(slider);
+                help::rect(
+                    ui,
+                    analog_label.rect.union(slider.rect),
+                    "set_default_analog",
+                    help::SET_DEFAULT_ANALOG,
+                );
+                if slider.changed() {
                     state.global_config.default_analog = value.clamp(0.0, 1.0);
                     let _ = state.global_config.save();
                 }
@@ -280,7 +312,7 @@ pub fn draw_settings_popup_if_any(
                 ui.add_space(6.0);
 
                 // Global MIDI Channel
-                ui.horizontal(|ui| {
+                help::zone(ui, "set_midi_channel", help::SET_MIDI_CHANNEL, |ui| ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Global MIDI Channel")
                             .font(f_sans_med(10.5))
@@ -302,20 +334,20 @@ pub fn draw_settings_popup_if_any(
                             PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
                         }
                     });
-                });
+                }));
                 ui.add_space(8.0);
 
                 // [239] Auto-assign MIDI notes: the active lanes take
                 // consecutive notes starting from LANE 1's root note, ONE
                 // action on click (same philosophy as [230] above).
-                ui.horizontal(|ui| {
+                help::zone(ui, "set_root_note", help::SET_ROOT_NOTE, |ui| ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Lane 1 Root Note")
                             .font(f_sans_med(10.5))
                             .color(INK3()),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let base_id = ui.id().with("midi_auto_assign_base");
+                        let base_id = root_note_id();
                         let mut base = ui
                             .ctx()
                             .memory_mut(|m| m.data.get_temp::<i32>(base_id))
@@ -328,7 +360,7 @@ pub fn draw_settings_popup_if_any(
                             ui.ctx().memory_mut(|m| m.data.insert_temp(base_id, base));
                         }
                     });
-                });
+                }));
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     // Label on the left, like the Macros row below — no
@@ -347,7 +379,8 @@ pub fn draw_settings_popup_if_any(
                         true,
                         f_sans_med(9.5),
                     )
-                    .on_hover_text(
+                    .help_or(
+                        help::SET_AUTO_NOTES,
                         "Number every active lane's MIDI note from the Lane 1 Root Note, in lane order: lane 1 gets the root, lane 2 gets root+1, and so on. A one-time action, not a mode.",
                     )
                     .clicked()
@@ -355,7 +388,7 @@ pub fn draw_settings_popup_if_any(
                         let base = ui
                             .ctx()
                             .memory_mut(|m| {
-                                m.data.get_temp::<i32>(ui.id().with("midi_auto_assign_base"))
+                                m.data.get_temp::<i32>(root_note_id())
                             })
                             .unwrap_or(36);
                         assign_midi_notes_in_order(params, base.clamp(0, 127) as u8);
@@ -376,7 +409,8 @@ pub fn draw_settings_popup_if_any(
                         true,
                         f_sans_med(9.5),
                     )
-                    .on_hover_text(
+                    .help_or(
+                        help::SET_MACROS,
                         "Assign each Macro knob (visible to your DAW as an automatable parameter) to one sound parameter of a lane.",
                     )
                     .clicked()
@@ -392,14 +426,14 @@ pub fn draw_settings_popup_if_any(
                 ui.add_space(6.0);
 
                 // Auto-Edit (moved here from the header).
-                ui.horizontal(|ui| {
+                help::zone(ui, "set_auto_edit", help::SET_AUTO_EDIT, |ui| ui.horizontal(|ui| {
                     ui.label(RichText::new("Auto-Edit").font(f_sans_med(10.5)).color(INK3()));
                     ui.add_space((ui.available_width() - 34.0).max(0.0));
                     let checked = params.auto_edit.value();
                     if ui.add(crate::ui::widgets::ToggleSwitch::new(checked)).clicked() {
                         crate::ui::controls::set_bool_param_if_changed(setter, &params.auto_edit, !checked);
                     }
-                });
+                }));
                 ui.add_space(8.0);
 
                 // Skin selector
@@ -417,7 +451,7 @@ pub fn draw_settings_popup_if_any(
                     .unwrap_or(0);
                 let (response, picked) =
                     styled_select(ui, "settings_skin", current_idx, &skin_names, 120.0);
-                let _ = response;
+                response.help(help::SET_SKIN);
                 if let Some(idx) = picked {
                     let name = skin_names[idx.min(skin_names.len().saturating_sub(1))];
                     theme::set_skin(name);
@@ -470,6 +504,7 @@ pub fn draw_pattern_load_warning_if_any(
     pattern: &SharedPattern,
     state: &mut EditorUIState,
     load_pattern_request: &std::sync::Arc<std::sync::atomic::AtomicU32>,
+    audio_last_loaded_slot: &std::sync::Arc<std::sync::atomic::AtomicU32>,
 ) {
     let Some(slot) = state.pattern_load_confirm else {
         return;
@@ -516,6 +551,12 @@ pub fn draw_pattern_load_warning_if_any(
                                 .store((slot + 1) as u32, std::sync::atomic::Ordering::Relaxed);
                         } else {
                             crate::ui::pattern_bank::clear_current_grid(pattern, params);
+                            // [283] Positioning on an empty slot is UI-only (no
+                            // load request): publish it, or the next frame's
+                            // sync puts the grid back on the previous slot -
+                            // which MIDI Pat would then overwrite with it.
+                            audio_last_loaded_slot
+                                .store(slot as u32, std::sync::atomic::Ordering::Relaxed);
                         }
                         state.last_loaded_slot = Some(slot);
                         state.pattern_load_confirm = None;
@@ -531,6 +572,7 @@ pub fn draw_pattern_load_warning_if_any(
                                 BLUE(),
                                 egui::Sense::click(),
                             )
+                            .help(help::LOAD_WARN_SAVE)
                             .clicked()
                             {
                                 crate::ui::pattern_bank::save_current_pattern_to_bank_slot(
@@ -546,11 +588,13 @@ pub fn draw_pattern_load_warning_if_any(
                             RED(),
                             egui::Sense::click(),
                         )
+                        .help(help::LOAD_WARN_DISCARD)
                         .clicked()
                         {
                             switch_to_slot(state);
                         }
                         if crate::ui::controls::chip_button(ui, "Cancel", false, INK2(), egui::Sense::click())
+                            .help(help::LOAD_WARN_CANCEL)
                             .clicked()
                         {
                             state.pattern_load_confirm = None;
@@ -606,6 +650,7 @@ pub fn draw_midi_export_modal_if_any(ui: &mut egui::Ui, state: &mut EditorUIStat
                             BLUE(),
                             egui::Sense::click(),
                         )
+                        .help(help::EXPORT_OPEN_FOLDER)
                         .clicked()
                         {
                             let folder = path

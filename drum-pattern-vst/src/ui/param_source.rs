@@ -297,6 +297,9 @@ pub struct MorphSource<'a> {
     /// Working copy: loaded once, published once by `commit`. The old morph menu
     /// re-published the lane's whole fusion array on **every slider frame**.
     group: crate::sequencer::pattern::FusedGroup,
+    /// [283] The lane whose fused groups the edited lane plays (itself unless
+    /// linked): a linked lane publishes only its own morph.
+    grid: usize,
     dirty: bool,
 }
 
@@ -308,14 +311,22 @@ impl<'a> MorphSource<'a> {
         end: MorphEnd,
         base: PlockSource<'a>,
     ) -> Self {
+        let grid = base.base.slot;
         Self {
             base,
             pattern,
             fusion_index,
             end,
             group,
+            grid,
             dirty: false,
         }
+    }
+
+    /// [283] The edited lane is linked: its fused groups are those of `grid`.
+    pub fn following(mut self, grid: usize) -> Self {
+        self.grid = grid;
+        self
     }
 
     /// The 2×2 above, plus the creation case.
@@ -471,11 +482,12 @@ impl ParamSource for MorphSource<'_> {
             debug_assert!(false, "refusing to publish an invalid fused group");
             return;
         }
-        let mut groups = self.pattern.load_fusions(self.base.base.slot);
-        if let Some(slot) = groups.get_mut(self.fusion_index) {
-            *slot = self.group;
-            self.pattern.store_fusions(self.base.base.slot, &groups);
-        }
+        self.pattern.store_lane_fusion(
+            self.base.base.slot,
+            self.grid,
+            self.fusion_index,
+            self.group,
+        );
         self.dirty = false;
     }
 }

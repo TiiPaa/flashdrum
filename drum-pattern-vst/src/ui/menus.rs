@@ -53,6 +53,8 @@ pub fn plock_menu_header(ui: &mut egui::Ui, title: &str, _step: usize, accent: C
             // is NOT a cancel; a × would wrongly suggest discarding).
             let (rect, response) =
                 ui.allocate_exact_size(egui::Vec2::new(18.0, 18.0), egui::Sense::click());
+            let response =
+                crate::ui::help::HelpExt::help(response, crate::ui::help::STEP_MENU_DONE);
             let col = if response.hovered() { accent } else { INK2() };
             let c = rect.center();
             let s = 5.0;

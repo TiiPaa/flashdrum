@@ -407,10 +407,15 @@ fn fader_cap(p: &egui::Painter, cx: f32, cy: f32, h: f32) {
 /// the other kind's own colour: violet for a sequencer p-lock seen from Sound
 /// mode, light green for a sound p-lock seen from Sequencer mode. The black
 /// ring keeps it legible on a lit pad.
-pub fn plock_pip(p: &egui::Painter, cell: egui::Rect, color: Color32) {
-    let c = egui::pos2(cell.right() - 6.5, cell.top() + 6.0);
-    p.circle_filled(c, 2.8, Color32::from_black_alpha(150));
-    p.circle_filled(c, 2.2, color);
+///
+/// Several pips on one cell, laid from the top-right corner leftwards
+/// ([283]: a linked lane also shows its partner lanes' p-locks).
+pub fn plock_pips(p: &egui::Painter, cell: egui::Rect, colors: &[Color32]) {
+    for (i, color) in colors.iter().enumerate() {
+        let c = egui::pos2(cell.right() - 6.5 - i as f32 * 6.5, cell.top() + 6.0);
+        p.circle_filled(c, 2.8, Color32::from_black_alpha(150));
+        p.circle_filled(c, 2.2, *color);
+    }
 }
 
 /// MIDI-activity flash colours, shared by the lane-name plate flash ([238]):

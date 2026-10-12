@@ -9,6 +9,7 @@ use crate::macros::{MacroTarget, MACRO_COUNT};
 use crate::track::{TrackLayoutState, MAX_TRACKS};
 use crate::ui::controls::keycap_button;
 use crate::ui::editor_state::EditorUIState;
+use crate::ui::help::{self, HelpExt};
 use crate::ui::menus::page_menu_frame;
 use crate::ui::theme::*;
 use crate::ui::widgets::{styled_select, KeycapState};
@@ -186,10 +187,10 @@ pub fn draw_macros_modal_if_any(
                         // See `macro_knob`: the header slider's interaction,
                         // learnable from Studio One.
                         let macro_param = params.macro_params()[macro_idx];
-                        macro_knob(ui, setter, macro_param, macro_idx)
-                            .on_hover_text(
-                                "Drag to set. Studio One's MIDI learn sees this knob.",
-                            );
+                        macro_knob(ui, setter, macro_param, macro_idx).help_or(
+                            help::MACRO_KNOB,
+                            "Drag to set. Studio One's MIDI learn sees this knob.",
+                        );
                         let current = map.get(macro_idx);
 
                                         // Lane select: "-" (unassigned) + the active lanes.
@@ -208,13 +209,14 @@ pub fn draw_macros_modal_if_any(
                                                     .unwrap_or(0)
                                             })
                                             .unwrap_or(0);
-                                        let (_, lane_pick) = styled_select(
+                                        let (lane_response, lane_pick) = styled_select(
                                             ui,
                                             ("macro_lane", macro_idx),
                                             lane_sel,
                                             &lane_refs,
                                             108.0,
                                         );
+                                        lane_response.help(help::MACRO_LANE);
 
                                         let lane_after = match lane_pick {
                                             Some(0) => {
@@ -276,13 +278,14 @@ pub fn draw_macros_modal_if_any(
                                                 })
                                             })
                                             .unwrap_or(0);
-                                        let (_, param_pick) = styled_select(
+                                        let (param_response, param_pick) = styled_select(
                                             ui,
                                             ("macro_param", macro_idx),
                                             param_sel,
                                             &option_refs,
                                             168.0,
                                         );
+                                        param_response.help(help::MACRO_PARAM);
                                         if let Some(p) = param_pick {
                                             map.set(macro_idx, Some(options[p].0));
                                         }
@@ -295,7 +298,7 @@ pub fn draw_macros_modal_if_any(
                                             true,
                                             f_sans_med(10.0),
                                         )
-                                        .on_hover_text("Clear this assignment")
+                                        .help_or(help::MACRO_CLEAR, "Clear this assignment")
                                         .clicked()
                                         {
                                             map.set(macro_idx, None);

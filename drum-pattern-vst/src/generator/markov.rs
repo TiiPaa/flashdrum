@@ -1,7 +1,7 @@
 //! Markov-chain pattern generator (Technique B).
 //! Uses musical templates as transition priors for coherent rhythmic evolution.
 
-use super::styles::{MusicalTemplate, Style};
+use super::styles::{candidate_odds, density_gain, MusicalTemplate, Style};
 use crate::sequencer::pattern::{Pattern, INSTRUMENT_COUNT, STEP_COUNT};
 
 pub fn generate(style: Style, density: f32, rng: &mut impl FnMut() -> f32) -> Pattern {
@@ -16,12 +16,14 @@ pub fn generate(style: Style, density: f32, rng: &mut impl FnMut() -> f32) -> Pa
 
         // Initialize from template's anchors probability
         let anchor_count = role.anchors.len();
+        // ([283] scaled by density: at 0 only the anchors play).
         if anchor_count > 0 {
-            state = rng() < (anchor_count as f32 / STEP_COUNT as f32);
+            state =
+                rng() < (anchor_count as f32 / STEP_COUNT as f32) * density_gain(density).min(1.0);
         }
 
         // Transition probabilities derived from template
-        let p_on = role.candidate_prob * (0.4 + 0.6 * density.clamp(0.0, 1.0));
+        let p_on = candidate_odds(role.candidate_prob, density);
         let p_stay = 0.3 + 0.5 * p_on;
 
         for step in 0..STEP_COUNT {

@@ -4,6 +4,7 @@ use crate::plock::PlockState;
 use crate::sequencer::{FusedGroup, SharedPattern};
 use crate::ui::editor_state::*;
 use crate::ui::grid::preserve_step_active_from_plock_popup;
+use crate::ui::help::{self, HelpExt};
 use crate::ui::local_param_slider::LocalParamSlider;
 use crate::ui::menus::*;
 use crate::ui::theme::*;
@@ -54,7 +55,10 @@ fn draw_plock_menu(
             // is no longer offered. The FORMAT is untouched: a snapshot saved
             // before this build still loads, still plays, and the Mode row
             // below still names it "Full Snapshot".
-            if plock_menu_action_row(ui, "Create Plock", ACCENT).clicked() {
+            if plock_menu_action_row(ui, "Create Plock", ACCENT)
+                .help(help::PLOCK_CREATE)
+                .clicked()
+            {
                 plock.masks.set_active(instrument, step, true);
                 // [215] Creating a p-lock IS the start of editing it, so the
                 // gesture goes straight to the Lane Editor instead of leaving a
@@ -68,7 +72,10 @@ fn draw_plock_menu(
             }
             if let Some(ref entry) = state.plock_clipboard {
                 if entry.instrument == instrument {
-                    if plock_menu_action_row(ui, "Paste Plock", ACCENT).clicked() {
+                    if plock_menu_action_row(ui, "Paste Plock", ACCENT)
+                        .help(help::PLOCK_PASTE)
+                        .clicked()
+                    {
                         plock.masks.set_active(instrument, step, true);
                         plock
                             .field_masks
@@ -99,7 +106,10 @@ fn draw_plock_menu(
         // "Paste Plock" went with it, on the same instruction. Overwriting a
         // p-locked cell from the clipboard now takes two steps: Clear, then
         // paste on the emptied cell.
-        if plock_menu_action_row(ui, "Copy Plock", ACCENT).clicked() {
+        if plock_menu_action_row(ui, "Copy Plock", ACCENT)
+            .help(help::PLOCK_COPY)
+            .clicked()
+        {
             let field_mask = plock.field_masks.get_raw(instrument, step);
             let mut values = Vec::with_capacity(crate::plock::FIELD_COUNT);
             for field in 0..crate::plock::FIELD_COUNT {
@@ -112,7 +122,10 @@ fn draw_plock_menu(
             });
             close_after_action = true;
         }
-        if plock_menu_action_row(ui, "Clear Plock", DANGER()).clicked() {
+        if plock_menu_action_row(ui, "Clear Plock", DANGER())
+            .help(help::PLOCK_CLEAR)
+            .clicked()
+        {
             plock.clear(instrument, step);
             // [217] Let go of the cell in the Lane Editor as well.
             //
@@ -148,6 +161,9 @@ fn draw_fusion_group_menu(
     pattern: &SharedPattern,
     params: &DrumFlashParams,
     inst: usize,
+    // [283] The lane whose fused groups `inst` plays (itself unless linked):
+    // the group's cells and pulses are edited there, shared by the chain.
+    grid: usize,
     idx: usize,
     group: FusedGroup,
     step: usize,
@@ -183,24 +199,34 @@ fn draw_fusion_group_menu(
         };
         // [184] ph. 4 — the morph is edited in the Lane Editor now: this row just
         // aims the panel at it and closes the popup.
-        if plock_menu_action_row(ui, &morph_label, PL_LINK()).clicked() {
+        if plock_menu_action_row(ui, &morph_label, PL_LINK())
+            .help(help::FUSION_MORPH)
+            .clicked()
+        {
             state.sound_edit_target =
                 Some(crate::ui::editor_state::SelectedCell { slot: inst, step });
             state.fusion_tab = crate::ui::editor_state::FusionTab::End;
             state.sound_editor_tab = crate::ui::editor_state::SoundEditorTab::Sound;
             state.plock_popup = None;
         }
-        if plock_menu_action_row(ui, "Edit Fusion Steps", PL_LINK()).clicked() {
-            state.fusion_editing = Some((inst, idx));
+        if plock_menu_action_row(ui, "Edit Fusion Steps", PL_LINK())
+            .help(help::FUSION_EDIT_STEPS)
+            .clicked()
+        {
+            state.fusion_editing = Some((grid, idx));
+            state.fusion_editing_lane = inst;
             state.fusion_edit_steps = group.step_count;
             state.fusion_edit_focus_request = true;
             state.plock_popup = None;
         }
-        if plock_menu_action_row(ui, "Delete Fusion", DANGER()).clicked() {
-            let mut new_fusions = pattern.load_fusions(inst);
+        if plock_menu_action_row(ui, "Delete Fusion", DANGER())
+            .help(help::FUSION_DELETE)
+            .clicked()
+        {
+            let mut new_fusions = pattern.load_fusions(grid);
             if idx < new_fusions.len() {
                 new_fusions.remove(idx);
-                pattern.store_fusions(inst, &new_fusions);
+                pattern.store_fusions(grid, &new_fusions);
             }
             state.mark_pattern_dirty();
             state.plock_popup = None;
@@ -239,7 +265,10 @@ pub fn draw_plock_popup(
 
                     let inst = popup.instrument;
                     let step = popup.step;
-                    let fusions = pattern.load_fusions(inst);
+                    // [283] A linked lane shows the fused groups of the lane
+                    // it follows (shared), with its own morph.
+                    let grid = params.track_layout.state.grid_slot(inst);
+                    let fusions = pattern.load_lane_fusions(inst, grid);
                     let fusion_info = fusions.iter().enumerate().find(|(_, g)| {
                         (g.start_cell as usize) <= step && step <= (g.end_cell as usize)
                     });
@@ -248,34 +277,38 @@ pub fn draw_plock_popup(
                     // flipping the grid-wide "P-Lock Mode" first. Same two
                     // labels as that switch, so they read as the same choice;
                     // this one is local to the popup and leaves the grid alone.
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        ui.label(RichText::new("P-Lock").font(f_sans_med(10.0)).color(INK3()));
-                        let selected = if popup.sequencer { 1 } else { 0 };
-                        let picked = crate::ui::skeuo::segmented(
-                            ui,
-                            ("plock_popup_type", inst, step),
-                            &["Sound", "Sequencer"],
-                            selected,
-                        );
-                        if picked != selected {
-                            let sequencer = picked == 1;
-                            state.plock_popup =
-                                Some(crate::ui::editor_state::PlockPopup { sequencer, ..popup });
-                            // The Lane Editor follows: it edits sound p-locks and
-                            // has nothing to say about a sequencer one.
-                            if sequencer {
-                                state.sound_edit_target = None;
-                            } else {
-                                state.sound_edit_target =
-                                    Some(crate::ui::editor_state::SelectedCell {
-                                        slot: inst,
-                                        step,
-                                    });
-                                state.sound_editor_tab =
-                                    crate::ui::editor_state::SoundEditorTab::Sound;
+                    help::zone(ui, "step_menu_type", help::STEP_MENU_TYPE, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            ui.label(RichText::new("P-Lock").font(f_sans_med(10.0)).color(INK3()));
+                            let selected = if popup.sequencer { 1 } else { 0 };
+                            let picked = crate::ui::skeuo::segmented(
+                                ui,
+                                ("plock_popup_type", inst, step),
+                                &["Sound", "Sequencer"],
+                                selected,
+                            );
+                            if picked != selected {
+                                let sequencer = picked == 1;
+                                state.plock_popup = Some(crate::ui::editor_state::PlockPopup {
+                                    sequencer,
+                                    ..popup
+                                });
+                                // The Lane Editor follows: it edits sound p-locks and
+                                // has nothing to say about a sequencer one.
+                                if sequencer {
+                                    state.sound_edit_target = None;
+                                } else {
+                                    state.sound_edit_target =
+                                        Some(crate::ui::editor_state::SelectedCell {
+                                            slot: inst,
+                                            step,
+                                        });
+                                    state.sound_editor_tab =
+                                        crate::ui::editor_state::SoundEditorTab::Sound;
+                                }
                             }
-                        }
+                        })
                     });
                     ui.add_space(8.0);
 
@@ -285,7 +318,7 @@ pub fn draw_plock_popup(
                             // on top, the seq-plock menu below â€” same as
                             // the sound-plock branch.
                             draw_fusion_group_menu(
-                                ui, pattern, params, inst, idx, *group, step, state,
+                                ui, pattern, params, inst, grid, idx, *group, step, state,
                             );
                             ui.separator();
                             draw_sequencer_plock_menu(
@@ -315,7 +348,7 @@ pub fn draw_plock_popup(
                     } else {
                         if let Some((idx, group)) = fusion_info {
                             draw_fusion_group_menu(
-                                ui, pattern, params, inst, idx, *group, step, state,
+                                ui, pattern, params, inst, grid, idx, *group, step, state,
                             );
                             ui.separator();
 
@@ -424,16 +457,18 @@ fn draw_sequencer_plock_menu(
         let mut changed_this_frame = false;
 
         // Mode indicator
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Mode").font(f_sans_med(10.0)).color(INK3()));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mode_text = if has_seq_plock { "Active" } else { "Inactive" };
-                ui.label(
-                    RichText::new(mode_text)
-                        .font(f_mono_med(10.0))
-                        .color(ACCENT),
-                );
-            });
+        help::zone(ui, "seq_mode", help::SEQ_MODE, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Mode").font(f_sans_med(10.0)).color(INK3()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mode_text = if has_seq_plock { "Active" } else { "Inactive" };
+                    ui.label(
+                        RichText::new(mode_text)
+                            .font(f_mono_med(10.0))
+                            .color(ACCENT),
+                    );
+                });
+            })
         });
         ui.add_space(8.0);
 
@@ -444,8 +479,10 @@ fn draw_sequencer_plock_menu(
         // does not linger as an empty (paramless) seq-plock.
         {
             let solo_now = current.solo;
-            let solo_response = plock_menu_row(ui, "Solo", ACCENT, solo_now, None, |ui| {
-                ui.add(crate::ui::widgets::ToggleSwitch::new(solo_now))
+            let solo_response = help::zone(ui, "seq_solo", help::SEQ_SOLO, |ui| {
+                plock_menu_row(ui, "Solo", ACCENT, solo_now, None, |ui| {
+                    ui.add(crate::ui::widgets::ToggleSwitch::new(solo_now))
+                })
             });
             if solo_response.clicked() {
                 if solo_now {
@@ -471,21 +508,23 @@ fn draw_sequencer_plock_menu(
         {
             let mut prob = current.probability;
             let prob_text = format!("{:.0}%", prob * 100.0);
-            let prob_response = plock_menu_row(
-                ui,
-                "Probability",
-                ACCENT,
-                has_seq_plock,
-                Some(&prob_text),
-                |ui| {
-                    ui.add(
-                        LocalParamSlider::new(&mut prob, 0.0..=1.0)
-                            .with_width(86.0)
-                            .without_value()
-                            .reset_value(1.0),
-                    )
-                },
-            );
+            let prob_response = help::zone(ui, "seq_prob", help::SEQ_PROBABILITY, |ui| {
+                plock_menu_row(
+                    ui,
+                    "Probability",
+                    ACCENT,
+                    has_seq_plock,
+                    Some(&prob_text),
+                    |ui| {
+                        ui.add(
+                            LocalParamSlider::new(&mut prob, 0.0..=1.0)
+                                .with_width(86.0)
+                                .without_value()
+                                .reset_value(1.0),
+                        )
+                    },
+                )
+            });
             if prob_response.changed() {
                 seq_plock.set_probability(instrument, step, prob);
                 changed_this_frame = true;
@@ -499,32 +538,36 @@ fn draw_sequencer_plock_menu(
                 fixed.stutter_count = 1;
                 seq_plock.set(instrument, step, &fixed);
             }
-            plock_menu_row(ui, "Stutter", ACCENT, false, None, |ui| {
-                ui.label(
-                    RichText::new("disabled on fusion")
-                        .font(f_sans_med(10.0))
-                        .color(INK3()),
-                );
-                ui.allocate_response(Vec2::new(1.0, 1.0), egui::Sense::hover())
+            help::zone(ui, "seq_stutter", help::SEQ_STUTTER, |ui| {
+                plock_menu_row(ui, "Stutter", ACCENT, false, None, |ui| {
+                    ui.label(
+                        RichText::new("disabled on fusion")
+                            .font(f_sans_med(10.0))
+                            .color(INK3()),
+                    );
+                    ui.allocate_response(Vec2::new(1.0, 1.0), egui::Sense::hover())
+                })
             });
         } else {
             let mut stutter = current.stutter_count.max(1) as f32;
             let stutter_text = format!("{}x", stutter as i32);
-            let stutter_response = plock_menu_row(
-                ui,
-                "Stutter",
-                ACCENT,
-                has_seq_plock && current.stutter_count != 1,
-                Some(&stutter_text),
-                |ui| {
-                    ui.add(
-                        LocalParamSlider::new(&mut stutter, 1.0..=16.0)
-                            .with_width(86.0)
-                            .without_value()
-                            .reset_value(1.0),
-                    )
-                },
-            );
+            let stutter_response = help::zone(ui, "seq_stutter", help::SEQ_STUTTER, |ui| {
+                plock_menu_row(
+                    ui,
+                    "Stutter",
+                    ACCENT,
+                    has_seq_plock && current.stutter_count != 1,
+                    Some(&stutter_text),
+                    |ui| {
+                        ui.add(
+                            LocalParamSlider::new(&mut stutter, 1.0..=16.0)
+                                .with_width(86.0)
+                                .without_value()
+                                .reset_value(1.0),
+                        )
+                    },
+                )
+            });
             if stutter_response.changed() {
                 let new_stutter = stutter.round() as u8;
                 seq_plock.set_stutter(instrument, step, new_stutter);
@@ -541,21 +584,23 @@ fn draw_sequencer_plock_menu(
             } else {
                 format!("{:+.0} ms", nudge)
             };
-            let nudge_response = plock_menu_row(
-                ui,
-                "Nudge",
-                ACCENT,
-                has_seq_plock && current.microtiming_ms != 0.0,
-                Some(&nudge_text),
-                |ui| {
-                    ui.add(
-                        LocalParamSlider::new(&mut nudge, -100.0..=100.0)
-                            .with_width(86.0)
-                            .without_value()
-                            .reset_value(0.0),
-                    )
-                },
-            );
+            let nudge_response = help::zone(ui, "seq_nudge", help::SEQ_NUDGE, |ui| {
+                plock_menu_row(
+                    ui,
+                    "Nudge",
+                    ACCENT,
+                    has_seq_plock && current.microtiming_ms != 0.0,
+                    Some(&nudge_text),
+                    |ui| {
+                        ui.add(
+                            LocalParamSlider::new(&mut nudge, -100.0..=100.0)
+                                .with_width(86.0)
+                                .without_value()
+                                .reset_value(0.0),
+                        )
+                    },
+                )
+            });
             if nudge_response.changed() {
                 seq_plock.set_microtiming(instrument, step, nudge);
                 changed_this_frame = true;
@@ -565,7 +610,8 @@ fn draw_sequencer_plock_menu(
         // Condition
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Condition").font(f_sans_sb(10.0)).color(INK2()));
+            ui.label(RichText::new("Condition").font(f_sans_sb(10.0)).color(INK2()))
+                .help(help::SEQ_CONDITION);
             // [218] "Not" inverts whichever condition is selected: "3/4"
             // becomes "every loop except the 3rd of four". It replaces the old
             // "Not 1st loop" entry, which was this modifier hard-wired onto one
@@ -586,7 +632,8 @@ fn draw_sequencer_plock_menu(
                     seq_plock.set_condition_negate(instrument, step, !on);
                     changed_this_frame = true;
                 }
-                response.on_hover_text(
+                response.help_or(
+                    help::SEQ_NOT,
                     "Invert the whole condition: the step plays on every loop EXCEPT the ones it selects.",
                 );
 
@@ -609,7 +656,8 @@ fn draw_sequencer_plock_menu(
                     seq_plock.set_condition_and(instrument, step, next);
                     changed_this_frame = true;
                 }
-                and_response.on_hover_text(
+                and_response.help_or(
+                    help::SEQ_AND,
                     "Add a second condition: the step plays only on the loops where BOTH hold.",
                 );
             });
@@ -641,6 +689,7 @@ fn draw_sequencer_plock_menu(
                             .stroke(egui::Stroke::new(1.0, stroke_color))
                             .corner_radius(RADIUS_CTL),
                         )
+                        .help(help::SEQ_CONDITION)
                         .clicked()
                     {
                         seq_plock.set_condition(instrument, step, cond);
@@ -677,6 +726,7 @@ fn draw_sequencer_plock_menu(
                                 .stroke(egui::Stroke::new(1.0, stroke_color))
                                 .corner_radius(RADIUS_CTL),
                             )
+                            .help(help::SEQ_AND)
                             .clicked()
                         {
                             seq_plock.set_condition_and(instrument, step, Some(cond));
@@ -692,11 +742,17 @@ fn draw_sequencer_plock_menu(
         // Actions
         ui.add_space(8.0);
         if has_seq_plock || changed_this_frame {
-            if plock_menu_action_row(ui, "Clear Seq Plock", DANGER()).clicked() {
+            if plock_menu_action_row(ui, "Clear Seq Plock", DANGER())
+                .help(help::SEQ_CLEAR)
+                .clicked()
+            {
                 seq_plock.clear(instrument, step);
             }
         } else {
-            if plock_menu_action_row(ui, "Create Seq Plock", ACCENT).clicked() {
+            if plock_menu_action_row(ui, "Create Seq Plock", ACCENT)
+                .help(help::SEQ_CREATE)
+                .clicked()
+            {
                 seq_plock.set(instrument, step, &SequencerStepParams::default());
             }
         }

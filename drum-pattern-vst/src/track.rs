@@ -650,6 +650,14 @@ impl TrackLayoutState {
         }
     }
 
+    /// [283] Keep the global MIDI settings (channel, base note) of `current`
+    /// when this layout replaces it: a lane preset changes the lanes, not the
+    /// channel chosen in Settings.
+    pub fn keep_globals_of(&mut self, current: &TrackLayoutState) {
+        self.global_midi_channel = current.global_midi_channel;
+        self.global_base_note = current.global_base_note;
+    }
+
     /// Does this lane mirror the grid of the lane above ([191])?
     ///
     /// A link is **positional** - "I play the lane directly above me" - so this

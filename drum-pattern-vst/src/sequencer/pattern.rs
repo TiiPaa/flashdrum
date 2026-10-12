@@ -94,15 +94,56 @@ pub(crate) fn pack_fusion(group: &FusedGroup) -> [u64; FUSION_SLOT_COUNT] {
     [slot0, slot1, slot2]
 }
 
+/// [283] Marks a record of a lane's fusion list that is not a fused group but a
+/// LINKED lane's own morph: a linked lane plays the fused groups of the lane
+/// it follows, while its morph stays its own (morph targets are parameters of
+/// its instrument). Same layout as a group, valid bit (18) clear, so every
+/// reader of fused groups - older builds included - skips the record; bit 62
+/// is free in the packed layout (target[0].end_value ends at bit 61).
+const LINKED_MORPH_BIT: u64 = 1 << 62;
+
+/// Pack a linked lane's own morph for the fused group spanning
+/// `start_cell..=end_cell` of the lane it follows (see [`LINKED_MORPH_BIT`]).
+pub(crate) fn pack_linked_morph(morph: &FusedGroup) -> [u64; FUSION_SLOT_COUNT] {
+    let mut slots = pack_fusion(morph);
+    slots[0] = (slots[0] & !(1u64 << 18)) | LINKED_MORPH_BIT;
+    slots
+}
+
+/// [283] `group` with the morph a linked lane keeps for its cells (`morphs`
+/// from [`SharedPattern::load_linked_morphs`]); no morph when it keeps none.
+pub fn with_linked_morph(group: FusedGroup, morphs: &[FusedGroup]) -> FusedGroup {
+    let morph = morphs.iter().find(|morph| morph.same_cells(&group));
+    FusedGroup {
+        morph_count: morph.map_or(0, |morph| morph.morph_count),
+        morph_targets: morph.map_or([MorphTarget::default(); MAX_MORPH_TARGETS], |morph| {
+            morph.morph_targets
+        }),
+        ..group
+    }
+}
+
 /// Unpack 3 u64s into an Option<FusedGroup>.
 /// Only understands the current (fixed) layout; old pattern-v3 fusion data is
 /// migrated at the state level in `lib.rs::filter_state`.
 pub(crate) fn unpack_fusion(slots: [u64; FUSION_SLOT_COUNT]) -> Option<FusedGroup> {
-    let slot0 = slots[0];
-    if (slot0 >> 18) & 1 == 0 {
+    if (slots[0] >> 18) & 1 == 0 {
         return None;
     }
+    unpack_group(slots)
+}
 
+/// Unpack a linked lane's own morph record (see [`LINKED_MORPH_BIT`]); `None`
+/// for a fused group, an empty record, or a morph without targets.
+pub(crate) fn unpack_linked_morph(slots: [u64; FUSION_SLOT_COUNT]) -> Option<FusedGroup> {
+    if (slots[0] >> 18) & 1 == 1 || slots[0] & LINKED_MORPH_BIT == 0 {
+        return None;
+    }
+    unpack_group(slots).filter(FusedGroup::morph_active)
+}
+
+fn unpack_group(slots: [u64; FUSION_SLOT_COUNT]) -> Option<FusedGroup> {
+    let slot0 = slots[0];
     let s2 = slots[2];
     let mut targets = [MorphTarget::default(); 4];
     let count = ((slot0 >> 19) & 0x7) as usize;
@@ -341,6 +382,11 @@ impl FusedGroup {
 
     pub fn morph_active(&self) -> bool {
         self.morph_count > 0
+    }
+
+    /// [283] Same cells (start and end) as `other`.
+    pub fn same_cells(&self, other: &FusedGroup) -> bool {
+        self.start_cell == other.start_cell && self.end_cell == other.end_cell
     }
 
     /// Returns true if the given field index is already a morph target.
@@ -827,26 +873,39 @@ impl SharedPattern {
         shared
     }
 
-    /// Load fused groups for an instrument.
-    pub fn load_fusions(&self, instrument: usize) -> Vec<FusedGroup> {
+    /// Raw record `i` of an instrument's fusion list (after its count word).
+    fn fusion_record(&self, base: usize, i: usize) -> [u64; FUSION_SLOT_COUNT] {
+        let slot_base = base + (1 + i) * FUSION_SLOT_COUNT;
+        [
+            self.fusions[slot_base].load(Ordering::Relaxed),
+            self.fusions[slot_base + 1].load(Ordering::Relaxed),
+            self.fusions[slot_base + 2].load(Ordering::Relaxed),
+        ]
+    }
+
+    /// Visit the records of an instrument's list that `unpack` accepts. RT-safe.
+    fn for_each_record(
+        &self,
+        instrument: usize,
+        unpack: fn([u64; FUSION_SLOT_COUNT]) -> Option<FusedGroup>,
+        mut f: impl FnMut(FusedGroup),
+    ) {
         if instrument >= INSTRUMENT_COUNT {
-            return Vec::new();
+            return;
         }
         let base = instrument * MAX_FUSIONS * FUSION_SLOT_COUNT;
-        let count_packed = self.fusions[base].load(Ordering::Relaxed);
-        let count = (count_packed & 0xFF) as usize;
-        let mut groups = Vec::with_capacity(count.min(MAX_FUSIONS - 1));
+        let count = (self.fusions[base].load(Ordering::Relaxed) & 0xFF) as usize;
         for i in 0..count.min(MAX_FUSIONS - 1) {
-            let slot_base = base + (1 + i) * FUSION_SLOT_COUNT;
-            let slots = [
-                self.fusions[slot_base].load(Ordering::Relaxed),
-                self.fusions[slot_base + 1].load(Ordering::Relaxed),
-                self.fusions[slot_base + 2].load(Ordering::Relaxed),
-            ];
-            if let Some(group) = unpack_fusion(slots) {
-                groups.push(group);
+            if let Some(group) = unpack(self.fusion_record(base, i)) {
+                f(group);
             }
         }
+    }
+
+    /// Load fused groups for an instrument.
+    pub fn load_fusions(&self, instrument: usize) -> Vec<FusedGroup> {
+        let mut groups = Vec::new();
+        self.for_each_record(instrument, unpack_fusion, |group| groups.push(group));
         groups
     }
 
@@ -857,44 +916,79 @@ impl SharedPattern {
         instrument: usize,
         out: &mut [FusedGroup; MAX_FUSIONS],
     ) -> usize {
-        if instrument >= INSTRUMENT_COUNT {
-            return 0;
-        }
-        let base = instrument * MAX_FUSIONS * FUSION_SLOT_COUNT;
-        let count_packed = self.fusions[base].load(Ordering::Relaxed);
-        let count = (count_packed & 0xFF) as usize;
         let mut written = 0usize;
-        for i in 0..count.min(MAX_FUSIONS - 1) {
-            let slot_base = base + (1 + i) * FUSION_SLOT_COUNT;
-            let slots = [
-                self.fusions[slot_base].load(Ordering::Relaxed),
-                self.fusions[slot_base + 1].load(Ordering::Relaxed),
-                self.fusions[slot_base + 2].load(Ordering::Relaxed),
-            ];
-            if let Some(group) = unpack_fusion(slots) {
-                if written < out.len() {
-                    out[written] = group;
-                    written += 1;
-                }
+        self.for_each_record(instrument, unpack_fusion, |group| {
+            if written < out.len() {
+                out[written] = group;
+                written += 1;
             }
-        }
+        });
         written
     }
 
-    /// Store fused groups for an instrument.
+    /// [283] The morphs a LINKED lane keeps for the fused groups of the lane it
+    /// follows, one per group it morphs (cells = that group's cells).
+    pub fn load_linked_morphs(&self, instrument: usize) -> Vec<FusedGroup> {
+        let mut morphs = Vec::new();
+        self.for_each_record(instrument, unpack_linked_morph, |morph| morphs.push(morph));
+        morphs
+    }
+
+    /// [`Self::load_linked_morphs`] into a fixed buffer (audio thread).
+    pub fn load_linked_morphs_into(
+        &self,
+        instrument: usize,
+        out: &mut [FusedGroup; MAX_FUSIONS],
+    ) -> usize {
+        let mut written = 0usize;
+        self.for_each_record(instrument, unpack_linked_morph, |morph| {
+            if written < out.len() {
+                out[written] = morph;
+                written += 1;
+            }
+        });
+        written
+    }
+
+    /// Store fused groups for an instrument. Its linked-lane morphs are kept.
     pub fn store_fusions(&self, instrument: usize, groups: &[FusedGroup]) {
+        let mut morphs = [FusedGroup::default(); MAX_FUSIONS];
+        let n = self.load_linked_morphs_into(instrument, &mut morphs);
+        self.store_fusions_and_morphs(instrument, groups, &morphs[..n]);
+    }
+
+    /// [283] Store a linked lane's own morphs. Its fused groups are kept.
+    pub fn store_linked_morphs(&self, instrument: usize, morphs: &[FusedGroup]) {
+        let mut groups = [FusedGroup::default(); MAX_FUSIONS];
+        let n = self.load_fusions_into(instrument, &mut groups);
+        self.store_fusions_and_morphs(instrument, &groups[..n], morphs);
+    }
+
+    /// Store an instrument's whole fusion list: its fused groups, then its
+    /// linked-lane morphs, within the list's capacity (groups first). RT-safe.
+    pub fn store_fusions_and_morphs(
+        &self,
+        instrument: usize,
+        groups: &[FusedGroup],
+        morphs: &[FusedGroup],
+    ) {
         if instrument >= INSTRUMENT_COUNT {
             return;
         }
         let base = instrument * MAX_FUSIONS * FUSION_SLOT_COUNT;
-        let mut count = 0usize;
-        for group in groups
+        let records = groups
             .iter()
-            .copied()
-            .filter(FusedGroup::is_valid)
-            .take(MAX_FUSIONS - 1)
-        {
-            let packed = pack_fusion(&group);
+            .filter(|group| group.is_valid())
+            .map(pack_fusion)
+            .chain(
+                morphs
+                    .iter()
+                    .filter(|morph| morph.is_valid() && morph.morph_active())
+                    .map(pack_linked_morph),
+            )
+            .take(MAX_FUSIONS - 1);
+        let mut count = 0usize;
+        for packed in records {
             let slot_base = base + (1 + count) * FUSION_SLOT_COUNT;
             for (slot, &value) in packed.iter().enumerate() {
                 self.fusions[slot_base + slot].store(value, Ordering::Relaxed);
@@ -910,6 +1004,73 @@ impl SharedPattern {
         }
         // Update count
         self.fusions[base].store((count as u64) | (1u64 << 24), Ordering::Relaxed);
+    }
+
+    /// [283] The fused groups lane `slot` plays: those of `grid`, the lane its
+    /// link chain follows (itself when unlinked), each with `slot`'s morph -
+    /// for a linked lane its own, none until it creates one.
+    pub fn load_lane_fusions(&self, slot: usize, grid: usize) -> Vec<FusedGroup> {
+        let mut groups = self.load_fusions(grid);
+        if slot != grid {
+            let morphs = self.load_linked_morphs(slot);
+            for group in &mut groups {
+                *group = with_linked_morph(*group, &morphs);
+            }
+        }
+        groups
+    }
+
+    /// [283] Publish group `index` of [`Self::load_lane_fusions`]. The lane
+    /// owning the groups stores it whole; a linked lane only its morph (cells
+    /// and pulses belong to the lane it follows).
+    pub fn store_lane_fusion(&self, slot: usize, grid: usize, index: usize, group: FusedGroup) {
+        let mut groups = self.load_fusions(grid);
+        let Some(shared) = groups.get_mut(index) else {
+            return;
+        };
+        if slot == grid {
+            *shared = group;
+            self.store_fusions(grid, &groups);
+            return;
+        }
+        let mut morphs = self.load_linked_morphs(slot);
+        morphs.retain(|morph| !morph.same_cells(shared));
+        if group.morph_active() {
+            morphs.push(with_linked_morph(*shared, &[group]));
+        }
+        self.store_linked_morphs(slot, &morphs);
+    }
+
+    /// [283] Drop the linked-lane morphs that no longer match a fused group of
+    /// the lane they follow (group deleted or moved, lane unlinked), so a group
+    /// later made on the same cells starts without a morph. `grid_of(slot)` is
+    /// the lane `slot` follows, itself when unlinked.
+    pub fn retain_linked_morphs(&self, grid_of: impl Fn(usize) -> usize) {
+        for slot in 0..INSTRUMENT_COUNT {
+            let mut morphs = [FusedGroup::default(); MAX_FUSIONS];
+            let n = self.load_linked_morphs_into(slot, &mut morphs);
+            if n == 0 {
+                continue;
+            }
+            let grid = grid_of(slot);
+            let mut groups = [FusedGroup::default(); MAX_FUSIONS];
+            let g = if grid == slot {
+                0
+            } else {
+                self.load_fusions_into(grid, &mut groups)
+            };
+            let mut kept = [FusedGroup::default(); MAX_FUSIONS];
+            let mut k = 0usize;
+            for morph in &morphs[..n] {
+                if groups[..g].iter().any(|group| group.same_cells(morph)) {
+                    kept[k] = *morph;
+                    k += 1;
+                }
+            }
+            if k != n {
+                self.store_linked_morphs(slot, &kept[..k]);
+            }
+        }
     }
 
     pub fn load_step_mask(&self, step: usize) -> u16 {
@@ -1115,6 +1276,97 @@ mod tests {
         let loaded = pattern.load_fusions(4);
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0], group);
+    }
+
+    fn morph(field: u8, end_value: f32) -> [MorphTarget; MAX_MORPH_TARGETS] {
+        let mut targets = [MorphTarget::default(); MAX_MORPH_TARGETS];
+        targets[0] = MorphTarget {
+            field,
+            end_value,
+            direction: MorphDirection::Target,
+        };
+        targets
+    }
+
+    /// [283] A linked lane's own morphs live in its fusion list next to its
+    /// own (hidden) groups without being read as groups, survive a store of
+    /// those groups, and ride on the groups of the lane it follows.
+    #[test]
+    fn linked_morphs_are_kept_apart_from_fused_groups() {
+        let pattern = SharedPattern::new(&Pattern::empty());
+        let shared = FusedGroup {
+            start_cell: 4,
+            end_cell: 7,
+            step_count: 4,
+            morph_count: 1,
+            morph_targets: morph(0, 300.0),
+        };
+        let hidden = FusedGroup {
+            start_cell: 8,
+            end_cell: 9,
+            step_count: 2,
+            ..Default::default()
+        };
+        pattern.store_fusions(0, &[shared]);
+        pattern.store_fusions(1, &[hidden]);
+        assert!(
+            pattern.load_lane_fusions(1, 0)[0].morph_count == 0,
+            "no morph until created"
+        );
+
+        let own = FusedGroup {
+            morph_count: 1,
+            morph_targets: morph(2, 0.5),
+            ..shared
+        };
+        pattern.store_lane_fusion(1, 0, 0, own);
+        assert_eq!(
+            pattern.load_fusions(0),
+            vec![shared],
+            "the followed lane keeps its morph"
+        );
+        assert_eq!(
+            pattern.load_fusions(1),
+            vec![hidden],
+            "a morph is not a group"
+        );
+        assert_eq!(pattern.load_lane_fusions(1, 0), vec![own]);
+
+        pattern.store_fusions(1, &[]);
+        assert_eq!(
+            pattern.load_linked_morphs(1).len(),
+            1,
+            "storing groups keeps morphs"
+        );
+
+        pattern.retain_linked_morphs(|slot| if slot == 1 { 0 } else { slot });
+        assert_eq!(
+            pattern.load_linked_morphs(1).len(),
+            1,
+            "its group still exists"
+        );
+        pattern.store_fusions(0, &[]);
+        pattern.retain_linked_morphs(|slot| if slot == 1 { 0 } else { slot });
+        assert!(
+            pattern.load_linked_morphs(1).is_empty(),
+            "its group is gone"
+        );
+    }
+
+    /// [283] Older readers skip a linked-lane morph record: valid bit clear.
+    #[test]
+    fn linked_morph_record_is_not_a_fused_group() {
+        let own = FusedGroup {
+            start_cell: 0,
+            end_cell: 3,
+            step_count: 2,
+            morph_count: 1,
+            morph_targets: morph(1, 0.25),
+        };
+        let packed = pack_linked_morph(&own);
+        assert_eq!(unpack_fusion(packed), None);
+        assert_eq!(unpack_linked_morph(packed), Some(own));
+        assert_eq!(unpack_linked_morph(pack_fusion(&own)), None);
     }
 
     #[test]

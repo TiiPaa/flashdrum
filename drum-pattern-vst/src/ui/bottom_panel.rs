@@ -9,7 +9,7 @@ use crate::ui::controls::{
 };
 use crate::ui::editor_state::EditorUIState;
 use crate::ui::header::header_param_slider;
-use crate::ui::help;
+use crate::ui::help::{self, HelpExt};
 use crate::ui::pattern_bank::load_pattern_for_ui_with_length;
 use crate::ui::song::draw_song_editor;
 use crate::ui::theme::*;
@@ -69,7 +69,9 @@ pub fn draw_bottom_panel(
             // Generator | Song segmented tabs: view only, no longer toggle song mode.
             ui.set_clip_rect(header_rect);
             ui.spacing_mut().item_spacing.x = 0.0;
-            let new_selected = generator_song_segmented(ui, selected);
+            let new_selected = help::zone(ui, "bottom_tabs", help::BOTTOM_TABS, |ui| {
+                generator_song_segmented(ui, selected)
+            });
             if new_selected != selected {
                 state.bottom_panel_tab = new_selected;
             }
@@ -134,7 +136,7 @@ fn draw_generator_panel_content(
     ui.vertical(|ui| {
         ui.add_space(6.0);
         ui.spacing_mut().item_spacing.y = 12.0;
-        draw_generator_bar(ui, setter, params, pattern, state);
+        draw_generator_bar(ui, setter, params, pattern);
         draw_preset_bar(ui, pattern, params, setter, state);
     });
 }
@@ -151,26 +153,32 @@ fn draw_preset_bar(
         ui.set_height(CTL_HEIGHT);
         genrow_label(ui, "Presets", 62.0);
         let pattern_length = params.pattern_length.value() as usize;
-        if compact_chip(ui, "Rock", false).clicked() {
+        if compact_chip(ui, "Rock", false)
+            .help(help::PRESET_CHIPS_BASIC)
+            .clicked()
+        {
             params.plock_state.state.clear_all();
             params.seq_plock_state.state.clear_all();
             crate::ui::grid::clear_all_fusions(pattern);
             load_pattern_for_ui_with_length(pattern, &Pattern::rock_pattern(), pattern_length);
-            state.last_loaded_slot = None;
         }
-        if compact_chip(ui, "Funk", false).clicked() {
+        if compact_chip(ui, "Funk", false)
+            .help(help::PRESET_CHIPS_BASIC)
+            .clicked()
+        {
             params.plock_state.state.clear_all();
             params.seq_plock_state.state.clear_all();
             crate::ui::grid::clear_all_fusions(pattern);
             load_pattern_for_ui_with_length(pattern, &Pattern::funk_pattern(), pattern_length);
-            state.last_loaded_slot = None;
         }
-        if compact_chip(ui, "Disco", false).clicked() {
+        if compact_chip(ui, "Disco", false)
+            .help(help::PRESET_CHIPS_BASIC)
+            .clicked()
+        {
             params.plock_state.state.clear_all();
             params.seq_plock_state.state.clear_all();
             crate::ui::grid::clear_all_fusions(pattern);
             load_pattern_for_ui_with_length(pattern, &Pattern::disco_pattern(), pattern_length);
-            state.last_loaded_slot = None;
         }
         // Style presets: install the matching kit (lanes) + load the fixed groove.
         use TrackInstrumentKind as K;
@@ -207,7 +215,10 @@ fn draw_preset_bar(
             ),
         ];
         for (label, kinds, make) in style_presets {
-            if compact_chip(ui, label, false).clicked() {
+            if compact_chip(ui, label, false)
+                .help(help::PRESET_CHIPS_KIT)
+                .clicked()
+            {
                 apply_style_preset(
                     params,
                     setter,
@@ -220,12 +231,14 @@ fn draw_preset_bar(
             }
         }
         ui.add_space(8.0);
-        if chip_button(ui, "⟳ Random", true, AMBER(), egui::Sense::click()).clicked() {
+        if chip_button(ui, "⟳ Random", true, AMBER(), egui::Sense::click())
+            .help(help::PRESET_RANDOM)
+            .clicked()
+        {
             params.plock_state.state.clear_all();
             params.seq_plock_state.state.clear_all();
             crate::ui::grid::clear_all_fusions(pattern);
             load_pattern_for_ui_with_length(pattern, &Pattern::random_pattern(), pattern_length);
-            state.last_loaded_slot = None;
         }
     });
 }
@@ -243,7 +256,10 @@ fn apply_style_preset(
     groove: Pattern,
     pattern_length: usize,
 ) {
-    let layout = TrackLayoutState::from_kinds(kinds);
+    let mut layout = TrackLayoutState::from_kinds(kinds);
+    // [283] The kit replaces the lanes, not the MIDI channel set in Settings.
+    let current = PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());
+    layout.keep_globals_of(&current);
     PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
     // The layout replaced the lanes: no mute/solo may survive on a lane that
     // changed instrument or disappeared.
@@ -260,7 +276,27 @@ fn apply_style_preset(
     crate::ui::grid::clear_all_fusions(pattern);
     load_pattern_for_ui_with_length(pattern, &groove, pattern_length);
     state.selected_instrument = 0;
-    state.last_loaded_slot = None;
+}
+
+/// [283] A generator control only the Probabilistic type reads: greyed with
+/// the other types, saying why (help mode shows its full text instead).
+fn probabilistic_only(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    help_text: &str,
+    enabled: bool,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let rect = ui.add_enabled_ui(enabled, add).response.rect;
+    help::rect(ui, rect, id_salt, help_text);
+    if !enabled && !help::is_on(ui.ctx()) {
+        ui.interact(
+            rect,
+            ui.id().with(("gen_unused", id_salt)),
+            egui::Sense::hover(),
+        )
+        .on_hover_text_at_pointer(help::GEN_PROBABILISTIC_ONLY);
+    }
 }
 
 fn draw_generator_bar(
@@ -268,10 +304,10 @@ fn draw_generator_bar(
     setter: &ParamSetter,
     params: &DrumFlashParams,
     pattern: &SharedPattern,
-    state: &mut EditorUIState,
 ) {
     const GEN_TYPE_W: f32 = 116.0;
-    const STYLE_W: f32 = 70.0;
+    // Fits the longest style name ("Drum'n'Bass") next to the caret.
+    const STYLE_W: f32 = 104.0;
     const GEN_BTN_W: f32 = 104.0;
 
     // Two rows: (1) Type · style A → Mix → B   (2) Density · Variation · GENERATE.
@@ -293,12 +329,14 @@ fn draw_generator_bar(
                 ui.add_space(5.0);
                 enum_combo_compact(ui, setter, &params.style_primary, "style_a", STYLE_W);
             });
+            // [283] Only Probabilistic blends A with B: greyed for the others.
+            let blends = params.generator_type.value() == GeneratorType::Probabilistic;
             ui.add_space(14.0);
-            help::zone(ui, "style_mix", help::GEN_MIX, |ui| {
+            probabilistic_only(ui, "style_mix", help::GEN_MIX, blends, |ui| {
                 header_param_slider(ui, setter, &params.style_mix, 110.0, "Mix A/B", false);
             });
             ui.add_space(14.0);
-            help::zone(ui, "style_b", help::GEN_STYLE_B, |ui| {
+            probabilistic_only(ui, "style_b", help::GEN_STYLE_B, blends, |ui| {
                 genrow_label(ui, "B", 12.0);
                 ui.add_space(5.0);
                 enum_combo_compact(ui, setter, &params.style_secondary, "style_b", STYLE_W);
@@ -349,8 +387,10 @@ fn draw_generator_bar(
                     generator::generate(&gen_params, params.track_layout.state.as_ref());
                 let pattern_length = params.pattern_length.value() as usize;
                 crate::ui::grid::clear_all_fusions(pattern);
+                // [283] The grid stays on the slot it was loaded from (P3*):
+                // a generated pattern is an edit of that slot, like any other
+                // (user decision; MIDI Pat saves it there before switching).
                 load_pattern_for_ui_with_length(pattern, &generated, pattern_length);
-                state.last_loaded_slot = None;
             }
         });
     });

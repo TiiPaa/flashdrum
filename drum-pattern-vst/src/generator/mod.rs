@@ -641,4 +641,72 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn density_spans_from_sparse_to_busy_in_every_type() {
+        // [283] Density used to barely move the hit count (+20 % across the
+        // slider), ran backwards in Euclidean and did nothing in Classic at
+        // Variation 0, and its first fix froze density 0 on the anchors alone.
+        let layout = layout_from_kinds(&[
+            TrackInstrumentKind::Kick,
+            TrackInstrumentKind::Snare,
+            TrackInstrumentKind::HiHat,
+            TrackInstrumentKind::OpenHiHat,
+            TrackInstrumentKind::Tom,
+            TrackInstrumentKind::Clap,
+            TrackInstrumentKind::Ride,
+        ]);
+        let mean_hits = |generator_type, density| {
+            let mut total = 0;
+            for seed in 0..40u64 {
+                let params = GeneratorParams {
+                    generator_type,
+                    style_primary: Style::Rock,
+                    style_secondary: Style::Rock,
+                    style_mix: 0.0,
+                    density,
+                    variation: 0.0,
+                    seed: seed * 7919 + 1,
+                };
+                let pattern = generate(&params, layout.as_ref());
+                total += pattern
+                    .steps
+                    .iter()
+                    .map(|s| s.instruments.iter().filter(|&&on| on).count())
+                    .sum::<usize>();
+            }
+            total as f32 / 40.0
+        };
+        for generator_type in [
+            GeneratorType::Probabilistic,
+            GeneratorType::Markov,
+            GeneratorType::Euclidean,
+            GeneratorType::Classic,
+        ] {
+            // Sparse is not frozen: two GENERATE clicks still differ.
+            let at_min = |seed| {
+                let params = GeneratorParams {
+                    generator_type,
+                    style_primary: Style::Rock,
+                    style_secondary: Style::Rock,
+                    style_mix: 0.0,
+                    density: 0.0,
+                    variation: 0.0,
+                    seed,
+                };
+                generate(&params, layout.as_ref())
+            };
+            assert!(
+                !steps_equal(&at_min(1).steps, &at_min(2).steps),
+                "{generator_type:?}: density 0 gives the same pattern on every click"
+            );
+            let sparse = mean_hits(generator_type, 0.0);
+            let middle = mean_hits(generator_type, 0.5);
+            let busy = mean_hits(generator_type, 1.0);
+            assert!(
+                sparse < middle && middle < busy && busy > 1.6 * sparse,
+                "{generator_type:?}: {sparse} / {middle} / {busy} hits at density 0 / 0.5 / 1"
+            );
+        }
+    }
 }

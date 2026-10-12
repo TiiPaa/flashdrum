@@ -1753,6 +1753,31 @@ impl MusicalTemplate {
     }
 }
 
+/// Default of the Density slider (`gen_density`).
+pub const DEFAULT_DENSITY: f32 = 0.7;
+
+/// [283] Density → multiplier of a role's candidate odds: 0 keeps a few
+/// candidates (sparse, but each GENERATE still differs), the 0.7 default keeps
+/// the former feel, 1 makes the candidates about three times likelier.
+pub fn density_gain(density: f32) -> f32 {
+    const DEFAULT: f32 = DEFAULT_DENSITY;
+    const GAIN_AT_DEFAULT: f32 = 0.79; // former 0.3 + 0.7 × density, at 0.7
+    const GAIN_MIN: f32 = 0.35;
+    const GAIN_MAX: f32 = 3.0;
+    let d = density.clamp(0.0, 1.0);
+    if d <= DEFAULT {
+        GAIN_MIN + (GAIN_AT_DEFAULT - GAIN_MIN) * d / DEFAULT
+    } else {
+        GAIN_AT_DEFAULT + (GAIN_MAX - GAIN_AT_DEFAULT) * (d - DEFAULT) / (1.0 - DEFAULT)
+    }
+}
+
+/// Odds that a candidate step plays at this density (capped so a busy pattern
+/// still breathes).
+pub fn candidate_odds(candidate_prob: f32, density: f32) -> f32 {
+    (candidate_prob * density_gain(density)).min(0.9)
+}
+
 /// Generate a pattern from a musical template with density control.
 /// Uses a two-pass approach: anchors first, then candidates with musical rules.
 pub fn generate_from_template(
@@ -1780,7 +1805,7 @@ pub fn generate_from_template(
 
         // Pass 2: candidates with probability scaled by density
         for &step in role.candidates {
-            let prob = role.candidate_prob * (0.3 + 0.7 * d);
+            let prob = candidate_odds(role.candidate_prob, d);
             if rng() < prob {
                 pattern.steps[step].instruments[inst] = true;
             }

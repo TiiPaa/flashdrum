@@ -257,17 +257,30 @@ impl PatternSlot {
         }
 
         // Serialize fused groups — clear pre-allocated buffer (no new allocation).
+        // [283] A linked lane's own morphs follow its groups, as in the live list.
         self.fusion_bytes.clear();
         for inst in 0..INSTRUMENT_COUNT {
             let mut groups = [FusedGroup::default(); MAX_FUSIONS];
             let group_count = pattern.load_fusions_into(inst, &mut groups);
+            let mut morphs = [FusedGroup::default(); MAX_FUSIONS];
+            let morph_count = pattern
+                .load_linked_morphs_into(inst, &mut morphs)
+                .min(MAX_FUSIONS - 1 - group_count.min(MAX_FUSIONS - 1));
             let mut written = 0usize;
             // Count slot
-            self.fusion_bytes
-                .extend_from_slice(&((group_count as u64) | (1u64 << 24)).to_le_bytes());
+            self.fusion_bytes.extend_from_slice(
+                &(((group_count + morph_count) as u64) | (1u64 << 24)).to_le_bytes(),
+            );
             written += 1;
-            for group in groups[..group_count].iter().copied() {
-                let packed = crate::sequencer::pattern::pack_fusion(&group);
+            let records = groups[..group_count]
+                .iter()
+                .map(crate::sequencer::pattern::pack_fusion)
+                .chain(
+                    morphs[..morph_count]
+                        .iter()
+                        .map(crate::sequencer::pattern::pack_linked_morph),
+                );
+            for packed in records {
                 for slot in &packed {
                     self.fusion_bytes.extend_from_slice(&slot.to_le_bytes());
                 }
@@ -445,7 +458,8 @@ impl PatternSlot {
                         self.plock_bytes[offset + 7],
                     ]);
                     offset += 8;
-                    plock_state.field_masks.set(inst, step, mask as usize);
+                    // set_raw: `set` takes a field INDEX (see restore_from_buffers).
+                    plock_state.field_masks.set_raw(inst, step, mask);
                 }
             }
         }
@@ -830,6 +844,19 @@ pub fn restore_from_buffers(
 }
 
 fn deserialize_fusions(fusion_bytes: &[u8], pattern: &crate::sequencer::pattern::SharedPattern) {
+    decode_fusions(fusion_bytes, |inst, groups, morphs| {
+        pattern.store_fusions_and_morphs(inst, groups, morphs)
+    });
+}
+
+/// Decode a fusion blob (current or legacy format) lane by lane into `sink`:
+/// the lane's fused groups, then its linked-lane morphs ([283]; none in the
+/// legacy format). Returns false when the blob is in neither format (nothing
+/// decoded).
+fn decode_fusions(
+    fusion_bytes: &[u8],
+    mut sink: impl FnMut(usize, &[FusedGroup], &[FusedGroup]),
+) -> bool {
     // Actual serialized size of the current format, per instrument: one bare
     // count u64 (8 B) followed by (MAX_FUSIONS - 1) group slots of
     // FUSION_SLOT_COUNT u64 each — matching `PatternSlot::capture`. (The count is
@@ -856,6 +883,8 @@ fn deserialize_fusions(fusion_bytes: &[u8], pattern: &crate::sequencer::pattern:
             let count = (count_packed & 0xFF) as usize;
             let mut groups = [FusedGroup::default(); MAX_FUSIONS - 1];
             let mut group_count = 0usize;
+            let mut morphs = [FusedGroup::default(); MAX_FUSIONS - 1];
+            let mut morph_count = 0usize;
             for _ in 0..count.min(MAX_FUSIONS - 1) {
                 let slots = [
                     u64::from_le_bytes([
@@ -893,10 +922,13 @@ fn deserialize_fusions(fusion_bytes: &[u8], pattern: &crate::sequencer::pattern:
                 if let Some(group) = crate::sequencer::pattern::unpack_fusion(slots) {
                     groups[group_count] = group;
                     group_count += 1;
+                } else if let Some(morph) = crate::sequencer::pattern::unpack_linked_morph(slots) {
+                    morphs[morph_count] = morph;
+                    morph_count += 1;
                 }
             }
             offset += (MAX_FUSIONS - 1 - count.min(MAX_FUSIONS - 1)) * FUSION_SLOT_COUNT * 8;
-            pattern.store_fusions(inst, &groups[..group_count]);
+            sink(inst, &groups[..group_count], &morphs[..morph_count]);
         }
     } else if fusion_bytes.len() >= expected_old {
         // Legacy single-u64 format: migrate to multi-target on load.
@@ -934,8 +966,150 @@ fn deserialize_fusions(fusion_bytes: &[u8], pattern: &crate::sequencer::pattern:
                 }
             }
             offset += (MAX_FUSIONS - 1 - count.min(MAX_FUSIONS - 1)) * 8;
-            pattern.store_fusions(inst, &groups[..group_count]);
+            sink(inst, &groups[..group_count], &[]);
         }
+    } else {
+        return false;
+    }
+    true
+}
+
+fn le_u64(bytes: &[u8], offset: usize) -> u64 {
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&bytes[offset..offset + 8]);
+    u64::from_le_bytes(b)
+}
+
+fn le_u32(bytes: &[u8], offset: usize) -> u32 {
+    let mut b = [0u8; 4];
+    b.copy_from_slice(&bytes[offset..offset + 4]);
+    u32::from_le_bytes(b)
+}
+
+impl PatternSlot {
+    /// [283] Whether the live grid holds exactly what this slot would load:
+    /// steps, length, fusions, sound p-locks and sequencer p-locks. Only what
+    /// plays is compared (the locked fields of the active cells), so values
+    /// left behind in unlocked cells never count as a change. Reads the blobs
+    /// with the layouts of [`restore_from_buffers`], legacy ones included, and
+    /// allocates nothing (it runs every editor frame for the `P1*` marker).
+    pub fn matches_live(
+        &self,
+        pattern: &crate::sequencer::pattern::SharedPattern,
+        plock_state: &crate::plock::PlockState,
+        seq_plock_state: &crate::plock::SequencerPlockState,
+        pattern_length: u8,
+    ) -> bool {
+        use crate::plock::{FIELD_COUNT, STEP_COUNT};
+        use std::sync::atomic::Ordering;
+
+        if self.pattern_length != pattern_length || self.step_masks != pattern.step_masks() {
+            return false;
+        }
+
+        // Sound p-locks. A blob without p-lock data loads none.
+        let cells = INSTRUMENT_COUNT * STEP_COUNT;
+        let tail = INSTRUMENT_COUNT * 8 + cells * 8;
+        let field_count = if self.plock_bytes.len() >= cells * FIELD_COUNT * 4 + tail {
+            Some(FIELD_COUNT)
+        } else if self.plock_bytes.len() >= cells * LEGACY_PLOCK_FIELD_COUNT * 4 + tail {
+            Some(LEGACY_PLOCK_FIELD_COUNT)
+        } else {
+            None
+        };
+        let bytes = &self.plock_bytes;
+        for inst in 0..INSTRUMENT_COUNT {
+            let live_mask = plock_state.masks.masks[inst].load(Ordering::Relaxed);
+            let Some(fc) = field_count else {
+                if live_mask != 0 {
+                    return false;
+                }
+                continue;
+            };
+            let masks_at = cells * fc * 4;
+            if le_u64(bytes, masks_at + inst * 8) != live_mask {
+                return false;
+            }
+            for step in 0..STEP_COUNT {
+                if live_mask & (1u64 << step) == 0 {
+                    continue;
+                }
+                let cell = inst * STEP_COUNT + step;
+                let field_mask = le_u64(bytes, masks_at + INSTRUMENT_COUNT * 8 + cell * 8);
+                if field_mask != plock_state.field_masks.get_raw(inst, step) {
+                    return false;
+                }
+                for field in 0..fc {
+                    // An empty field mask is a full snapshot: every field plays.
+                    if field_mask != 0 && field_mask & (1u64 << field) == 0 {
+                        continue;
+                    }
+                    let saved = le_u32(bytes, (cell * fc + field) * 4);
+                    if saved != plock_state.values.get(inst, step, field).to_bits() {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // Sequencer p-locks: 4 values per cell, active masks, then the
+        // optional step-solo masks. A blob too short for them loads none.
+        let bytes = &self.seq_plock_bytes;
+        let masks_at = cells * 16;
+        let has_seq = bytes.len() >= masks_at + INSTRUMENT_COUNT * 8;
+        let solos_at = masks_at + INSTRUMENT_COUNT * 8;
+        let has_solos = bytes.len() >= solos_at + INSTRUMENT_COUNT * 8;
+        for inst in 0..INSTRUMENT_COUNT {
+            let live_mask = seq_plock_state.masks[inst].load(Ordering::Relaxed);
+            let live_solo = seq_plock_state.solo_masks[inst].load(Ordering::Relaxed);
+            let (saved_mask, saved_solo) = if has_seq {
+                let solo = if has_solos {
+                    le_u64(bytes, solos_at + inst * 8)
+                } else {
+                    0
+                };
+                (le_u64(bytes, masks_at + inst * 8), solo)
+            } else {
+                (0, 0)
+            };
+            if saved_mask != live_mask || saved_solo != live_solo {
+                return false;
+            }
+            for step in 0..STEP_COUNT {
+                if live_mask & (1u64 << step) == 0 {
+                    continue;
+                }
+                let at = (inst * STEP_COUNT + step) * 16;
+                let live = [
+                    seq_plock_state.probabilities[inst][step].load(Ordering::Relaxed),
+                    seq_plock_state.stutters[inst][step].load(Ordering::Relaxed),
+                    seq_plock_state.conditions[inst][step].load(Ordering::Relaxed),
+                    seq_plock_state.microtimings[inst][step].load(Ordering::Relaxed),
+                ];
+                for (k, value) in live.iter().enumerate() {
+                    if le_u32(bytes, at + k * 4) != *value {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // Fusions. A blob in no known format loads none.
+        let mut same = true;
+        let mut live = [FusedGroup::default(); MAX_FUSIONS];
+        let decoded = decode_fusions(&self.fusion_bytes, |inst, saved, saved_morphs| {
+            let n = pattern.load_fusions_into(inst, &mut live);
+            same &= live[..n] == *saved;
+            let n = pattern.load_linked_morphs_into(inst, &mut live);
+            same &= live[..n] == *saved_morphs;
+        });
+        if !decoded {
+            for inst in 0..INSTRUMENT_COUNT {
+                same &= pattern.load_fusions_into(inst, &mut live) == 0;
+                same &= pattern.load_linked_morphs_into(inst, &mut live) == 0;
+            }
+        }
+        same
     }
 }
 
@@ -1174,6 +1348,113 @@ mod tests {
         assert_eq!(pattern.load_fusions(0), vec![g0]);
         assert_eq!(pattern.load_fusions(3), vec![g3]);
         assert!(pattern.load_fusions(1).is_empty());
+    }
+
+    /// [283] A linked lane's own morph is saved and restored with the pattern,
+    /// and editing it marks the pattern unsaved.
+    #[test]
+    fn pattern_slot_keeps_linked_lane_morphs() {
+        use crate::sequencer::pattern::{FusedGroup, MorphTarget};
+        let pattern = SharedPattern::new(&Pattern::rock_pattern());
+        let plock = PlockState::new();
+        let seq_plock = SequencerPlockState::new();
+        let shared = FusedGroup {
+            start_cell: 2,
+            end_cell: 5,
+            step_count: 4,
+            ..FusedGroup::default()
+        };
+        let mut own = shared;
+        own.set_morph_target(0, 120.0);
+        pattern.store_fusions(0, &[shared]);
+        pattern.store_lane_fusion(1, 0, 0, own);
+
+        let mut slot = PatternSlot::default();
+        slot.capture(&pattern, &plock, &seq_plock, 16);
+        assert!(slot.matches_live(&pattern, &plock, &seq_plock, 16));
+
+        let mut edited = own;
+        edited.morph_targets[0] = MorphTarget {
+            end_value: 60.0,
+            ..edited.morph_targets[0]
+        };
+        pattern.store_lane_fusion(1, 0, 0, edited);
+        assert!(
+            !slot.matches_live(&pattern, &plock, &seq_plock, 16),
+            "morph edit"
+        );
+
+        slot.restore(&pattern, &plock, &seq_plock);
+        assert_eq!(pattern.load_lane_fusions(1, 0), vec![own]);
+        assert_eq!(pattern.load_fusions(0), vec![shared]);
+    }
+
+    /// [283] The unsaved-changes check sees every kind of edit (it used to
+    /// see only steps and length), and ignores leftovers that do not play.
+    #[test]
+    fn matches_live_sees_plock_seq_plock_and_fusion_edits() {
+        use crate::sequencer::pattern::FusedGroup;
+        use std::sync::atomic::Ordering::Relaxed;
+        let pattern = SharedPattern::new(&Pattern::rock_pattern());
+        let plock = PlockState::new();
+        let seq = SequencerPlockState::new();
+        plock.masks.set_active(0, 5, true);
+        plock.field_masks.set_raw(0, 5, 1 << 3);
+        plock.values.set(0, 5, 3, 0.75);
+        seq.set_probability(1, 2, 0.5);
+        pattern.store_fusions(
+            2,
+            &[FusedGroup {
+                start_cell: 8,
+                end_cell: 11,
+                step_count: 3,
+                ..FusedGroup::default()
+            }],
+        );
+        let mut slot = PatternSlot::default();
+        slot.capture(&pattern, &plock, &seq, 16);
+        assert!(slot.matches_live(&pattern, &plock, &seq, 16));
+        assert!(!slot.matches_live(&pattern, &plock, &seq, 32), "length");
+
+        // A value in a field the p-lock does not lock plays nothing.
+        plock.values.set(0, 5, 4, 0.1);
+        assert!(
+            slot.matches_live(&pattern, &plock, &seq, 16),
+            "unlocked leftover"
+        );
+
+        plock.values.set(0, 5, 3, 0.2);
+        assert!(
+            !slot.matches_live(&pattern, &plock, &seq, 16),
+            "locked value"
+        );
+        plock.values.set(0, 5, 3, 0.75);
+
+        seq.set_probability(1, 2, 0.25);
+        assert!(!slot.matches_live(&pattern, &plock, &seq, 16), "seq p-lock");
+        seq.set_probability(1, 2, 0.5);
+
+        seq.solo_masks[3].store(1 << 7, Relaxed);
+        assert!(!slot.matches_live(&pattern, &plock, &seq, 16), "step solo");
+        seq.solo_masks[3].store(0, Relaxed);
+
+        pattern.store_fusions(2, &[]);
+        assert!(!slot.matches_live(&pattern, &plock, &seq, 16), "fusion");
+
+        // Loading the slot back (the production path) always matches it.
+        restore_from_buffers(
+            &slot.step_masks,
+            &slot.plock_bytes,
+            &slot.seq_plock_bytes,
+            &slot.fusion_bytes,
+            &pattern,
+            &plock,
+            &seq,
+        );
+        assert!(
+            slot.matches_live(&pattern, &plock, &seq, 16),
+            "after restore"
+        );
     }
 
     #[test]

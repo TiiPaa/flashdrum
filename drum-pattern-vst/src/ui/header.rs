@@ -2,6 +2,7 @@
 
 use crate::ui::controls::{enum_combo, toggle_led_param};
 use crate::ui::editor_state::EditorUIState;
+use crate::ui::help::{self, HelpExt};
 use crate::ui::theme::*;
 use crate::{DrumFlashParams, BUILD_ID};
 use nih_plug::prelude::*;
@@ -144,8 +145,7 @@ fn clear_entire_program(
     state.selected_track_slot = 0;
     state.selected_instrument = 0;
 
-    state.last_loaded_slot = None;
-    state.clear_program_confirm = false;
+    state.clear_program_confirm = None;
 }
 
 pub fn draw_header_bar(
@@ -232,30 +232,39 @@ pub fn draw_header_bar(
                         ver_font,
                         INK3(),
                     );
+                    help::rect(ui, rect, "hdr_version", help::HDR_VERSION);
                 }
 
                 header_vbar(ui);
 
                 // Master / Swing sliders + Groove select
-                header_param_slider(ui, setter, &params.master_volume, 142.0, "Master", true);
+                help::zone(ui, "hdr_master", help::HDR_MASTER, |ui| {
+                    header_param_slider(ui, setter, &params.master_volume, 142.0, "Master", true)
+                });
                 header_vbar(ui);
-                header_param_slider(ui, setter, &params.swing, 142.0, "Swing", true);
+                help::zone(ui, "hdr_swing", help::HDR_SWING, |ui| {
+                    header_param_slider(ui, setter, &params.swing, 142.0, "Swing", true)
+                });
                 ui.add_space(8.0);
-                enum_combo(ui, setter, &params.groove_type, "");
+                help::zone(ui, "hdr_groove", help::HDR_GROOVE, |ui| {
+                    enum_combo(ui, setter, &params.groove_type, "")
+                });
 
                 header_vbar(ui);
 
                 // Sequencer source GROUP: Internal/Ext MIDI + MIDI Pat together.
-                ui.label(RichText::new("Seq").font(f_sans_sb(10.5)).color(INK3()));
-                ui.add_space(8.0);
                 let internal = params.use_internal_sequencer.value();
-                // Symmetric halves (segmented_equal).
-                let sel = crate::ui::skeuo::segmented_equal(
-                    ui,
-                    "seq_mode",
-                    &["Internal", "Ext MIDI"],
-                    if internal { 0 } else { 1 },
-                );
+                let sel = help::zone(ui, "hdr_seq", help::HDR_SEQ, |ui| {
+                    ui.label(RichText::new("Seq").font(f_sans_sb(10.5)).color(INK3()));
+                    ui.add_space(8.0);
+                    // Symmetric halves (segmented_equal).
+                    crate::ui::skeuo::segmented_equal(
+                        ui,
+                        "seq_mode",
+                        &["Internal", "Ext MIDI"],
+                        if internal { 0 } else { 1 },
+                    )
+                });
                 let want_internal = sel == 0;
                 if want_internal != internal {
                     setter.begin_set_parameter(&params.use_internal_sequencer);
@@ -271,13 +280,15 @@ pub fn draw_header_bar(
                 ui.add_space(6.0);
                 // MIDI Pat is part of the Seq group (internal-sequencer only).
                 let midi_pat_enabled = params.use_internal_sequencer.value();
-                toggle_led_param(
-                    ui,
-                    setter,
-                    &params.midi_pattern_switch,
-                    "MIDI Pat",
-                    midi_pat_enabled,
-                );
+                help::zone(ui, "hdr_midi_pat", help::HDR_MIDI_PAT, |ui| {
+                    toggle_led_param(
+                        ui,
+                        setter,
+                        &params.midi_pattern_switch,
+                        "MIDI Pat",
+                        midi_pat_enabled,
+                    )
+                });
 
                 // Choke moved to per-slot choke groups in the Track tab (the
                 // legacy global HH→OH param is hidden but still loaded).
@@ -318,6 +329,7 @@ pub fn draw_header_bar(
                     true,
                     f_sans_med(10.5),
                 )
+                .help(help::HDR_PRESETS)
                 .clicked()
                 {
                     crate::ui::preset_browser::open(state);
@@ -325,8 +337,9 @@ pub fn draw_header_bar(
                 header_vbar(ui);
                 // Clear the whole program (grid + pattern bank + song + lanes)
                 // — two clicks, the second one confirms.
-                let clear_armed = state.clear_program_confirm;
-                if crate::ui::controls::keycap_button(
+                let clear_armed =
+                    crate::ui::controls::confirm_armed(ui, &mut state.clear_program_confirm);
+                let clear_response = crate::ui::controls::keycap_button(
                     ui,
                     if clear_armed { "Sure?" } else { "Clear All" },
                     72.0,
@@ -338,16 +351,22 @@ pub fn draw_header_bar(
                     true,
                     f_sans_med(10.5),
                 )
-                .on_hover_text(
+                .help_or(
+                    help::HDR_CLEAR_ALL,
                     "Clear everything: grid, pattern slots, song AND lanes (click twice)",
-                )
-                .clicked()
-                {
+                );
+                if clear_response.clicked() {
                     if clear_armed {
                         clear_entire_program(setter, params, pattern, state);
                     } else {
-                        state.clear_program_confirm = true;
+                        state.clear_program_confirm = Some(ui.input(|i| i.time));
                     }
+                } else {
+                    crate::ui::controls::confirm_disarm_elsewhere(
+                        ui,
+                        &mut state.clear_program_confirm,
+                        &clear_response,
+                    );
                 }
                 header_vbar(ui);
                 if crate::ui::controls::keycap_button(
@@ -358,6 +377,7 @@ pub fn draw_header_bar(
                     true,
                     f_sans_med(10.5),
                 )
+                .help(help::HDR_SETTINGS)
                 .clicked()
                 {
                     state.settings_open = true;
