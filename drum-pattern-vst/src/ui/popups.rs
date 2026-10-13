@@ -220,7 +220,11 @@ pub fn draw_settings_popup_if_any(
         return;
     }
 
-    let anchor = ui.max_rect().right_top() + Vec2::new(-230.0, 60.0);
+    // [282] Wide enough for its longest row with the +1 text size ("Number
+    // lanes from the root note" + Auto-assign): narrower, the rows overflowed
+    // and the close button sat mid-way.
+    const SETTINGS_W: f32 = 280.0;
+    let anchor = ui.max_rect().right_top() + Vec2::new(-(SETTINGS_W + 30.0), 60.0);
     let area_id = ui.id().with("settings_popup");
 
     let response = egui::Area::new(area_id)
@@ -229,8 +233,8 @@ pub fn draw_settings_popup_if_any(
         .fixed_pos(anchor)
         .show(ui.ctx(), |ui| {
             page_menu_frame(ui, BLUE(), |ui| {
-                ui.set_min_width(200.0);
-                ui.set_max_width(220.0);
+                ui.set_min_width(SETTINGS_W);
+                ui.set_max_width(SETTINGS_W);
 
                 // Header with close button
                 ui.horizontal(|ui| {
@@ -456,6 +460,32 @@ pub fn draw_settings_popup_if_any(
                     let name = skin_names[idx.min(skin_names.len().saturating_sub(1))];
                     theme::set_skin(name);
                     state.global_config.skin = name.to_string();
+                    let _ = state.global_config.save();
+                }
+                ui.add_space(8.0);
+
+                // [282] Zoom selector (window + text size).
+                ui.label(
+                    RichText::new("Zoom")
+                        .font(f_sans_med(10.5))
+                        .color(INK3()),
+                );
+                ui.add_space(4.0);
+                let zoom_labels: Vec<String> = crate::config::ZOOM_STEPS
+                    .iter()
+                    .map(|percent| format!("{percent}%"))
+                    .collect();
+                let zoom_names: Vec<&str> = zoom_labels.iter().map(String::as_str).collect();
+                let current_zoom = crate::config::ZOOM_STEPS
+                    .iter()
+                    .position(|&percent| percent == state.global_config.zoom_percent)
+                    .unwrap_or(0);
+                let (response, picked) =
+                    styled_select(ui, "settings_zoom", current_zoom, &zoom_names, 120.0);
+                response.help(help::SET_ZOOM);
+                if let Some(idx) = picked {
+                    state.global_config.zoom_percent = crate::config::ZOOM_STEPS
+                        [idx.min(crate::config::ZOOM_STEPS.len() - 1)];
                     let _ = state.global_config.save();
                 }
 

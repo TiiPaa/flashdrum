@@ -75,9 +75,9 @@ pub const SKIN_DARK: Theme = Theme {
     seqpl: Color32::from_rgb(168, 85, 247),
     seqpl_dim: Color32::from_rgb(120, 60, 180),
     ink: Color32::from_rgb(232, 232, 240),
-    ink2: Color32::from_rgb(156, 163, 175),
-    ink3: Color32::from_rgb(107, 114, 128),
-    faint: Color32::from_rgb(75, 85, 99),
+    ink2: Color32::from_rgb(204, 208, 216),
+    ink3: Color32::from_rgb(160, 166, 178),
+    faint: Color32::from_rgb(112, 120, 134),
     cell_empty_beat: Color32::from_rgb(35, 35, 44),
     cell_empty_off: Color32::from_rgb(27, 27, 34),
     cell_current: Color32::from_rgb(48, 48, 60),
@@ -110,9 +110,9 @@ pub const SKIN_MIDNIGHT: Theme = Theme {
     seqpl: Color32::from_rgb(150, 110, 250),
     seqpl_dim: Color32::from_rgb(105, 80, 185),
     ink: Color32::from_rgb(226, 232, 240),
-    ink2: Color32::from_rgb(148, 163, 184),
-    ink3: Color32::from_rgb(100, 116, 139),
-    faint: Color32::from_rgb(71, 85, 105),
+    ink2: Color32::from_rgb(198, 208, 222),
+    ink3: Color32::from_rgb(152, 167, 188),
+    faint: Color32::from_rgb(106, 120, 142),
     cell_empty_beat: Color32::from_rgb(28, 34, 48),
     cell_empty_off: Color32::from_rgb(22, 27, 40),
     cell_current: Color32::from_rgb(44, 54, 74),
@@ -145,9 +145,9 @@ pub const SKIN_EMBER: Theme = Theme {
     seqpl: Color32::from_rgb(217, 120, 239),
     seqpl_dim: Color32::from_rgb(150, 85, 170),
     ink: Color32::from_rgb(245, 235, 225),
-    ink2: Color32::from_rgb(180, 160, 145),
-    ink3: Color32::from_rgb(135, 118, 105),
-    faint: Color32::from_rgb(100, 88, 78),
+    ink2: Color32::from_rgb(222, 208, 196),
+    ink3: Color32::from_rgb(184, 164, 149),
+    faint: Color32::from_rgb(140, 124, 111),
     cell_empty_beat: Color32::from_rgb(44, 32, 26),
     cell_empty_off: Color32::from_rgb(34, 26, 22),
     cell_current: Color32::from_rgb(70, 52, 40),
@@ -376,7 +376,7 @@ pub const PANEL_SKEUO_HOVER: Color32 = Color32::from_rgb(52, 53, 60);
 /// Dark border of plates/wells (#121215).
 pub const PANEL_BORDER: Color32 = Color32::from_rgb(18, 18, 21);
 /// Keycap (bouton biseauté) : texte au repos.
-pub const INK_KEYCAP: Color32 = Color32::from_rgb(201, 203, 211);
+pub const INK_KEYCAP: Color32 = Color32::from_rgb(224, 226, 232);
 pub const RADIUS_CTL: f32 = 5.0;
 pub const RADIUS_PANEL: f32 = 7.0;
 pub const GAP_TIGHT: f32 = 3.0;
@@ -392,33 +392,43 @@ pub const TAG_SIZE: f32 = 21.0;
 // Font helpers — weighted IBM Plex families (registered in install_egui_fonts).
 // Convention: "chiffre = mono, mot = sans" → mono_* for numbers/values/codes.
 // ============================================================
+/// [282] Every text size of the UI grows by this much (Iso: text too small
+/// to read for long). Applied by the font helpers below and by `font_size`.
+pub const FONT_BUMP: f32 = 1.0;
+
+/// A raw text size from the UI code, with the [282] bump.
+#[inline]
+pub fn font_size(size: f32) -> f32 {
+    size + FONT_BUMP
+}
+
 #[inline]
 pub fn f_sans(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Proportional)
+    FontId::new(font_size(size), FontFamily::Proportional)
 }
 #[inline]
 pub fn f_sans_med(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("sans_med".into()))
+    FontId::new(font_size(size), FontFamily::Name("sans_med".into()))
 }
 #[inline]
 pub fn f_sans_sb(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("sans_sb".into()))
+    FontId::new(font_size(size), FontFamily::Name("sans_sb".into()))
 }
 #[inline]
 pub fn f_sans_bold(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("sans_bold".into()))
+    FontId::new(font_size(size), FontFamily::Name("sans_bold".into()))
 }
 #[inline]
 pub fn f_mono(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Monospace)
+    FontId::new(font_size(size), FontFamily::Monospace)
 }
 #[inline]
 pub fn f_mono_med(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("mono_med".into()))
+    FontId::new(font_size(size), FontFamily::Name("mono_med".into()))
 }
 #[inline]
 pub fn f_mono_sb(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("mono_sb".into()))
+    FontId::new(font_size(size), FontFamily::Name("mono_sb".into()))
 }
 
 #[cfg(test)]

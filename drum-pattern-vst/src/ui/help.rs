@@ -362,6 +362,9 @@ Off: only clicking the lane name selects it.";
 
 pub const SET_SKIN: &str = "Colour theme of the plugin. Saved for all your projects.";
 
+pub const SET_ZOOM: &str = "Size of the whole plugin window: text and controls grow with it. Saved for all your projects.\n\
+If the window keeps its size, your host refused the new size.";
+
 // --- Pattern bank ------------------------------------------------------------------
 
 pub const BANK_SAVE: &str = "Save: click it, then click a slot (P1 to P16) to store the current pattern there. An occupied slot is overwritten.\n\

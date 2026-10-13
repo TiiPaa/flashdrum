@@ -855,6 +855,11 @@ where
 
                 // If the window was requested to resize
                 if let Some(new_size) = egui_state.requested_size.swap(None) {
+                    // FLASH-DRUM PATCH [282]: store the new size BEFORE asking the host.
+                    // On the GUI thread the VST3 wrapper runs the request immediately and
+                    // sends the host `size()`, which still returned the old size: the host
+                    // kept its window while the content grew.
+                    let old_size = egui_state.size.swap(new_size);
                     // Ask the plugin host to resize to self.size()
                     if context.request_resize() {
                         // Resize the content of egui window
@@ -863,9 +868,8 @@ where
                             new_size.0 as f32,
                             new_size.1 as f32,
                         )));
-
-                        // Update the state
-                        egui_state.size.store(new_size);
+                    } else {
+                        egui_state.size.store(old_size);
                     }
                 }
 

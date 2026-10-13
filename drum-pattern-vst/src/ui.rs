@@ -2,7 +2,6 @@ use nih_plug::prelude::*;
 use nih_plug_egui::{
     create_egui_editor,
     egui::{self, Vec2},
-    resizable_window::ResizableWindow,
 };
 use std::sync::{
     atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
@@ -136,6 +135,15 @@ fn install_egui_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// Editor size at 100 % zoom, in logical pixels.
+pub const EDITOR_SIZE: (u32, u32) = (1480, 800);
+
+/// [282] Window size for a Zoom setting in percent.
+fn editor_size_for(zoom_percent: u16) -> (u32, u32) {
+    let scale = |v: u32| (v * zoom_percent as u32 + 50) / 100;
+    (scale(EDITOR_SIZE.0), scale(EDITOR_SIZE.1))
+}
+
 pub fn create_editor(
     params: Arc<DrumFlashParams>,
     current_step: Arc<AtomicU32>,
@@ -165,6 +173,12 @@ pub fn create_editor(
     let audio_last_loaded_slot_for_ui = audio_last_loaded_slot.clone();
 
     theme::set_skin(&global_config.skin);
+    // [282] Open straight at the zoomed size (the host asks for the size
+    // before the window exists).
+    let zoomed_size = editor_size_for(global_config.zoom_percent);
+    if editor_state.size() != zoomed_size {
+        editor_state.set_requested_size(zoomed_size);
+    }
 
     create_egui_editor(
         params.editor_state.clone(),
@@ -223,6 +237,16 @@ pub fn create_editor(
             visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, LINE2());
             visuals.selection.stroke = egui::Stroke::new(1.0, BLUE());
             egui_ctx.set_visuals(visuals);
+            // [282] Ctrl +/- would zoom the content without growing the window:
+            // the zoom is Settings → Zoom only.
+            egui_ctx.options_mut(|options| options.zoom_with_keyboard = false);
+            // [282] egui's own text styles (plain labels, tooltips) grow like
+            // the rest of the UI.
+            egui_ctx.style_mut(|style| {
+                for font in style.text_styles.values_mut() {
+                    font.size = theme::font_size(font.size);
+                }
+            });
         },
         move |egui_ctx, setter, state| {
             #[cfg(target_os = "windows")]
@@ -257,11 +281,30 @@ pub fn create_editor(
             // flips both).
             help::set(egui_ctx, state.global_config.help_mode);
 
-            ResizableWindow::new("drum-pattern-generator")
-                .min_size(Vec2::new(1480.0, 800.0))
-                .fixed_size(Vec2::new(1480.0, 800.0))
-                .resizable(false)
-                .show(egui_ctx, editor_state.as_ref(), |ui| {
+            // [282] Zoom: the window follows the setting (asked once per change;
+            // a host that refuses leaves everything as is), and egui's zoom
+            // follows the size the host actually gave.
+            let target_size = editor_size_for(state.global_config.zoom_percent);
+            if state.zoom_requested_size != Some(target_size) {
+                state.zoom_requested_size = Some(target_size);
+                if editor_state.size() != target_size {
+                    editor_state.set_requested_size(target_size);
+                }
+            }
+            let zoom = (editor_state.size().0 as f32 / EDITOR_SIZE.0 as f32).clamp(0.5, 3.0);
+            if (egui_ctx.zoom_factor() - zoom).abs() > 0.001 {
+                egui_ctx.set_zoom_factor(zoom);
+            }
+
+            egui::CentralPanel::default().show(egui_ctx, |panel_ui| {
+                    // The whole window, panel margins included.
+                    let full_rect = panel_ui.clip_rect();
+                    let mut content_ui = panel_ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(full_rect)
+                            .layout(*panel_ui.layout()),
+                    );
+                    let ui = &mut content_ui;
                     draw_header_bar(
                         ui,
                         setter,

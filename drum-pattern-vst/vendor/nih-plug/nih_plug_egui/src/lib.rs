@@ -137,7 +137,8 @@ impl EguiState {
     }
 
     /// Set the new size that will be used to resize the window if the host allows.
-    fn set_requested_size(&self, new_size: (u32, u32)) {
+    /// (Flash Drum patch [282]: public, for the editor's Zoom setting.)
+    pub fn set_requested_size(&self, new_size: (u32, u32)) {
         self.requested_size.store(Some(new_size));
     }
 }

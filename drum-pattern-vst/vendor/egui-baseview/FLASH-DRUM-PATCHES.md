@@ -23,3 +23,10 @@ repaint.
 position through `rejected_hover_position()` until it leaves or is accepted.
 The grid uses it to say WHY next to the bare OS ⊘ cursor (full grid, open
 modal). Covered by `rejected_drag_reports_its_position_until_it_leaves`.
+
+[282] zoom support (`window.rs`): upstream ignored `Context::set_zoom_factor`
+(screen size, pointer and wheel positions in native points, renderer at the
+native scale only). The screen rectangle, pointer position and pixel wheel
+deltas are now divided by the zoom factor, and the renderer uses
+`full_output.pixels_per_point` (native scale x zoom). Flash Drum's Zoom
+setting resizes the window and sets the zoom factor together.

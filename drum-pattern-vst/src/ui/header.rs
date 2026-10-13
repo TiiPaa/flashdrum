@@ -99,11 +99,15 @@ pub fn header_param_slider<P: Param>(
 
 /// A 2px vertical separator (height 22) with 13pt horizontal padding on each side.
 fn header_vbar(ui: &mut egui::Ui) {
-    ui.add_space(13.0);
+    // [282] 9 px each side (was 13): the +1 text size made the header 30 px
+    // too wide, which pushed Settings out and widened the lane editor too.
+    ui.add_space(HEADER_VBAR_GAP);
     let (r, _) = ui.allocate_exact_size(Vec2::new(2.0, 22.0), egui::Sense::hover());
     ui.painter().rect_filled(r, 0.0, LINE());
-    ui.add_space(13.0);
+    ui.add_space(HEADER_VBAR_GAP);
 }
+
+const HEADER_VBAR_GAP: f32 = 9.0;
 
 /// Clear the whole program: grid (steps + fusions + sound/seq plocks on every
 /// lane), all 16 pattern-bank slots, and the song. Lane kinds, sounds and
@@ -297,9 +301,11 @@ pub fn draw_header_bar(
 
                 // Push the Help + Presets + Clear All + Settings keycaps to the
                 // right edge. Trailing block: Help (52) + gap (6) + Presets (80)
-                // + vbar (28) + Clear All (72) + vbar (28) + Settings (84).
+                // + vbar + Clear All (72) + vbar + Settings (80).
                 // [283] Help took its room from Master and Swing (172 -> 142).
-                ui.add_space((ui.available_width() - 350.0).max(0.0));
+                let trailing =
+                    52.0 + 6.0 + 80.0 + 72.0 + 80.0 + 2.0 * (2.0 * HEADER_VBAR_GAP + 2.0);
+                ui.add_space((ui.available_width() - trailing).max(0.0));
                 let help_on = state.global_config.help_mode;
                 if crate::ui::controls::keycap_button(
                     ui,

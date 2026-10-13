@@ -172,6 +172,10 @@ pub struct EditorUIState {
     /// edits the group of the lane it follows but shows its own morph.
     #[serde(skip)]
     pub fusion_editing_lane: usize,
+    /// [282] Window size last requested for the Zoom setting (asked once per
+    /// change, so a host that refuses it is not asked again every frame).
+    #[serde(skip)]
+    pub zoom_requested_size: Option<(u32, u32)>,
     /// True when a fusion group just entered edit mode this frame; requests focus on the step-count field.
     pub fusion_edit_focus_request: bool,
     /// Current value of the track-name field in the Track tab.

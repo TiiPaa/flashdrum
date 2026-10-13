@@ -23,7 +23,12 @@ pub fn draw_pattern_bank(
     audio_last_loaded_slot: &Arc<AtomicU32>,
 ) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Patterns").strong().size(12.0).color(INK()));
+        ui.label(
+            RichText::new("Patterns")
+                .strong()
+                .size(font_size(12.0))
+                .color(INK()),
+        );
         ui.add_space(8.0);
 
         // Save (keycap; armed = pressed blue) — to the LEFT of the slots. Click,
@@ -48,7 +53,7 @@ pub fn draw_pattern_bank(
             } else {
                 "Activate save mode, then click a slot to store the current pattern"
             })
-            .size(11.0)
+            .size(font_size(11.0))
             .monospace(),
         );
         if save_response.clicked() {
@@ -124,7 +129,7 @@ pub fn draw_pattern_bank(
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
                             &text,
-                            egui::FontId::monospace(10.0),
+                            f_mono(10.0),
                             label_color,
                         );
                         response
@@ -148,7 +153,7 @@ pub fn draw_pattern_bank(
             };
             let response = response.help_or(
                 help::BANK_SLOT,
-                RichText::new(tooltip).size(11.0).monospace(),
+                RichText::new(tooltip).size(font_size(11.0)).monospace(),
             );
 
             if response.clicked_by(egui::PointerButton::Primary) {
@@ -208,7 +213,7 @@ pub fn draw_pattern_bank(
                 .help_or(
                     help::BANK_CLEAR_GRID,
                     RichText::new("Clear the current grid only — the slot keeps its saved pattern")
-                        .size(11.0)
+                        .size(font_size(11.0))
                         .monospace(),
                 );
             if grid_response.clicked() {
@@ -222,7 +227,7 @@ pub fn draw_pattern_bank(
                         RichText::new(
                             "Clear the current grid AND empty the bank slot it was loaded from",
                         )
-                        .size(11.0)
+                        .size(font_size(11.0))
                         .monospace(),
                     );
                 if slot_response.clicked() {
@@ -240,7 +245,7 @@ pub fn draw_pattern_bank(
             let cancel_response = chip_button(ui, "X", false, INK3(), egui::Sense::click())
                 .help_or(
                     help::BANK_CLEAR_CANCEL,
-                    RichText::new("Cancel").size(11.0).monospace(),
+                    RichText::new("Cancel").size(font_size(11.0)).monospace(),
                 );
             if cancel_response.clicked() {
                 state.clear_confirm_mode = false;
@@ -250,7 +255,7 @@ pub fn draw_pattern_bank(
                 .help_or(
                     help::BANK_CLEAR,
                     RichText::new("Clear the current grid or empty the current bank slot")
-                        .size(11.0)
+                        .size(font_size(11.0))
                         .monospace(),
                 );
             if clear_response.clicked() {
@@ -324,9 +329,17 @@ pub fn draw_pattern_bank(
                 }
             }
             if state.last_midi_export_error.is_some() {
-                ui.label(RichText::new("Export failed").size(10.0).color(RED()));
+                ui.label(
+                    RichText::new("Export failed")
+                        .size(font_size(10.0))
+                        .color(RED()),
+                );
             } else if state.last_midi_export_path.is_some() {
-                ui.label(RichText::new("Exported").size(10.0).color(INK3()));
+                ui.label(
+                    RichText::new("Exported")
+                        .size(font_size(10.0))
+                        .color(INK3()),
+                );
             }
         });
     });

@@ -1,7 +1,7 @@
 //! Small param-bound controls and keyboard helpers shared across panels.
 
 use crate::ui::theme::*;
-use crate::ui::widgets::{keycap_tex, styled_select, KeycapState, ToggleLED};
+use crate::ui::widgets::{keycap_tex, select_fit_width, styled_select, KeycapState, ToggleLED};
 use crate::DrumFlashParams;
 use nih_plug::prelude::*;
 use nih_plug_egui::egui::{self, Color32, RichText, Vec2};
@@ -218,6 +218,7 @@ pub fn enum_combo_compact<E: nih_plug::prelude::Enum + PartialEq + 'static>(
     let current = param.value();
     let current_idx = current.to_index();
     let variants = E::variants();
+    let width = select_fit_width(ui, variants, width);
     if let (_, Some(i)) = styled_select(ui, id, current_idx, variants, width) {
         if i != current_idx {
             setter.begin_set_parameter(param);
@@ -237,7 +238,7 @@ pub fn compact_chip_colored(
     active: bool,
     accent: Color32,
 ) -> egui::Response {
-    let font = egui::FontId::proportional(10.5);
+    let font = f_sans(10.5);
     let tw = ui.fonts(|f| {
         f.layout_no_wrap(label.to_string(), font.clone(), Color32::WHITE)
             .size()

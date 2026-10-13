@@ -254,7 +254,7 @@ pub fn draw_grid_v2(
         }
         let mode_hint = ui.label(
             RichText::new("Right-click a step to edit its p-lock")
-                .size(10.5)
+                .size(font_size(10.5))
                 .color(INK3()),
         );
         help::rect(

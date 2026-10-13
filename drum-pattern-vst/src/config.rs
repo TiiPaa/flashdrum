@@ -26,6 +26,16 @@ pub struct GlobalConfig {
     /// "Help" keycap). Off by default; older config files load it off.
     #[serde(default)]
     pub help_mode: bool,
+    /// [282] Editor zoom in percent, one of `ZOOM_STEPS` (Settings → Zoom).
+    #[serde(default = "default_zoom_percent")]
+    pub zoom_percent: u16,
+}
+
+/// [282] The zoom levels offered in Settings.
+pub const ZOOM_STEPS: [u16; 3] = [100, 125, 150];
+
+fn default_zoom_percent() -> u16 {
+    100
 }
 
 fn default_skin() -> String {
@@ -40,6 +50,7 @@ impl Default for GlobalConfig {
             global_midi_channel: 10,
             skin: default_skin(),
             help_mode: false,
+            zoom_percent: default_zoom_percent(),
         }
     }
 }
@@ -91,6 +102,9 @@ impl GlobalConfig {
     fn clamped(mut self) -> Self {
         self.default_analog = self.default_analog.clamp(0.0, 1.0);
         self.global_midi_channel = self.global_midi_channel.clamp(1, 16);
+        if !ZOOM_STEPS.contains(&self.zoom_percent) {
+            self.zoom_percent = default_zoom_percent();
+        }
         self
     }
 }
@@ -156,6 +170,18 @@ mod tests {
         let mut chan = GlobalConfig::default();
         chan.global_midi_channel = 0;
         assert_eq!(chan.clamped().global_midi_channel, 1);
+
+        let mut zoom = GlobalConfig::default();
+        zoom.zoom_percent = 130;
+        assert_eq!(zoom.clamped().zoom_percent, 100);
+    }
+
+    /// [282] A config written before the zoom existed opens at 100 %.
+    #[test]
+    fn zoom_defaults_to_100_percent() {
+        let old = r#"{"default_analog":0.5,"global_midi_channel":10,"skin":"Dark"}"#;
+        let cfg: GlobalConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(cfg.zoom_percent, 100);
     }
 
     /// [283] A config written before the help mode existed loads with the

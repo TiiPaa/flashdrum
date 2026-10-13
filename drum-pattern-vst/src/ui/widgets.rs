@@ -356,6 +356,24 @@ impl Widget for ToggleLED {
 // ============================================================
 // Styled select — maquette `.selbox` (h26, r6, mono current)
 // ============================================================
+/// [282] `width`, widened so the longest option fits beside the caret
+/// whatever the text size (one width for all, so a pick never shifts layout).
+pub fn select_fit_width(ui: &Ui, options: &[&str], width: f32) -> f32 {
+    let longest = ui.fonts(|fonts| {
+        options
+            .iter()
+            .map(|option| {
+                fonts
+                    .layout_no_wrap(option.to_string(), f_mono_med(11.0), INK())
+                    .size()
+                    .x
+            })
+            .fold(0.0, f32::max)
+    });
+    // Text inset (9) + caret zone (21).
+    width.max((longest + 30.0).ceil())
+}
+
 pub fn styled_select(
     ui: &mut Ui,
     id_salt: impl Hash,

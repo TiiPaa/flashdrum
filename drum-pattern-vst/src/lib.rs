@@ -1032,7 +1032,7 @@ impl Default for DrumFlashParams {
         );
 
         Self {
-            editor_state: EguiState::from_size(1480, 800),
+            editor_state: EguiState::from_size(ui::EDITOR_SIZE.0, ui::EDITOR_SIZE.1),
             pattern_state,
             sound_settings: PersistentSoundSettings::new(&default_layout),
             track_layout,
