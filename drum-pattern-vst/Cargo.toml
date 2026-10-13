@@ -38,7 +38,7 @@ rfd = { version = "0.15", default-features = false }
 open = "5"
 # [280] Inflates the starter presets embedded by build.rs (already in the
 # tree through png, no new crate).
-miniz_oxide = "0.8"
+miniz_oxide = "0.9"
 
 # [267] Windows-only (MIDI drag helper, ui/midi.rs) — not fetched on macOS.
 [target.'cfg(windows)'.dependencies]
@@ -64,7 +64,7 @@ path = "src/lib.rs"
 
 [build-dependencies]
 # [280] Deflates assets/presets/default-user/ into OUT_DIR.
-miniz_oxide = "0.8"
+miniz_oxide = "0.9"
 
 [dev-dependencies]
 # [254] Allocation watchdog for the real-time safety tests. Same fork and
