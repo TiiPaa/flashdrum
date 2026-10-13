@@ -2,6 +2,20 @@
 
 Downloads: [releases page](https://github.com/TiiPaa/flashdrum/releases).
 
+## 0.9.5 — 2026-10-13 (beta)
+
+- **Easier to read**: brighter secondary text in every skin and all text one size larger.
+- **Zoom**: Settings › **Zoom** enlarges the whole window to 125 % or 150 % (remembered between sessions).
+- **Help mode**: the **Help** key in the header turns on explanations for every control. Hover over a control to read what it does.
+- **Lane Editor redesign**: every section of the Sound tab is its own module with a clear title strip, values sit in aligned readouts, **Volume** stays in place while the sections below scroll, and the Sound / Track tabs are proper folder tabs.
+- **Kick-like voices**: the Hz / Note choice has its own **Mode** row above **Frequency**; the Oscillator section no longer runs wider than the others.
+- **Step / Start / End** only appears on a fused cell, where it applies.
+- **Ctrl+click** (Cmd+click on Mac) a step to edit its sound in the Lane Editor without turning it on or off and without opening its menu.
+- **Step menu**: it no longer closes the moment it opens when the window is zoomed.
+- **Linked lanes**: a linked lane shows the p-locks of the lane it follows; fused cells are shared along the chain while each lane keeps its own morph.
+- **Generator**: **Density** now has a clear effect in all four types, from sparse to busy, and still varies at its minimum; options that do not apply to the chosen type are greyed; style menus fit their longest name.
+- **New instances** start on the **Tommy01** pattern. Saved projects open exactly as before.
+
 ## 0.9.4 — 2026-10-11 (beta)
 
 - **Diagnostic log for the slowdown reported in Bitwig** (the DAW getting slower and slower after about 15 minutes). Off by default: nothing changes unless you turn it on. To help us find the cause:
