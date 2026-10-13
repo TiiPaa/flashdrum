@@ -32,7 +32,7 @@ hound = "3.5"
 arc-swap = "1"
 # [260] Real per-user folders (OneDrive-aware Documents, macOS home) —
 # replaces the hand-rolled USERPROFILE logic forbidden by the portability rule.
-dirs = "6"
+dirs = "7"
 rfd = { version = "0.15", default-features = false }
 # [271] "Open folder" in the MIDI export confirmation modal.
 open = "5"
