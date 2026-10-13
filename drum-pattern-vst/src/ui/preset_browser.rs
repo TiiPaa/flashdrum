@@ -763,6 +763,28 @@ fn write_slot_sound(
     }
 }
 
+/// [282] The pattern a new instance starts with (kit, steps, p-locks,
+/// fusions, sounds). Also seeded as an ordinary user preset ([280]).
+const STARTING_PATTERN: &str =
+    include_str!("../../assets/presets/default-user/patterns/Tommy01.fdpat.json");
+
+/// [282] Applies [`STARTING_PATTERN`] to a new instance, with its kit. Called
+/// once, at the first editor frame of an instance whose `instance_seeded`
+/// marker is still false.
+pub fn apply_starting_pattern(
+    params: &DrumFlashParams,
+    pattern: &SharedPattern,
+    sound_settings: &SoundSettingsState,
+    state: &mut EditorUIState,
+    setter: &ParamSetter,
+) {
+    let Ok(preset) = serde_json::from_str::<presets::PatternPreset>(STARTING_PATTERN) else {
+        return;
+    };
+    apply_pattern(params, pattern, sound_settings, state, setter, &preset);
+    state.mark_pattern_dirty();
+}
+
 /// Apply a pattern preset; optionally installs the captured lane kit first.
 fn apply_pattern(
     params: &DrumFlashParams,
@@ -911,5 +933,22 @@ fn export_factory(
     };
     if let Ok(json) = json {
         let _ = presets::export_factory(kind, &name, &json);
+    }
+}
+
+#[cfg(test)]
+mod starting_pattern_tests {
+    use super::*;
+
+    /// [282] The embedded starting pattern must parse, keep its 4-lane kit
+    /// and carry its sounds: a broken file would silently leave new
+    /// instances on the old default.
+    #[test]
+    fn starting_pattern_parses_with_its_kit_and_sounds() {
+        let preset: presets::PatternPreset =
+            serde_json::from_str(STARTING_PATTERN).expect("Tommy01 parses");
+        assert_eq!(preset.kit.iter().filter(|k| **k >= 0).count(), 4);
+        assert_eq!(preset.sounds.len(), 4);
+        assert!(preset.step_masks.iter().any(|m| *m != 0));
     }
 }

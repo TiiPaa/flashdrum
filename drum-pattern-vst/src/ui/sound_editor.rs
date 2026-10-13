@@ -30,7 +30,8 @@ use std::sync::atomic::Ordering;
 
 pub const EDITOR_LABEL_W: f32 = 138.0;
 pub const EDITOR_PARAMS_W: f32 = 340.0;
-pub const EDITOR_VALUE_W: f32 = 52.0;
+/// [282] Wide enough for the longest readout ("12000 Hz") inside its field.
+pub const EDITOR_VALUE_W: f32 = 64.0;
 
 pub fn format_editor_value(value: f32, suffix: Option<&str>) -> String {
     let number = if value.abs() >= 100.0 {
@@ -77,13 +78,65 @@ fn sub_indent() -> f32 {
     SUB_INDENT.with(|c| c.get())
 }
 
-/// Section header (separator + muted title) shared by the Sound and Track tabs.
+/// Section header (separator + title) shared by the Sound and Track tabs.
+///
+/// [282] Accent title at the labels' size, with more room above the rule
+/// than below: muted and smaller, it read as one more parameter row and the
+/// panel was one undivided block.
 pub fn editor_section_header(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(4.0);
+    ui.add_space(12.0);
     ui.separator();
-    ui.add_space(2.0);
-    ui.label(RichText::new(title).font(f_sans_sb(10.5)).color(INK3()));
     ui.add_space(6.0);
+    ui.label(RichText::new(title).font(f_sans_sb(11.5)).color(BLUE()));
+    ui.add_space(6.0);
+}
+
+/// [282] A row's value, in its recessed readout at the end of the row: every
+/// readout of the Sound tab lines up in one column.
+fn editor_value_readout(ui: &mut egui::Ui, text: &str) {
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(EDITOR_VALUE_W, 22.0), egui::Sense::hover());
+    crate::ui::skeuo::value_readout(ui, rect, text, INK());
+}
+
+/// [282] How far a Sound-tab module reaches past the content column on each
+/// side: its title then sits on the labels' x, and the p-lock / morph marker
+/// in the gutter lands on the module's inner edge.
+const MODULE_INSET: f32 = crate::ui::skeuo::MODULE_TITLE_X - ROW_GUTTER_W;
+
+/// [282] A Sound-tab section being laid out inside its module. The module is
+/// painted by [`module_end`] into the slot reserved here, under the rows.
+struct ModuleSlot {
+    idx: egui::layers::ShapeIdx,
+    top: f32,
+    title: Option<&'static str>,
+}
+
+fn module_begin(ui: &mut egui::Ui, title: Option<&'static str>) -> ModuleSlot {
+    let idx = ui.painter().add(egui::Shape::Noop);
+    let top = ui.cursor().top();
+    ui.add_space(if title.is_some() {
+        crate::ui::skeuo::MODULE_STRIP_H + 8.0
+    } else {
+        6.0
+    });
+    ModuleSlot { idx, top, title }
+}
+
+fn module_end(ui: &mut egui::Ui, module: ModuleSlot) {
+    ui.add_space(if module.title.is_some() { 10.0 } else { 6.0 });
+    let content = ui.max_rect();
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(content.left() - MODULE_INSET, module.top),
+        egui::pos2(content.right() + MODULE_INSET, ui.min_rect().bottom()),
+    );
+    ui.painter().set(
+        module.idx,
+        crate::ui::skeuo::editor_module(ui.ctx(), rect, module.title),
+    );
+    // Gap to the next module (plus the item spacing): wide enough that two
+    // modules' edges read as two frames, not as a bundle of lines.
+    ui.add_space(12.0);
 }
 
 pub fn draw_editor_slider_track(
@@ -155,19 +208,20 @@ fn draw_editor_slider_track_stepped(
     )
 }
 
-fn draw_note_freq_mode_toggle(
+/// [282] "Mode" row under a bass drum's Frequency: Hz / Note, flush right
+/// like the menus. Returns the new mode (true = notes) when clicked.
+fn draw_freq_mode_row(
     ui: &mut egui::Ui,
     id_salt: impl std::hash::Hash,
     notes_active: bool,
 ) -> Option<bool> {
-    // Same keycap-based renderer as every other segmented switch.
     let selected = if notes_active { 1 } else { 0 };
-    let new = crate::ui::skeuo::segmented(ui, id_salt, &["Hz", "Note"], selected);
-    if new != selected {
-        Some(new == 1)
-    } else {
-        None
-    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        segmented_row(ui, "Mode", id_salt, &["Hz", "Note"], selected)
+    })
+    .inner
+    .map(|new| new == 1)
 }
 
 fn draw_note_step_button(ui: &mut egui::Ui, left: bool) -> egui::Response {
@@ -201,12 +255,15 @@ fn draw_note_step_button(ui: &mut egui::Ui, left: bool) -> egui::Response {
 pub struct EditorFrequencyRowResult {
     pub response: egui::Response,
     pub value_changed: bool,
-    pub mode_change: Option<bool>,
 }
 
+/// Frequency row of the voices that can show it as a note. [282] The Hz /
+/// Note switch has its own "Mode" row under it ([`draw_freq_mode_row`]): in
+/// this row it pushed the params column 70 px wider than every other
+/// section's. Here: label, then the Hz slider + readout or the note stepper,
+/// in the same width as any slider row.
 fn draw_editor_frequency_row(
     ui: &mut egui::Ui,
-    id_salt: impl std::hash::Hash,
     label: &str,
     value: &mut f32,
     min: f32,
@@ -220,13 +277,11 @@ fn draw_editor_frequency_row(
         ui.spacing_mut().item_spacing.x = 8.0;
         editor_label(ui, label);
 
-        // Mode switch FIRST — a fixed position right after the label, so it does
-        // NOT jump when toggling Hz <-> Note (and matches the mockup: switch, then
-        // slider). The slider/stepper fills the rest; the value stays right-aligned.
-        let mode_change = draw_note_freq_mode_toggle(ui, id_salt, notes_active);
-
         let mut value_changed = false;
-        let mut row_response = ui.allocate_response(Vec2::ZERO, egui::Sense::hover());
+        // [282] No zero-size placeholder response here: as an item it took
+        // one item spacing (8 px), so this track started later and ended
+        // shorter than every other row's.
+        let row_response;
         // Both modes take the SAME width: the Hz slider + value. Narrower than
         // ◂ note ▸ in a tight column, it let the Notes row overflow by 2 px,
         // which shifted every right-aligned row below it.
@@ -235,7 +290,7 @@ fn draw_editor_frequency_row(
 
         if notes_active {
             let note_val = freq_to_note(*value * ratio).round();
-            ui.allocate_ui_with_layout(
+            row_response = ui.allocate_ui_with_layout(
                 Vec2::new(group_w, 22.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
@@ -263,28 +318,18 @@ fn draw_editor_frequency_row(
                         value_changed = true;
                     }
                 },
-            );
+            )
+            .response;
         } else {
             row_response =
                 draw_editor_slider_track(ui, value, min, max, default, logarithmic, track_w);
             value_changed = row_response.changed();
-            ui.allocate_ui_with_layout(
-                Vec2::new(EDITOR_VALUE_W, 22.0),
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| {
-                    ui.label(
-                        RichText::new(format_editor_value(*value, Some("Hz")))
-                            .font(f_mono(11.0))
-                            .color(INK()),
-                    );
-                },
-            );
+            editor_value_readout(ui, &format_editor_value(*value, Some("Hz")));
         }
 
         EditorFrequencyRowResult {
             response: row_response,
             value_changed,
-            mode_change,
         }
     })
     .inner
@@ -415,13 +460,7 @@ fn draw_editor_slider_row_inner(
             draw_editor_slider_track(ui, value, min, max, default, logarithmic, track_w)
         };
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                RichText::new(format_editor_value(*value, suffix))
-                    .font(f_mono(11.0))
-                    .color(INK()),
-            );
-        });
+        editor_value_readout(ui, &format_editor_value(*value, suffix));
         response
     })
     .inner
@@ -1645,6 +1684,60 @@ pub fn draw_sound_panel(
         changed = true;
     }
 
+    // [282] Volume stays fixed above the scrolling sections (Sound tab), in a
+    // module without a title. Its row keeps the params column like every
+    // other row, so its readout lines up with the rest. The frame's margins
+    // are the scroll content's (14 px, plus the 20 px kept for the bar on the
+    // right), so the module lines up with the ones below. Top margin 2: the
+    // Store / Restore / Default strip above already ends with its own space,
+    // and 8 here left it 9 px under the tabs but 17 px over Volume (2 px
+    // more than above, which the keys' drop shadow takes back).
+    if state.sound_editor_tab == SoundEditorTab::Sound {
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 14,
+                right: 14 + 20,
+                top: 2,
+                bottom: 0,
+            })
+            .show(ui, |ui| {
+                let volume_module = module_begin(ui, None);
+                let vol_id = ParamId::Std(StandardField::Volume);
+                let vol_help = row_help(&*src, vol_id, help::std_param(voice_idx, StandardField::Volume));
+                let (vol_reverted, vol_changed) = help::zone(ui, "vol_row", &vol_help, |ui| {
+                    ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
+                        row_scoped(
+                            ui,
+                            src.is_overridden(vol_id),
+                            src.supports(vol_id).reason(),
+                            |ui| {
+                                draw_editor_slider_row(
+                                    ui,
+                                    "Volume",
+                                    &mut vol,
+                                    0.0,
+                                    2.0,
+                                    VoiceSettings::default().volume,
+                                    false,
+                                    Some(""),
+                                )
+                                .changed()
+                            },
+                        )
+                    })
+                    .inner
+                });
+                if vol_reverted {
+                    src.clear(vol_id);
+                    changed = true;
+                } else if vol_changed {
+                    src.set(vol_id, vol);
+                    changed = true;
+                }
+                module_end(ui, volume_module);
+            });
+    }
+
     // [184] Kept for the floating notice below, which must sit at the panel's
     // bottom edge rather than scroll away with the content.
     let panel_rect = ui.max_rect();
@@ -1671,40 +1764,8 @@ pub fn draw_sound_panel(
                         SoundEditorTab::Sound => {
 
             draw_dev_preset_dumps(ui, &cx, state, RowValues { freq, decay, vol, filt, attack, release, decay_curve, release_curve, hold, filter_env_amount, filter_env_decay, analog, stereo });
-            ui.add(egui::Separator::default().spacing(8.0));
+            ui.add_space(4.0);
 
-            // Volume en tête (sans titre de section) — pleine largeur, comme les
-            // sections sans graphe.
-            let vol_id = ParamId::Std(StandardField::Volume);
-            let vol_help = row_help(&*src, vol_id, help::std_param(voice_idx, StandardField::Volume));
-            let (vol_reverted, vol_changed) = help::zone(ui, "vol_row", &vol_help, |ui| {
-                row_scoped(
-                    ui,
-                    src.is_overridden(vol_id),
-                    src.supports(vol_id).reason(),
-                    |ui| {
-                        draw_editor_slider_row(
-                            ui,
-                            "Volume",
-                            &mut vol,
-                            0.0,
-                            2.0,
-                            VoiceSettings::default().volume,
-                            false,
-                            Some(""),
-                        )
-                        .changed()
-                    },
-                )
-            });
-            if vol_reverted {
-                src.clear(vol_id);
-                changed = true;
-            } else if vol_changed {
-                src.set(vol_id, vol);
-                changed = true;
-            }
-            ui.add(egui::Separator::default().spacing(6.0));
 
             // Data-driven grouped Sound Panel (schema follows the slot's kind)
             let instrument = &crate::instrument_registry::INSTRUMENTS[voice_idx];
@@ -1731,9 +1792,6 @@ pub fn draw_sound_panel(
                 if !fam_has_std && !fam_has_special {
                     continue;
                 }
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(2.0);
                 let section_title = match family {
                     crate::instrument_registry::ParamFamily::Osc => {
                         crate::instrument_registry::source_section_title(voice_idx)
@@ -1746,8 +1804,8 @@ pub fn draw_sound_panel(
                     crate::instrument_registry::ParamFamily::Saturation => "Distortion",
                     crate::instrument_registry::ParamFamily::Output => "Output",
                 };
-                ui.label(RichText::new(section_title).font(f_sans_sb(10.5)).color(INK3()));
-                ui.add_space(6.0);
+                // [282] Each section is a module with its title strip.
+                let section_module = module_begin(ui, Some(section_title));
 
             let has_filter_env = standard_defs
                 .iter()
@@ -1815,6 +1873,7 @@ pub fn draw_sound_panel(
             });
 
             draw_gate_row(ui, &cx, family, params_w, &mut src, state);
+            module_end(ui, section_module);
             }
                     }
                         SoundEditorTab::Track => {
@@ -1893,13 +1952,10 @@ fn draw_panel_header(
     let header_rect = ui
         .allocate_exact_size(Vec2::new(ui.available_width(), 42.0), egui::Sense::hover())
         .0;
+    // [282] No rule under the header: the tab band below continues its
+    // colour, the plate's edge under the tabs is the only seam.
     ui.painter()
         .rect_filled(header_rect, 0.0, PANEL_SKEUO_HEADER);
-    ui.painter().hline(
-        header_rect.x_range(),
-        header_rect.bottom(),
-        egui::Stroke::new(1.0, LINE()),
-    );
 
     ui.allocate_new_ui(
         egui::UiBuilder::new()
@@ -1976,7 +2032,7 @@ fn draw_panel_header(
                         None => {
                             ui.label(RichText::new("Lane").font(f_sans_sb(11.0)).color(INK3()))
                                 .on_hover_text(
-                                    "Editing the lane's own sound. Right-click a step in the grid to edit that step's p-lock instead.",
+                                    "Editing the lane's own sound. Ctrl+click (Cmd+click on Mac) or right-click a step in the grid to edit that step's p-lock instead.",
                                 );
                         }
                     }
@@ -1988,14 +2044,26 @@ fn draw_panel_header(
 }
 
 /// [269] The Sound / Track tabs, with the accent rule in p-lock scope.
+///
+/// [282] Folder tabs (`skeuo::folder_tab`) on the header's band: the active
+/// one is cut from the plate and opens onto it, the other sits back. The
+/// flat blue half-width tabs were the one control of the panel without the
+/// skeuomorphic look.
 fn draw_panel_tabs(ui: &mut egui::Ui, state: &mut EditorUIState, scope_badge: Option<usize>) {
-    // Mode toggle: two FLUSH tabs — full width, 50/50, no radius, hairline between,
-    // blue when active, plaque colour (lightens on hover) when inactive. The only
-    // segmented in the app without a keycap: it reads as two tabs at the edge.
-    let tabs_rect = ui
-        .allocate_exact_size(Vec2::new(ui.available_width(), 30.0), egui::Sense::hover())
+    const BAND_H: f32 = 36.0;
+    const MARGIN: f32 = 14.0;
+    const GAP: f32 = 6.0;
+    let band = ui
+        .allocate_exact_size(Vec2::new(ui.available_width(), BAND_H), egui::Sense::hover())
         .0;
-    let half = tabs_rect.width() * 0.5;
+    let painter = ui.painter();
+    painter.rect_filled(band, 0.0, PANEL_SKEUO_HEADER);
+    // The plate's top edge, on a half pixel so the 1 px line stays crisp.
+    let base = band.bottom() - 0.5;
+    let tab_w = ((band.width() - 2.0 * MARGIN - GAP) * 0.5).round();
+    let edge = egui::Stroke::new(1.0, egui::Color32::from_rgb(20, 20, 24));
+
+    let mut active_span = None;
     for (idx, (tab, label, hover_txt)) in [
         (
             SoundEditorTab::Sound,
@@ -2011,60 +2079,67 @@ fn draw_panel_tabs(ui: &mut egui::Ui, state: &mut EditorUIState, scope_badge: Op
     .into_iter()
     .enumerate()
     {
-        let seg = egui::Rect::from_min_size(
-            egui::pos2(tabs_rect.left() + idx as f32 * half, tabs_rect.top()),
-            Vec2::new(half, tabs_rect.height()),
-        );
         let selected = state.sound_editor_tab == tab;
+        let x0 = band.left() + MARGIN + idx as f32 * (tab_w + GAP) + 0.5;
+        // The inactive tab stands 3 px lower: it sits behind the active one.
+        let height = if selected { 30.0 } else { 27.0 };
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(x0, base - height),
+            egui::pos2(x0 + tab_w - 1.0, base),
+        );
         let resp = ui
             .interact(
-                seg,
+                rect,
                 ui.make_persistent_id(("lane_editor_tab", idx)),
                 egui::Sense::click(),
             )
             .on_hover_text(hover_txt);
-        let fill = if selected {
-            BLUE()
+        crate::ui::skeuo::folder_tab(ui.painter(), rect, selected, resp.hovered());
+        let color = if selected {
+            INK()
         } else if resp.hovered() {
-            PANEL_SKEUO_HOVER
+            INK2()
         } else {
-            PANEL_SKEUO_HEADER
+            INK3()
         };
-        ui.painter().rect_filled(seg, 0.0, fill);
         ui.painter().text(
-            seg.center(),
+            egui::pos2(rect.center().x, rect.center().y + 0.5),
             egui::Align2::CENTER_CENTER,
             label,
-            f_mono_med(10.5),
-            if selected { Color32::WHITE } else { INK2() },
+            f_sans_sb(11.5),
+            color,
         );
+        if selected {
+            active_span = Some((rect.left(), rect.right()));
+        }
         if resp.clicked() {
             state.sound_editor_tab = tab;
         }
     }
 
-    // [184] In p-lock scope, an accent rule under the tabs. The rows below edit
-    // ONE step, not the lane, and that has to be unmistakable at a glance — the
-    // header badge alone is easy to miss. Painted over the existing seam, so it
-    // costs no height and cannot shift the scroll area.
-    if scope_badge.is_some() {
-        let rule = egui::Rect::from_min_size(
-            egui::pos2(tabs_rect.left(), tabs_rect.bottom() - 2.0),
-            Vec2::new(tabs_rect.width(), 2.0),
-        );
-        ui.painter().rect_filled(rule, 0.0, PL_LINK());
+    // The plate's edge, broken under the active tab (it opens onto the plate).
+    let painter = ui.painter();
+    match active_span {
+        Some((l, r)) => {
+            painter.hline(band.left()..=l, base, edge);
+            painter.hline(r..=band.right(), base, edge);
+        }
+        None => {
+            painter.hline(band.x_range(), base, edge);
+        }
     }
-    // Hairline between the two tabs + bottom border of the toggle band.
-    ui.painter().vline(
-        tabs_rect.center().x,
-        tabs_rect.y_range(),
-        egui::Stroke::new(1.0, LINE()),
-    );
-    ui.painter().hline(
-        tabs_rect.x_range(),
-        tabs_rect.bottom(),
-        egui::Stroke::new(1.0, LINE()),
-    );
+
+    // [184] In p-lock scope, an accent rule along the plate's edge. The rows
+    // below edit ONE step, not the lane, and that has to be unmistakable at a
+    // glance — the header badge alone is easy to miss. Drawn inside the band,
+    // so it costs no height and cannot shift the scroll area.
+    if scope_badge.is_some() {
+        let rule = egui::Rect::from_min_max(
+            egui::pos2(band.left(), band.bottom() - 2.0),
+            band.right_bottom(),
+        );
+        painter.rect_filled(rule, 0.0, PL_LINK());
+    }
 }
 
 /// [269] Sound tab only: the Step / Start / End switch and Default / Restore
@@ -2112,19 +2187,26 @@ fn draw_action_strip(
                 .iter()
                 .position(|tab| *tab == state.fusion_tab)
                 .unwrap_or(0);
-            let picked = help::zone(ui, "fusion_tab", help::EDITOR_FUSION_TAB, |ui| {
-                ui.add_enabled_ui(morph_available, |ui| {
+            // [282] Shown only where it does something: on a cell of a fused,
+            // multi-pulse group. Greyed everywhere else, its blue `Step` key
+            // still read as an active choice. Hiding it moves nothing: the
+            // strip keeps its height and Store / Restore / Default are
+            // right-aligned.
+            if morph_available {
+                let picked = help::zone(ui, "fusion_tab", help::EDITOR_FUSION_TAB, |ui| {
                     crate::ui::skeuo::segmented(
                         ui,
                         ("fusion_tab", slot),
                         &["Step", "Start", "End"],
                         selected,
                     )
-                })
-                .inner
-            });
-            if morph_available && picked != selected {
-                state.fusion_tab = tabs[picked.min(tabs.len() - 1)];
+                });
+                if picked != selected {
+                    state.fusion_tab = tabs[picked.min(tabs.len() - 1)];
+                }
+            } else {
+                // Keeps the strip's height without the switch.
+                ui.allocate_space(Vec2::new(0.0, CTL_HEIGHT));
             }
             // Right section: Store / Restore / Default.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2630,7 +2712,6 @@ fn draw_standard_rows(
         slot,
         voice_idx,
         page,
-        row_salt,
         ..
     } = *cx;
     let standard_defs = instrument.standard_params;
@@ -2685,6 +2766,35 @@ fn draw_standard_rows(
             {
                 continue;
             }
+            // [282] Bass drums: Hz / Note on its own "Mode" row, right above
+            // Frequency (the choice comes before the value it formats).
+            let note_row = instrument.freq_as_notes
+                && def.field == crate::instrument_registry::StandardField::Freq;
+            if note_row {
+                let freq_id = ParamId::Std(def.field);
+                let (_, mode_change) = row_scoped(
+                    ui,
+                    false,
+                    src.supports(freq_id).reason(),
+                    |ui| {
+                        draw_freq_mode_row(
+                            ui,
+                            ("freq_mode", cx.row_salt),
+                            src.get(ParamId::FreqMode) >= 0.5,
+                        )
+                    },
+                );
+                if let Some(notes) = mode_change {
+                    src.set(ParamId::FreqMode, notes as u8 as f32);
+                    if notes {
+                        // Entering note mode snaps to the nearest note.
+                        let ratio = instrument.freq_display_ratio;
+                        freq = note_to_freq(freq_to_note(freq * ratio).round()) / ratio;
+                        src.set(freq_id, freq);
+                    }
+                    changed = true;
+                }
+            }
             let row_rect = ui
                 .horizontal(|ui| {
                     let label_text =
@@ -2727,7 +2837,6 @@ fn draw_standard_rows(
                                     |ui| {
                                         draw_editor_frequency_row(
                                             ui,
-                                            ("freq_mode", row_salt),
                                             &label_text,
                                             &mut freq,
                                             *min,
@@ -2745,15 +2854,6 @@ fn draw_standard_rows(
                                 } else if row.value_changed || row.response.changed() {
                                     src.set(id, freq);
                                     changed = true;
-                                }
-                                if let Some(new_mode) = row.mode_change {
-                                    src.set(ParamId::FreqMode, new_mode as u8 as f32);
-                                    if new_mode {
-                                        let snapped_note = freq_to_note(freq * ratio).round();
-                                        freq = note_to_freq(snapped_note) / ratio;
-                                        src.set(ParamId::Std(field), freq);
-                                        changed = true;
-                                    }
                                 }
                             } else {
                                 let value: &mut f32 = match field {
@@ -2866,8 +2966,6 @@ fn draw_standard_rows(
             // [283] Every slider row but the Hz / Note frequency one carries
             // the page menu, so its help says so.
             let mut std_help = help::std_param(voice_idx, def.field);
-            let note_row = instrument.freq_as_notes
-                && def.field == crate::instrument_registry::StandardField::Freq;
             if matches!(
                 def.widget,
                 crate::instrument_registry::ParamWidget::Slider { .. }
@@ -3529,7 +3627,10 @@ fn draw_algorithm_row(
             if algos.len() > 1 {
                 let algo_param = params.algos()[state.selected_instrument];
                 help::zone(ui, "algorithm", help::EDITOR_ALGORITHM, |ui| {
-                    ui.horizontal(|ui| {
+                    // [282] Same gutter as the other rows (never overridden:
+                    // the algorithm is not p-lockable here), so its label
+                    // lines up instead of reading as a section title.
+                    with_gutter(ui, false, |ui| {
                         editor_label(ui, "Algorithm");
                         let algo_names: Vec<&str> = algos.iter().map(|a| a.name).collect();
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4054,7 +4155,6 @@ mod tests {
                             row_scoped(ui, false, None, |ui| {
                                 draw_editor_frequency_row(
                                     ui,
-                                    "freq_row_test",
                                     "Frequency",
                                     &mut value,
                                     20.0,
@@ -4077,11 +4177,17 @@ mod tests {
     /// Switching a kick's Frequency between Hz and Notes must not move the
     /// rows below it: same height, and same width — a Notes row 2 px wider
     /// than the column widened it and shifted every right-aligned row under it.
+    /// [282] And it must fit the params column: with the Hz / Note switch in
+    /// the row it overflowed by ~70 px, which widened the whole section.
     #[test]
     fn frequency_row_keeps_its_footprint_between_hz_and_notes() {
         let (hz_h, hz_w) = frequency_row_footprint(false);
         let (notes_h, notes_w) = frequency_row_footprint(true);
         assert!(hz_h > 0.0 && hz_w > 0.0);
+        assert!(
+            hz_w <= EDITOR_PARAMS_W && notes_w <= EDITOR_PARAMS_W,
+            "column {EDITOR_PARAMS_W} px: Hz {hz_w} px, Notes {notes_w} px"
+        );
         assert_eq!(hz_h, notes_h, "height: Hz {hz_h} px, Notes {notes_h} px");
         assert_eq!(
             hz_w, notes_w,

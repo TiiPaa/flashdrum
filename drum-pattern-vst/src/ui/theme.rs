@@ -371,8 +371,6 @@ pub const WELL_FILL: Color32 = Color32::from_rgb(29, 30, 34);
 pub const PANEL_SKEUO: Color32 = Color32::from_rgb(37, 38, 43);
 /// Header/tab band of the Lane Editor — slightly lighter than the panel body.
 pub const PANEL_SKEUO_HEADER: Color32 = Color32::from_rgb(44, 45, 51);
-/// Hover tint for the Lane Editor tabs.
-pub const PANEL_SKEUO_HOVER: Color32 = Color32::from_rgb(52, 53, 60);
 /// Dark border of plates/wells (#121215).
 pub const PANEL_BORDER: Color32 = Color32::from_rgb(18, 18, 21);
 /// Keycap (bouton biseauté) : texte au repos.

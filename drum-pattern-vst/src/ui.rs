@@ -256,6 +256,20 @@ pub fn create_editor(
             // Bitwig progressive-lag report. One cached flag load when off.
             crate::perf_log::sample_frame();
 
+            // [282] New instance: start on the Tommy01 pattern, once. A restored
+            // state carries the marker (see `filter_state`), so a saved project
+            // is never touched.
+            if !params_for_ui.instance_seeded.load(Ordering::SeqCst) {
+                params_for_ui.instance_seeded.store(true, Ordering::SeqCst);
+                crate::ui::preset_browser::apply_starting_pattern(
+                    &params_for_ui,
+                    &pattern_for_ui,
+                    &sound_settings_for_ui,
+                    state,
+                    setter,
+                );
+            }
+
             // [253] Free the textures the audio thread retired since the last
             // frame (the queue push is RT-safe, the drop is not). Cheap when
             // empty: one atomic load.

@@ -109,6 +109,13 @@ pub fn fusion_modifier_pressed(ui: &egui::Ui) -> bool {
     ui.input(|i| i.modifiers.shift) || platform_shift_pressed()
 }
 
+/// [282] Ctrl (Cmd on macOS) + click on a grid cell: point the Lane Editor at
+/// that cell without turning it on or off and without opening its menu. Same
+/// platform fallback as the other modifiers (hosts that swallow keys).
+pub fn select_cell_modifier_pressed(ui: &egui::Ui) -> bool {
+    ui.input(|i| i.modifiers.command) || platform_ctrl_pressed()
+}
+
 /// Fine-tune modifier for sliders ([181]). Accepts **Shift or Alt** — the
 /// gesture is documented as Alt but Shift was what the plock slider used, so
 /// both work rather than making the user guess.
@@ -142,6 +149,29 @@ fn platform_shift_pressed() -> bool {
 
 #[cfg(not(target_os = "windows"))]
 fn platform_shift_pressed() -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn platform_ctrl_pressed() -> bool {
+    const VK_CONTROL: i32 = 0x11;
+    const VK_LCONTROL: i32 = 0xA2;
+    const VK_RCONTROL: i32 = 0xA3;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetAsyncKeyState(vkey: i32) -> i16;
+    }
+
+    unsafe {
+        [VK_CONTROL, VK_LCONTROL, VK_RCONTROL]
+            .iter()
+            .any(|&key| (GetAsyncKeyState(key) as u16 & 0x8000) != 0)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn platform_ctrl_pressed() -> bool {
     false
 }
 

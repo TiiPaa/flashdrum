@@ -393,7 +393,14 @@ pub fn draw_plock_popup(
         .response;
 
     // Close popup on click outside.
-    if response.clicked_elsewhere() {
+    //
+    // [282] Not in the frame that opens it: the right-click release that
+    // opened the menu is still "a click" then. The Area did not exist the
+    // frame before (not hovered), and its rect is rounded to 1/32 pt, so with
+    // a fractional pointer (Zoom 125 %, Windows scaling) the click point
+    // could fall just outside its top-left corner and the menu closed as it
+    // opened: "shows one time in three".
+    if !popup.just_opened && response.clicked_elsewhere() {
         state.plock_popup = None;
     }
 

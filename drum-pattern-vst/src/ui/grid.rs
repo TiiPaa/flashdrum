@@ -705,6 +705,10 @@ fn draw_legacy_slot_lane_v2(
                 }
             }
 
+            // [282] Ctrl / Cmd + click selects a cell for the Lane Editor. Shift wins
+            // when both are held: it is the fusion gesture already in progress.
+            let select_cell_mode =
+                !fusion_mode_active && crate::ui::controls::select_cell_modifier_pressed(ui);
             for local_step in 0..16 {
                 let global_step = page_offset + local_step;
                 let beyond_len = global_step >= lane_length;
@@ -899,6 +903,7 @@ fn draw_legacy_slot_lane_v2(
                 if !beyond_len
                     && active
                     && !fusion_mode_active
+                    && !select_cell_mode
                     && fusion_group.is_none()
                     && response.is_pointer_button_down_on()
                     && ui.input(|i| i.pointer.primary_down())
@@ -960,6 +965,25 @@ fn draw_legacy_slot_lane_v2(
                         fusions,
                         &mut state.fusion_selection_start[slot_idx],
                     );
+                } else if !beyond_len
+                    && !suppress_click
+                    && response.clicked_by(egui::PointerButton::Primary)
+                    && select_cell_mode
+                {
+                    // [282] Select the cell for the Lane Editor: nothing is
+                    // toggled, no menu opens. A plain click turned the step off
+                    // when all the user wanted was to edit its sound. Song
+                    // mode stays locked out, as for the right-click: the
+                    // pattern changes under you there.
+                    if !params.song_mode.value() {
+                        select_legacy_track(state, slot_idx);
+                        state.sound_edit_target = Some(crate::ui::editor_state::SelectedCell {
+                            slot: slot_idx,
+                            step: source_step,
+                        });
+                        state.sound_editor_tab = crate::ui::editor_state::SoundEditorTab::Sound;
+                        ui.ctx().request_repaint();
+                    }
                 } else if !beyond_len && !suppress_click && response.clicked_by(egui::PointerButton::Primary) {
                     // Clicking outside the currently edited fusion exits edit mode.
                     if let Some((edit_inst, edit_idx)) = state.fusion_editing {

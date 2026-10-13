@@ -193,6 +193,7 @@ pub const LANE_SOLO: &str = "S = Solo: hear only the soloed lanes. As soon as on
 
 pub const LANE_STEPS: &str = "Steps of this lane.\n\
 - Click: turn a step on or off.\n\
+- Ctrl+click (Cmd+click on Mac): edit this step's sound in the Lane Editor, without turning it on or off.\n\
 - Shift+click two cells of the same page: fuse them into one long block that plays a number of evenly spaced hits (tuplets). Escape cancels.\n\
 - Hold a step half a second, then drag: move it, with its p-locks, within the page.\n\
 - Right-click: this step's p-lock menu (sound or sequencer locks, fusion settings).\n\

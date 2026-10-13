@@ -106,6 +106,9 @@ const OUTPUT_PORT_NAMES: [&str; AUX_OUT_COUNT] = [
 const STEP_COUNT: usize = 64;
 
 const PATTERN_STATE_FIELD: &str = "pattern-v5";
+/// [282] Key of `DrumFlashParams::instance_seeded` (same literal as its
+/// `#[persist]` attribute; a test checks they agree).
+const INSTANCE_SEEDED_FIELD: &str = "instance-seeded-v1";
 
 #[inline]
 fn add_stereo_aux_sample(
@@ -478,6 +481,13 @@ pub struct DrumFlashParams {
     /// is not a format bump; 16 are exposed below.
     #[persist = "macro-map-v1"]
     pub macro_map_state: macros::PersistentMacroMap,
+
+    /// [282] True once this instance has its content: the starting pattern
+    /// (Tommy01) applied at the first editor open of a NEW instance, or any
+    /// restored state ([`Plugin::filter_state`] adds it to sessions saved
+    /// before it existed, so an old project never receives Tommy01).
+    #[persist = "instance-seeded-v1"]
+    pub instance_seeded: Arc<AtomicBool>,
 
     #[id = "macro_1"]
     pub macro_1: FloatParam,
@@ -1044,6 +1054,7 @@ impl Default for DrumFlashParams {
             user_textures: user_textures::UserTextures::new(),
 
             macro_map_state: macros::PersistentMacroMap::new(),
+            instance_seeded: Arc::new(AtomicBool::new(false)),
 
             macro_1: FloatParam::new("Macro 1", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
             macro_2: FloatParam::new("Macro 2", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
@@ -3906,6 +3917,17 @@ impl Plugin for DrumFlashVst {
     }
 
     fn filter_state(state: &mut PluginState) {
+        // [282] A restored state is never a new instance: it must not get the
+        // starting pattern. Sessions saved before the marker existed get it
+        // here (this runs before the fields are deserialized).
+        if !state.fields.contains_key(INSTANCE_SEEDED_FIELD) {
+            if let Ok(serialized) = serialize_field(&true) {
+                state
+                    .fields
+                    .insert(INSTANCE_SEEDED_FIELD.to_string(), serialized);
+            }
+        }
+
         if state.fields.contains_key(PATTERN_STATE_FIELD) {
             return;
         }
@@ -4485,6 +4507,39 @@ mod tests {
         assert_eq!(loaded[0].end_cell, 6);
         assert_eq!(loaded[0].step_count, 4);
         assert_eq!(loaded[0].morph_count, 0);
+    }
+
+    /// [282] A restored state never gets the starting pattern: filter_state
+    /// marks any state without the marker (sessions saved before it existed)
+    /// as seeded, and leaves a saved marker as it is. A fresh instance's
+    /// marker starts false, and the key is the one the params persist under.
+    #[test]
+    fn restored_states_are_marked_seeded_and_new_instances_are_not() {
+        let mut old_session = PluginState {
+            version: String::new(),
+            params: Default::default(),
+            fields: Default::default(),
+        };
+        DrumFlashVst::filter_state(&mut old_session);
+        let marker = old_session.fields.get(INSTANCE_SEEDED_FIELD).expect("marker added");
+        assert!(deserialize_field::<bool>(marker).unwrap());
+
+        let mut saved_unseeded = PluginState {
+            version: String::new(),
+            params: Default::default(),
+            fields: Default::default(),
+        };
+        saved_unseeded.fields.insert(
+            INSTANCE_SEEDED_FIELD.to_string(),
+            serialize_field(&false).unwrap(),
+        );
+        DrumFlashVst::filter_state(&mut saved_unseeded);
+        let marker = saved_unseeded.fields.get(INSTANCE_SEEDED_FIELD).unwrap();
+        assert!(!deserialize_field::<bool>(marker).unwrap());
+
+        let params = DrumFlashParams::default();
+        assert!(!params.instance_seeded.load(Ordering::SeqCst));
+        assert!(params.serialize_fields().contains_key(INSTANCE_SEEDED_FIELD));
     }
 
     #[test]

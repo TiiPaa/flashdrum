@@ -61,7 +61,7 @@ pub fn draw_bottom_panel(
         Vec2::new(150.0, CTL_HEIGHT),
     );
     let selected = state.bottom_panel_tab.min(1);
-    ui.allocate_new_ui(
+    let switch_right = ui.allocate_new_ui(
         egui::UiBuilder::new()
             .max_rect(switch_rect)
             .layout(egui::Layout::left_to_right(egui::Align::Min)),
@@ -76,7 +76,10 @@ pub fn draw_bottom_panel(
                 state.bottom_panel_tab = new_selected;
             }
         },
-    );
+    )
+    .response
+    .rect
+    .right();
 
     let meta = if state.bottom_panel_tab == 1 {
         if let Ok(bank) = params.pattern_bank.bank.lock() {
@@ -98,7 +101,9 @@ pub fn draw_bottom_panel(
         )
     };
     painter.text(
-        egui::pos2(rect.left() + BOTTOM_PAD_X + 142.0, switch_rect.center().y),
+        // [282] After the switch's real width: a fixed x (142) let the
+        // switch, wider since the +1 font bump, run under the text.
+        egui::pos2(switch_right + 12.0, switch_rect.center().y),
         egui::Align2::LEFT_CENTER,
         meta,
         f_mono_med(10.5),

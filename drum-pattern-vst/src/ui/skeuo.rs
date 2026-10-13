@@ -756,3 +756,261 @@ fn fade_line_mesh_shape(rect: egui::Rect, rgb3: (u8, u8, u8), peak: u8) -> egui:
     m.add_triangle(1, 5, 4);
     egui::Shape::mesh(m)
 }
+
+// ============================================================
+// [282] Lane Editor module — one Sound-tab section pressed into the plate:
+// recessed body, optional title strip with a blue wash under the title
+// (no vertical accent: a vertical bar at the left edge is the p-lock / morph
+// marker's shape). Returned as shapes because the section's height is only
+// known once its rows are laid out: the caller reserves a slot first.
+// ============================================================
+pub const MODULE_STRIP_H: f32 = 26.0;
+
+/// [282] Colour of the blue washes (module strips, active Lane Editor tab):
+/// the pressed-blue keycap's top colour, so a wash and the Step / Hz keys are
+/// the same blue. The accent `BLUE()` laid thin over the grey plate came out
+/// a desaturated slate next to the keys.
+pub const WASH_BLUE: Color32 = rgb(47, 134, 196);
+/// Opacity of a wash where it is strongest.
+pub const WASH_ALPHA: f32 = 110.0;
+
+pub fn editor_module(ctx: &egui::Context, rect: egui::Rect, title: Option<&str>) -> egui::Shape {
+    use egui::{pos2, vec2, CornerRadius, Rect, Shape, Stroke, StrokeKind};
+    let mut shapes = Vec::with_capacity(16);
+    // [282] One line per edge: no lit lip around the module, no highlight
+    // or crease on the strip (its lighter fill is the separation). Stacked
+    // modules otherwise showed four or five hairlines in a dozen pixels.
+    shapes.push(Shape::rect_filled(rect, 5.0, rgb(30, 31, 35)));
+    // recess wall: shadow fading down from the top edge
+    for i in 0..4 {
+        let a = 90 - i * 22;
+        let y = rect.top() + 1.0 + i as f32;
+        shapes.push(Shape::rect_filled(
+            Rect::from_min_max(
+                pos2(rect.left() + 4.0, y),
+                pos2(rect.right() - 4.0, y + 1.0),
+            ),
+            0.0,
+            Color32::from_black_alpha(a as u8),
+        ));
+    }
+    if let Some(title) = title {
+        let strip = Rect::from_min_size(rect.min, vec2(rect.width(), MODULE_STRIP_H));
+        shapes.push(Shape::rect_filled(
+            strip,
+            CornerRadius {
+                nw: 5,
+                ne: 5,
+                sw: 0,
+                se: 0,
+            },
+            rgb(41, 42, 48),
+        ));
+        // blue wash, strongest under the title, gone past mid-width. Its
+        // top-left corner follows the strip's rounding: a square corner
+        // poked a blue pixel past the module's border.
+        let b = WASH_BLUE;
+        let wash = Rect::from_min_max(
+            strip.min + vec2(1.0, 1.0),
+            pos2(strip.left() + strip.width() * 0.55, strip.bottom() - 1.0),
+        );
+        // Alpha falls linearly with x, which the triangles interpolate exactly.
+        let tint = |x: f32| {
+            let t = ((x - wash.left()) / wash.width()).clamp(0.0, 1.0);
+            Color32::from_rgba_unmultiplied(b.r(), b.g(), b.b(), (WASH_ALPHA * (1.0 - t)) as u8)
+        };
+        let r = 4.0; // the strip's 5 px corner, 1 px in
+        let mut outline = vec![wash.left_bottom()];
+        for i in 0..=6 {
+            let a = std::f32::consts::FRAC_PI_2 * i as f32 / 6.0;
+            outline.push(pos2(
+                wash.left() + r - r * a.cos(),
+                wash.top() + r - r * a.sin(),
+            ));
+        }
+        outline.push(wash.right_top());
+        outline.push(wash.right_bottom());
+        // Convex outline: a fan from its first vertex covers it.
+        let mut m = egui::epaint::Mesh::default();
+        for p in &outline {
+            m.colored_vertex(*p, tint(p.x));
+        }
+        for i in 1..outline.len() as u32 - 1 {
+            m.add_triangle(0, i, i + 1);
+        }
+        shapes.push(Shape::mesh(m));
+        // tracked caps title, on the labels' x
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            &title.to_uppercase(),
+            0.0,
+            egui::TextFormat {
+                font_id: f_sans_sb(10.0),
+                color: INK(),
+                extra_letter_spacing: 1.4,
+                ..Default::default()
+            },
+        );
+        let galley = ctx.fonts(|f| f.layout_job(job));
+        let pos = pos2(
+            rect.left() + MODULE_TITLE_X,
+            strip.center().y - galley.size().y * 0.5,
+        );
+        shapes.push(Shape::galley(pos, galley, INK()));
+    }
+    shapes.push(Shape::rect_stroke(
+        rect,
+        5.0,
+        Stroke::new(1.0, rgb(20, 20, 24)),
+        StrokeKind::Inside,
+    ));
+    Shape::Vec(shapes)
+}
+
+/// x of a module's title from the module's left edge: the labels' x.
+pub const MODULE_TITLE_X: f32 = 22.0;
+
+// ============================================================
+// [282] Value readout — the recessed field a Lane Editor value sits in.
+// ============================================================
+pub fn value_readout(ui: &egui::Ui, rect: egui::Rect, text: &str, color: Color32) {
+    use egui::{pos2, vec2, Align2, Rect, Stroke, StrokeKind};
+    let p = ui.painter();
+    let r = rect.shrink2(vec2(0.0, 1.0));
+    p.rect_filled(r, 3.0, rgb(24, 25, 29));
+    p.rect_filled(
+        Rect::from_min_size(r.min + vec2(2.0, 1.0), vec2(r.width() - 4.0, 2.0)),
+        0.0,
+        Color32::from_black_alpha(70),
+    );
+    p.rect_stroke(
+        r,
+        3.0,
+        Stroke::new(1.0, rgb(19, 19, 22)),
+        StrokeKind::Inside,
+    );
+    p.text(
+        pos2(r.right() - 6.0, r.center().y),
+        Align2::RIGHT_CENTER,
+        text,
+        f_mono(11.0),
+        color,
+    );
+}
+
+// ============================================================
+// [282] Folder tab — the Lane Editor's Sound / Track tabs. One rounded-top
+// shape, its outline following the corners (open at the bottom: the tab
+// stands on the plate's edge). The active tab is cut from the plate (plate
+// colour + the keycap-blue wash) and opens onto it; the other sits lower and
+// darker. `rect.bottom()` is the plate edge.
+// ============================================================
+pub const FOLDER_TAB_RADIUS: f32 = 6.0;
+
+fn folder_tab_outline(r: egui::Rect) -> Vec<egui::Pos2> {
+    let rad = FOLDER_TAB_RADIUS;
+    let n = 8;
+    let mut pts = Vec::with_capacity(2 * n + 4);
+    pts.push(r.left_bottom());
+    for i in 0..=n {
+        let a = std::f32::consts::FRAC_PI_2 * i as f32 / n as f32;
+        pts.push(egui::pos2(
+            r.left() + rad - rad * a.cos(),
+            r.top() + rad - rad * a.sin(),
+        ));
+    }
+    for i in 0..=n {
+        let a = std::f32::consts::FRAC_PI_2 * i as f32 / n as f32;
+        pts.push(egui::pos2(
+            r.right() - rad + rad * a.sin(),
+            r.top() + rad - rad * a.cos(),
+        ));
+    }
+    pts.push(r.right_bottom());
+    pts
+}
+
+/// Fan fill of a convex outline with a vertical ramp, alpha included
+/// (premultiplied lerp — `lerp_c` would make a translucent wash opaque).
+fn vertical_ramp_fill(
+    pts: &[egui::Pos2],
+    top: Color32,
+    bottom: Color32,
+    y0: f32,
+    y1: f32,
+) -> egui::Shape {
+    let mut m = egui::epaint::Mesh::default();
+    for p in pts {
+        let t = ((p.y - y0) / (y1 - y0)).clamp(0.0, 1.0);
+        let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+        m.colored_vertex(
+            *p,
+            Color32::from_rgba_premultiplied(
+                l(top.r(), bottom.r()),
+                l(top.g(), bottom.g()),
+                l(top.b(), bottom.b()),
+                l(top.a(), bottom.a()),
+            ),
+        );
+    }
+    for i in 1..pts.len() as u32 - 1 {
+        m.add_triangle(0, i, i + 1);
+    }
+    egui::Shape::mesh(m)
+}
+
+pub fn folder_tab(p: &egui::Painter, rect: egui::Rect, active: bool, hovered: bool) {
+    let pts = folder_tab_outline(rect);
+    if active {
+        p.add(vertical_ramp_fill(
+            &pts,
+            PANEL_SKEUO,
+            PANEL_SKEUO,
+            rect.top(),
+            rect.bottom(),
+        ));
+        let b = WASH_BLUE;
+        p.add(vertical_ramp_fill(
+            &pts,
+            Color32::from_rgba_unmultiplied(b.r(), b.g(), b.b(), WASH_ALPHA as u8),
+            Color32::TRANSPARENT,
+            rect.top(),
+            rect.bottom(),
+        ));
+        // Open onto the plate: cover the plate edge under the tab.
+        p.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(rect.left() + 0.5, rect.bottom() - 0.5),
+                egui::pos2(rect.right() - 0.5, rect.bottom() + 1.0),
+            ),
+            0.0,
+            PANEL_SKEUO,
+        );
+        crate::ui::widgets::plateau_line(
+            p,
+            egui::Rect::from_min_max(
+                egui::pos2(rect.left() + 3.0, rect.top() + 0.5),
+                egui::pos2(rect.right() - 3.0, rect.top() + 1.5),
+            ),
+            (255, 255, 255),
+            16,
+        );
+    } else {
+        let (top, bottom) = if hovered {
+            (rgb(48, 49, 55), rgb(41, 42, 47))
+        } else {
+            (rgb(40, 41, 47), rgb(34, 35, 40))
+        };
+        p.add(vertical_ramp_fill(
+            &pts,
+            top,
+            bottom,
+            rect.top(),
+            rect.bottom(),
+        ));
+    }
+    p.add(egui::Shape::line(
+        pts,
+        egui::Stroke::new(1.0, rgb(20, 20, 24)),
+    ));
+}
