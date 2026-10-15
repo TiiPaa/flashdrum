@@ -7,6 +7,7 @@ mod buzz;
 mod ch606;
 mod clap;
 mod cymbal;
+mod delay;
 mod dsp;
 mod hihat;
 mod kick;
@@ -16,6 +17,7 @@ mod open_hihat;
 mod perc1;
 #[cfg(test)]
 mod retrig_tests;
+mod reverb;
 mod ride;
 mod rift;
 pub mod sample_bank;
@@ -43,6 +45,14 @@ pub use hihat::HiHatVoice;
 pub use kick::KickVoice;
 pub use kick_808::Kick808Voice;
 pub use oneshot::OneShotVoice;
+#[allow(unused_imports)]
+pub use delay::sp as delay_sp;
+#[allow(unused_imports)]
+pub use delay::synced_time_ms as delay_synced_time_ms;
+pub use delay::{DelayCore, DelayParams, DelayVoice};
+#[allow(unused_imports)]
+pub use reverb::sp as reverb_sp;
+pub use reverb::{ReverbCore, ReverbParams, ReverbVoice};
 pub use open_hihat::OpenHiHatVoice;
 pub use perc1::Perc1Voice;
 pub use ride::RideVoice;
@@ -111,10 +121,19 @@ pub enum DrumVoice {
     Rift = 25,
     /// [243] One-Shot - the lane's own sample file, played start to finish.
     OneShot = 26,
+    /// [286] Reverb - the send effect of an effect-bus slot (not a sound source).
+    Reverb = 27,
+    /// [286] Delay - the second send effect.
+    Delay = 28,
 }
 
 impl DrumVoice {
-    pub const COUNT: usize = 27;
+    pub const COUNT: usize = 29;
+
+    /// [286] An effect (Reverb, Delay), not a sound source: no steps, no note.
+    pub const fn is_effect_index(index: usize) -> bool {
+        index == Self::Reverb as usize || index == Self::Delay as usize
+    }
 
     pub fn from_index(index: usize) -> Option<Self> {
         match index {
@@ -145,6 +164,8 @@ impl DrumVoice {
             24 => Some(Self::Oh606),
             25 => Some(Self::Rift),
             26 => Some(Self::OneShot),
+            27 => Some(Self::Reverb),
+            28 => Some(Self::Delay),
             _ => None,
         }
     }
@@ -259,8 +280,9 @@ impl VoiceSettings {
             ParamId::Std(F::Stereo) => self.stereo,
             ParamId::Algo => self.algo as f32,
             ParamId::Special(index) => self.special.get(index).copied().unwrap_or(0.0),
-            // A display mode has no place in the synthesis settings.
-            ParamId::FreqMode => 0.0,
+            // A display mode has no place in the synthesis settings, and a send
+            // level belongs to the track layout ([286]).
+            ParamId::FreqMode | ParamId::FxSend(_) => 0.0,
         }
     }
 
@@ -289,7 +311,7 @@ impl VoiceSettings {
                     self.special[index] = value;
                 }
             }
-            ParamId::FreqMode => {}
+            ParamId::FreqMode | ParamId::FxSend(_) => {}
         }
     }
 
@@ -402,7 +424,7 @@ impl VoiceSettings {
             stereo: 0.0,
             algo: 0,
             special: [
-                0.3, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.3, 0.0, 0.0, 0.0, 1.0, 0.0, 0.7071, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
         }
@@ -425,7 +447,7 @@ impl VoiceSettings {
             stereo: 0.0,
             algo: 0,
             special: [
-                0.3, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.3, 0.0, 0.0, 0.0, 1.0, 0.0, 0.7071, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
         }
@@ -448,7 +470,7 @@ impl VoiceSettings {
             stereo: 0.0,
             algo: 0,
             special: [
-                0.3, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.3, 0.0, 0.0, 0.0, 1.0, 0.0, 0.7071, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
         }
@@ -696,6 +718,59 @@ impl VoiceSettings {
     /// [243] One-Shot: the lane's file, whole; envelope times are fractions of
     /// the played region (decay 1.0 = rings to its end); filter wide open, no
     /// saturation.
+    /// [286] The delay's settings: Volume is the return level; the knobs live in
+    /// `special[]` (see `delay::sp`; 4 and 31 are reserved by the p-lock layout).
+    pub fn delay() -> Self {
+        Self {
+            frequency: 1000.0,
+            decay: 1.0,
+            volume: 1.0,
+            filter_freq: 20000.0,
+            attack: 0.0,
+            release: 0.0,
+            decay_curve: 0.0,
+            release_curve: 0.0,
+            hold: 0.0,
+            filter_env_amount: 0.0,
+            filter_env_decay: 0.05,
+            analog: 0.5,
+            stereo: 0.0,
+            algo: 0,
+            // time ms, feedback, damping, low cut Hz, (4 reserved), ping-pong, -, glide
+            special: [
+                375.0, 0.4, 0.4, 100.0, 0.0, 0.5, 0.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        }
+    }
+
+    /// [286] The reverb's settings: Volume is the return level; the six knobs
+    /// live in `special[]` (see `reverb::sp`; 4 and 31 are reserved by the
+    /// p-lock layout). The standard fields are unused except Volume.
+    pub fn reverb() -> Self {
+        Self {
+            frequency: 1000.0,
+            decay: 1.0,
+            volume: 1.0,
+            filter_freq: 20000.0,
+            attack: 0.0,
+            release: 0.0,
+            decay_curve: 0.0,
+            release_curve: 0.0,
+            hold: 0.0,
+            filter_env_amount: 0.0,
+            filter_env_decay: 0.05,
+            analog: 0.5,
+            stereo: 0.0,
+            algo: 0,
+            // size, decay s, damping, pre-delay ms, (4 reserved), low cut Hz, width
+            special: [
+                1.0, 2.5, 0.5, 20.0, 0.0, 120.0, 1.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        }
+    }
+
     pub fn oneshot() -> Self {
         Self {
             frequency: 0.0,
@@ -781,7 +856,7 @@ impl VoiceSettings {
             //  14 filt_type, 15 filt_dec_curve, 16 filt_atk_curve, …]
             special: [
                 55.0, 0.85, 0.55, 0.3, 0.0, 0.3, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6,
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
         }
     }
@@ -811,7 +886,7 @@ impl VoiceSettings {
             //  16 filt_hold, 17 modulation_type, …]
             special: [
                 5.7, 0.7, 1.8, 0.38, 0.32, 0.0, 0.0, 1.0, 1.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.6,
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.7071, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
         }
     }
@@ -938,12 +1013,12 @@ impl VoiceSettings {
     pub fn tm6ac() -> Self {
         // [0 Model, 1 Strike, 2 Snap, 3 Glide, 4 Modes, 5 Tail Noise]
         Self::ac6(
-            150.0,
+            124.435,
             0.35,
             0.8,
             0.0005,
             5.0,
-            &[(0, 0.0), (1, 0.5), (2, 0.5), (3, 0.5), (4, 0.5), (5, 0.5)],
+            &[(0, 1.0), (1, 0.5), (2, 0.5), (3, 0.5), (4, 0.5), (5, 0.5)],
         )
     }
 }
@@ -1073,6 +1148,10 @@ drum_voice_kinds! {
     Oh606(Ch606Voice),
     Rift(RiftVoice),
     OneShot(OneShotVoice),
+    /// [286] Carried by an effect slot; the DSP is `DrumSynthesizer::fx`.
+    Reverb(ReverbVoice),
+    /// [286] Carried by an effect slot; the DSP is `DrumSynthesizer::fx_delay`.
+    Delay(DelayVoice),
     Buzz(BuzzVoice),
     Sdrex(SdrexVoice),
     Bd6Ac(AcVoice),
@@ -1158,6 +1237,8 @@ fn create_voice_for_kind(
             sample_rate,
             OneShotSettings::from(VoiceSettings::oneshot()),
         )),
+        K::Reverb => DrumVoiceKind::Reverb(ReverbVoice),
+        K::Delay => DrumVoiceKind::Delay(DelayVoice),
         K::Buzz => DrumVoiceKind::Buzz(BuzzVoice::new(
             sample_rate,
             BuzzSettings::from(VoiceSettings::buzz()),
@@ -1199,6 +1280,53 @@ fn create_voice_for_kind(
     }
 }
 
+/// [286] Values the Lane Editor shows for an effect bus ("Playing now").
+pub const FX_LIVE_FIELDS: usize = 8;
+
+/// [286] What an effect bus is using for this moment, whichever effect it hosts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FxParams {
+    Reverb(ReverbParams),
+    Delay(DelayParams),
+}
+
+impl FxParams {
+    /// The values the Lane Editor's "Playing now" module shows, in the order of
+    /// that effect's rows (see `fx_live_rows`).
+    pub fn live_values(&self) -> [f32; FX_LIVE_FIELDS] {
+        match self {
+            FxParams::Reverb(p) => [
+                p.size,
+                p.decay_s,
+                p.damping,
+                p.predelay_ms,
+                p.low_cut_hz,
+                p.high_cut_hz,
+                p.width,
+                p.level,
+            ],
+            FxParams::Delay(p) => [
+                p.time_ms,
+                p.feedback,
+                p.damping,
+                p.low_cut_hz,
+                p.high_cut_hz,
+                p.pingpong,
+                p.width,
+                p.level,
+            ],
+        }
+    }
+
+    #[cfg(test)]
+    pub fn reverb(self) -> Option<ReverbParams> {
+        match self {
+            FxParams::Reverb(p) => Some(p),
+            FxParams::Delay(_) => None,
+        }
+    }
+}
+
 pub struct DrumSynthesizer {
     voices: Box<[Option<Box<DrumVoiceKind>>; crate::track::MAX_TRACKS]>,
     sample_rate: f32,
@@ -1213,14 +1341,34 @@ pub struct DrumSynthesizer {
     /// [228] The instance's user textures, handed to every voice that reads
     /// samples. `None` in the test harness: embedded textures only.
     texture_pool: Option<std::sync::Arc<sample_bank::TexturePool>>,
+    /// [286] A reverb AND a delay per effect bus (Fx1, Fx2): the lane can change
+    /// kind while playing, so both are allocated up front, in
+    /// `initialize_with_layout` (non-RT).
+    fx_reverb: [ReverbCore; crate::track::FX_SLOT_COUNT],
+    fx_delay: [DelayCore; crate::track::FX_SLOT_COUNT],
+    /// A bus that was muted: its tail was flushed once, not every sample.
+    fx_bypassed: [bool; crate::track::FX_SLOT_COUNT],
+    /// Smoothed send level of every lane to every bus.
+    send_state: [[f32; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
+    send_coef: f32,
+    /// [286] The send levels p-locked on the step a lane last fired: they replace the
+    /// lane's own sends until its next hit (`None` = follow the lane).
+    send_override: [[Option<f32>; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
 }
 
 const VELOCITY_SMOOTH_MS: f32 = 1.5;
+const SEND_SMOOTH_MS: f32 = 5.0;
 
 impl DrumSynthesizer {
     pub fn new() -> Self {
         Self {
             texture_pool: None,
+            fx_reverb: std::array::from_fn(|_| ReverbCore::new(44100.0)),
+            fx_delay: std::array::from_fn(|_| DelayCore::new(44100.0)),
+            fx_bypassed: [false; crate::track::FX_SLOT_COUNT],
+            send_state: [[0.0; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
+            send_override: [[None; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
+            send_coef: 1.0 - (-1.0 / (44100.0 * SEND_SMOOTH_MS * 0.001f32)).exp(),
             voices: Box::new(std::array::from_fn(|_| None)),
             sample_rate: 44100.0,
             velocities: [1.0; crate::track::MAX_TRACKS],
@@ -1245,6 +1393,10 @@ impl DrumSynthesizer {
         layout: &crate::track::TrackLayoutState,
     ) {
         self.sample_rate = sample_rate;
+        // [286] The effects' buffers: allocated here (non-RT), never in `process`.
+        self.fx_reverb = std::array::from_fn(|_| ReverbCore::new(sample_rate));
+        self.fx_delay = std::array::from_fn(|_| DelayCore::new(sample_rate));
+        self.send_coef = 1.0 - (-1.0 / (sample_rate * SEND_SMOOTH_MS * 0.001)).exp();
         for smoother in self.velocity_smoothers.iter_mut() {
             *smoother = dsp::OnePoleSmoother::new(sample_rate, VELOCITY_SMOOTH_MS, 1.0);
         }
@@ -1349,17 +1501,116 @@ impl DrumSynthesizer {
         }
     }
 
+    /// [286] The sends of a lane for the hit that is about to fire: the step's p-locks,
+    /// or `None` to follow the lane's own levels.
+    pub fn set_send_override(&mut self, slot: usize, bus: usize, level: Option<f32>) {
+        if let Some(cell) = self.send_override.get_mut(slot).and_then(|row| row.get_mut(bus)) {
+            *cell = level.map(|v| v.clamp(0.0, 1.0));
+        }
+    }
+
+    /// [286] Back to the lanes' own sends (the transport stopped: a slider moved while
+    /// stopped must be heard, not shadowed by the last hit's locks).
+    pub fn clear_send_overrides(&mut self) {
+        self.send_override = [[None; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
+    }
+
+    /// [286] Hand a bus its parameters for this moment (the p-lock evaluation
+    /// runs at control rate and replaces the slider values with the locked ones).
+    pub fn set_fx_params(&mut self, bus: usize, params: FxParams) {
+        if bus >= crate::track::FX_SLOT_COUNT {
+            return;
+        }
+        match params {
+            FxParams::Reverb(p) => self.fx_reverb[bus].set_params(p),
+            FxParams::Delay(p) => self.fx_delay[bus].set_params(p),
+        }
+    }
+
+    /// [286] The effect buses. Call right after `process_voice_samples_stereo`:
+    /// every instrument lane (slots below `FX_FIRST_SLOT`) feeds each bus by its
+    /// send level (post-fader: `outputs` already carries the lane Volume, and a
+    /// lane routed away from Main still feeds the bus), the bus runs its reverb,
+    /// and the wet return replaces the bus slot's output. A slot that is not an
+    /// active Reverb (empty, or a grandfathered instrument) is left untouched.
+    /// `bypass` mutes a bus: its tail is flushed once and it returns silence.
+    pub fn process_fx(
+        &mut self,
+        outputs: &mut [[f32; 2]; crate::track::MAX_TRACKS],
+        sends: &[[f32; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
+        bypass: [bool; crate::track::FX_SLOT_COUNT],
+    ) {
+        for bus in 0..crate::track::FX_SLOT_COUNT {
+            let slot = crate::track::FX_FIRST_SLOT + bus;
+            // 0 = not an effect (empty, or a grandfathered instrument), 1 = reverb,
+            // 2 = delay.
+            let which = if self.active[slot] {
+                match self.voices[slot].as_deref() {
+                    Some(DrumVoiceKind::Reverb(_)) => 1,
+                    Some(DrumVoiceKind::Delay(_)) => 2,
+                    _ => 0,
+                }
+            } else {
+                0
+            };
+            if which == 0 {
+                continue;
+            }
+            if bypass[bus] {
+                if !self.fx_bypassed[bus] {
+                    self.fx_reverb[bus].reset();
+                    self.fx_delay[bus].reset();
+                    self.fx_bypassed[bus] = true;
+                }
+                outputs[slot] = [0.0, 0.0];
+                continue;
+            }
+            self.fx_bypassed[bus] = false;
+            let (mut in_l, mut in_r) = (0.0f32, 0.0f32);
+            for lane in 0..crate::track::FX_FIRST_SLOT {
+                let level = &mut self.send_state[lane][bus];
+                let wanted = self.send_override[lane][bus].unwrap_or(sends[lane][bus]);
+                *level += (wanted - *level) * self.send_coef;
+                in_l += outputs[lane][0] * *level;
+                in_r += outputs[lane][1] * *level;
+            }
+            let (l, r) = if which == 1 {
+                self.fx_reverb[bus].process(in_l, in_r)
+            } else {
+                self.fx_delay[bus].process(in_l, in_r)
+            };
+            outputs[slot] = [l, r];
+        }
+    }
+
     pub fn reset(&mut self) {
         for voice in self.voices.iter_mut().flatten() {
             voice.reset();
         }
+        for fx in self.fx_reverb.iter_mut() {
+            fx.reset();
+        }
+        for fx in self.fx_delay.iter_mut() {
+            fx.reset();
+        }
+        self.send_state = [[0.0; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
+        self.send_override = [[None; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
     }
 
     pub fn set_voice_settings(&mut self, slot_idx: usize, settings: VoiceSettings) {
         if !self.active.get(slot_idx).copied().unwrap_or(false) {
             return;
         }
+        // [286] An effect slot's reverb or delay is driven by the same settings push.
         if let Some(Some(voice)) = self.voices.get_mut(slot_idx) {
+            if crate::track::is_fx_slot(slot_idx) {
+                let bus = slot_idx - crate::track::FX_FIRST_SLOT;
+                match &**voice {
+                    DrumVoiceKind::Reverb(_) => self.fx_reverb[bus].set_params(ReverbParams::from(&settings)),
+                    DrumVoiceKind::Delay(_) => self.fx_delay[bus].set_params(DelayParams::from(&settings)),
+                    _ => {}
+                }
+            }
             voice.set_settings(settings);
         }
     }
@@ -1410,6 +1661,12 @@ impl DrumSynthesizer {
         }
         self.velocity_smoothers[slot_idx] =
             dsp::OnePoleSmoother::new(self.sample_rate, VELOCITY_SMOOTH_MS, 1.0);
+        // [286] A new kind on an effect slot starts with a clean tail.
+        if crate::track::is_fx_slot(slot_idx) {
+            let bus = slot_idx - crate::track::FX_FIRST_SLOT;
+            self.fx_reverb[bus].reset();
+            self.fx_delay[bus].reset();
+        }
     }
 }
 
@@ -1426,6 +1683,137 @@ mod tests {
             sum += outputs[voice_idx][0].abs() + outputs[voice_idx][1].abs();
         }
         sum
+    }
+
+    /// [286] Run a kick through the effect bus and return the energy of the bus slot.
+    fn fx_return_energy(send: f32, bypass: bool) -> f32 {
+        use crate::track::{TrackInstrumentKind as K, TrackLayoutState, TrackSlot, FX_FIRST_SLOT};
+        let mut layout = TrackLayoutState::empty_layout();
+        layout.slots[0] = TrackSlot::active_with_kind(K::Kick);
+        layout.slots[FX_FIRST_SLOT] = TrackSlot::active_with_kind(K::Reverb);
+        let mut synth = DrumSynthesizer::new();
+        synth.initialize_with_layout(44100.0, &layout);
+        synth.set_voice_settings(0, VoiceSettings::kick());
+        synth.set_voice_settings(FX_FIRST_SLOT, VoiceSettings::reverb());
+        synth.trigger(0, 1.0);
+        let mut sends = [[0.0f32; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
+        sends[0][0] = send;
+        let mut energy = 0.0f32;
+        let mut outputs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
+        for _ in 0..44_100 {
+            synth.process_voice_samples_stereo(&mut outputs);
+            synth.process_fx(&mut outputs, &sends, [bypass, false]);
+            energy += outputs[FX_FIRST_SLOT][0].powi(2) + outputs[FX_FIRST_SLOT][1].powi(2);
+        }
+        energy
+    }
+
+    #[test]
+    fn the_send_level_feeds_the_reverb_bus() {
+        assert_eq!(fx_return_energy(0.0, false), 0.0, "no send, no return");
+        let half = fx_return_energy(0.5, false);
+        let full = fx_return_energy(1.0, false);
+        assert!(half > 0.01, "a send must produce a tail: {half}");
+        assert!(full > half * 2.0, "more send, more return: {half} -> {full}");
+    }
+
+    /// [286] A p-locked send replaces the lane's own for the hit, and `None` goes back.
+    #[test]
+    fn a_send_override_replaces_the_lane_send_for_the_hit() {
+        use crate::track::{TrackInstrumentKind as K, TrackLayoutState, TrackSlot, FX_FIRST_SLOT};
+        let mut layout = TrackLayoutState::empty_layout();
+        layout.slots[0] = TrackSlot::active_with_kind(K::Kick);
+        layout.slots[FX_FIRST_SLOT] = TrackSlot::active_with_kind(K::Reverb);
+        let run = |lane_send: f32, locked: Option<f32>| {
+            let mut synth = DrumSynthesizer::new();
+            synth.initialize_with_layout(44100.0, &layout);
+            synth.set_voice_settings(0, VoiceSettings::kick());
+            synth.set_voice_settings(FX_FIRST_SLOT, VoiceSettings::reverb());
+            synth.set_send_override(0, 0, locked);
+            synth.trigger(0, 1.0);
+            let mut sends = [[0.0f32; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
+            sends[0][0] = lane_send;
+            let mut energy = 0.0f32;
+            let mut outputs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
+            for _ in 0..44_100 {
+                synth.process_voice_samples_stereo(&mut outputs);
+                synth.process_fx(&mut outputs, &sends, [false, false]);
+                energy += outputs[FX_FIRST_SLOT][0].powi(2);
+            }
+            energy
+        };
+        assert_eq!(run(0.0, None), 0.0);
+        assert!(run(0.0, Some(1.0)) > 0.01, "a lock sends even when the lane does not");
+        assert_eq!(run(1.0, Some(0.0)), 0.0, "a lock of 0 silences a lane that sends");
+    }
+
+    /// [286] The same bus hosts a delay: a kick sent to it comes back later, and the lane
+    /// can switch from one effect to the other while playing.
+    #[test]
+    fn an_effect_bus_can_host_a_delay_and_switch_effects() {
+        use crate::track::{TrackInstrumentKind as K, TrackLayoutState, TrackSlot, FX_FIRST_SLOT};
+        let mut layout = TrackLayoutState::empty_layout();
+        layout.slots[0] = TrackSlot::active_with_kind(K::Kick);
+        layout.slots[FX_FIRST_SLOT] = TrackSlot::active_with_kind(K::Delay);
+        let mut synth = DrumSynthesizer::new();
+        synth.initialize_with_layout(44100.0, &layout);
+        synth.set_voice_settings(0, VoiceSettings::kick());
+        synth.set_voice_settings(FX_FIRST_SLOT, VoiceSettings::delay());
+        synth.trigger(0, 1.0);
+        let mut sends = [[0.0f32; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
+        sends[0][0] = 1.0;
+        let mut outputs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
+        let (mut early, mut late) = (0.0f32, 0.0f32);
+        for n in 0..44_100 {
+            synth.process_voice_samples_stereo(&mut outputs);
+            synth.process_fx(&mut outputs, &sends, [false, false]);
+            let e = outputs[FX_FIRST_SLOT][0].powi(2) + outputs[FX_FIRST_SLOT][1].powi(2);
+            // Default time 375 ms: nothing before ~350 ms, the repeat after.
+            if n < 14_000 {
+                early += e;
+            } else if n < 20_000 {
+                late += e;
+            }
+        }
+        assert!(early < 1.0e-6, "the delay must wait before repeating: {early}");
+        assert!(late > 0.01, "the repeat must arrive: {late}");
+        // The lane becomes a reverb: its tail starts clean.
+        synth.reinitialize_slot(FX_FIRST_SLOT, K::Reverb);
+        synth.set_voice_settings(FX_FIRST_SLOT, VoiceSettings::reverb());
+        synth.process_voice_samples_stereo(&mut outputs);
+        synth.process_fx(&mut outputs, &sends, [false, false]);
+        assert!(outputs[FX_FIRST_SLOT][0].is_finite());
+    }
+
+    #[test]
+    fn a_muted_bus_returns_silence() {
+        assert_eq!(fx_return_energy(1.0, true), 0.0);
+    }
+
+    /// The kick itself stays untouched by the bus.
+    #[test]
+    fn the_bus_does_not_change_the_dry_lane() {
+        use crate::track::{TrackInstrumentKind as K, TrackLayoutState, TrackSlot, FX_FIRST_SLOT};
+        let mut layout = TrackLayoutState::empty_layout();
+        layout.slots[0] = TrackSlot::active_with_kind(K::Kick);
+        layout.slots[FX_FIRST_SLOT] = TrackSlot::active_with_kind(K::Reverb);
+        let dry = |send: f32| {
+            let mut synth = DrumSynthesizer::new();
+            synth.initialize_with_layout(44100.0, &layout);
+            synth.set_voice_settings(0, VoiceSettings::kick());
+            synth.trigger(0, 1.0);
+            let mut sends = [[0.0f32; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
+            sends[0][0] = send;
+            let mut out = Vec::new();
+            let mut outputs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
+            for _ in 0..4_000 {
+                synth.process_voice_samples_stereo(&mut outputs);
+                synth.process_fx(&mut outputs, &sends, [false, false]);
+                out.push(outputs[0]);
+            }
+            out
+        };
+        assert_eq!(dry(0.0), dry(1.0));
     }
 
     #[test]
@@ -1911,6 +2299,8 @@ mod tests {
                 K::Oh6smp => VoiceSettings::oh606(),
                 K::Rift => VoiceSettings::rift(),
                 K::OneShot => VoiceSettings::oneshot(),
+                K::Reverb => VoiceSettings::reverb(),
+                K::Delay => VoiceSettings::delay(),
             }
         }
 

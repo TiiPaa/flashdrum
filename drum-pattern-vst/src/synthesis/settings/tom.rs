@@ -14,6 +14,8 @@ pub struct TomSettings {
     pub filter_env_decay: f32,
     pub analog: f32,
     pub stick_attack: f32,
+    /// Filter Q (0.7071 = the former fixed Butterworth response).
+    pub resonance: f32,
     pub saturation_type: u8,
     pub saturation_amount: f32,
     pub saturation_mix: f32,
@@ -37,6 +39,7 @@ impl From<VoiceSettings> for TomSettings {
             filter_env_decay: v.filter_env_decay,
             analog: v.analog,
             stick_attack: v.special[0],
+            resonance: super::resonance_or(v.special[6], std::f32::consts::FRAC_1_SQRT_2),
             saturation_type: v.special[1] as u8,
             saturation_amount: v.special[2],
             saturation_mix: v.special[3],
@@ -56,6 +59,7 @@ impl From<TomSettings> for VoiceSettings {
         special[3] = t.saturation_mix;
         special[4] = t.saturation_output_gain;
         special[5] = t.saturation_pre_filter;
+        special[6] = t.resonance;
         Self {
             frequency: t.frequency,
             attack: t.attack,

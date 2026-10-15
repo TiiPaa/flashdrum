@@ -91,6 +91,9 @@ pub struct GlobalSource<'a> {
     pub slot: usize,
     pub voice_idx: usize,
     pub algo: &'a dyn AlgoSink,
+    /// [286] The track layout, where a lane's send levels live (they are not part of
+    /// the sound settings). `None` in tests and wherever no send is edited.
+    layout: Option<&'a crate::track::PersistentTrackLayout>,
     /// Set by `set`, consumed by `commit`: one version bump per frame instead of
     /// one per edited row.
     dirty: bool,
@@ -108,8 +111,15 @@ impl<'a> GlobalSource<'a> {
             slot,
             voice_idx,
             algo,
+            layout: None,
             dirty: false,
         }
+    }
+
+    /// [286] Give this source the track layout, so the send rows can read and write it.
+    pub fn with_layout(mut self, layout: &'a crate::track::PersistentTrackLayout) -> Self {
+        self.layout = Some(layout);
+        self
     }
 
     /// The registry's factory default for this parameter — the one definition,
@@ -125,6 +135,9 @@ impl ParamSource for GlobalSource<'_> {
     fn get(&self, id: ParamId) -> f32 {
         match id {
             ParamId::Algo => self.algo.get() as f32,
+            ParamId::FxSend(bus) => self
+                .layout
+                .map_or(0.0, |layout| layout.state.fx_send(self.slot, bus)),
             _ => self.settings.instruments[self.slot].get(id),
         }
     }
@@ -132,6 +145,17 @@ impl ParamSource for GlobalSource<'_> {
     fn set(&mut self, id: ParamId, value: f32) {
         match id {
             ParamId::Algo => self.algo.set(value.round().clamp(0.0, 255.0) as u8),
+            ParamId::FxSend(bus) => {
+                if let (Some(layout), true) = (self.layout, bus < crate::track::FX_SLOT_COUNT) {
+                    use nih_plug::params::persist::PersistentField;
+                    let mut state = PersistentField::<crate::track::TrackLayoutState>::map(
+                        layout,
+                        |s| s.clone(),
+                    );
+                    state.slots[self.slot].fx_send[bus] = value.clamp(0.0, 1.0);
+                    PersistentField::<crate::track::TrackLayoutState>::set(layout, state);
+                }
+            }
             _ => {
                 self.settings.instruments[self.slot].set(id, value);
                 self.dirty = true;
@@ -179,7 +203,16 @@ impl<'a> PlockSource<'a> {
         Self { plock, step, base }
     }
 
+    /// [286] A lane-wide switch (the effect lane's Glide): never locked, every scope
+    /// reads and writes the lane's own value.
+    fn lane_wide(&self, id: ParamId) -> bool {
+        crate::instrument_registry::param_is_lane_global(self.base.voice_idx, id)
+    }
+
     fn field(&self, id: ParamId) -> Option<usize> {
+        if self.lane_wide(id) {
+            return None;
+        }
         if id.is_lockable() {
             id.plock_field()
         } else {
@@ -204,8 +237,9 @@ impl ParamSource for PlockSource<'_> {
     }
 
     fn set(&mut self, id: ParamId, value: f32) {
-        // A display mode belongs to the lane, in every scope.
-        if id == ParamId::FreqMode {
+        // A display mode (and the effect lane's Glide, [286]) belongs to the lane, in
+        // every scope.
+        if id == ParamId::FreqMode || self.lane_wide(id) {
             return self.base.set(id, value);
         }
         if let Some(field) = self.field(id) {
@@ -238,6 +272,9 @@ impl ParamSource for PlockSource<'_> {
     }
 
     fn supports(&self, id: ParamId) -> Support {
+        if self.lane_wide(id) {
+            return Support::Editable;
+        }
         match id.unlockable_reason() {
             Some(reason) => Support::Disabled(reason),
             None => Support::Editable,
@@ -516,6 +553,33 @@ mod tests {
 
     fn global<'a>(settings: &'a SoundSettingsState, algo: &'a CellAlgo) -> GlobalSource<'a> {
         GlobalSource::new(settings, SLOT, VOICE, algo)
+    }
+
+    /// [286] The effect lane's Glide is a lane-wide switch: toggling it with a cell
+    /// selected changes the lane, never creates a lock on that cell.
+    #[test]
+    fn the_effect_lane_glide_is_never_locked_per_step() {
+        let layout = TrackLayoutState::default_layout();
+        let settings = SoundSettingsState::new(&layout);
+        let algo = CellAlgo(Cell::new(0));
+        let reverb = crate::synthesis::DrumVoice::Reverb as usize;
+        let glide = ParamId::Special(crate::synthesis::reverb_sp::GLIDE);
+        let plock = PlockState::new();
+        let mut src = PlockSource::new(&plock, STEP, GlobalSource::new(&settings, SLOT, reverb, &algo));
+        settings.instruments[SLOT].set_special(crate::synthesis::reverb_sp::GLIDE, 0.0);
+        assert_eq!(src.get(glide), 0.0);
+        src.set(glide, 1.0);
+        assert_eq!(src.get(glide), 1.0, "read back");
+        assert_eq!(
+            settings.instruments[SLOT].special_value(crate::synthesis::reverb_sp::GLIDE),
+            1.0,
+            "the lane's own value changed"
+        );
+        assert!(!src.is_overridden(glide));
+        assert!(!plock.masks.is_active(SLOT, STEP), "no lock was created");
+        // The other reverb knobs still lock per step.
+        src.set(ParamId::Special(crate::synthesis::reverb_sp::DECAY), 4.0);
+        assert!(plock.masks.is_active(SLOT, STEP));
     }
 
     #[test]

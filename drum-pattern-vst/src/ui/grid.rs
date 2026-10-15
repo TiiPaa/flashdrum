@@ -89,13 +89,15 @@ pub fn draw_grid_v2(
 
             let row_w = ui.available_width();
             let grip_w = 14.0;
-            let name_w = 62.0;
-            let vol_w = 56.0;
+            // [289] Hum left the row for the Track tab: its column went to the
+            // lane name and the volume bar (62 -> 88, 56 -> 81 = 44 + 7).
+            let name_w = 88.0;
+            let vol_w = 81.0;
             // [216] Two tags now (M / S): the audition button is gone.
             let mst_w = STEP_H * 2.0 + GAP_TIGHT;
             let extra_w = 44.0;
             let gap = 7.0;
-            let fixed_w = grip_w + name_w + vol_w + mst_w + extra_w * 3.0 + gap * 7.0;
+            let fixed_w = grip_w + name_w + vol_w + mst_w + extra_w * 2.0 + gap * 6.0;
             let steps_w = (row_w - fixed_w).max(320.0);
             let cell_w = ((steps_w - GAP_TIGHT * 15.0) / 16.0).floor().max(18.0);
 
@@ -118,8 +120,6 @@ pub fn draw_grid_v2(
             );
 
             let mixer_rows = mixer_rows(params);
-            let hums: [&FloatParam; crate::track::MAX_TRACKS] =
-                std::array::from_fn(|i| params.humanizes()[i]);
             let pushes: [&FloatParam; crate::track::MAX_TRACKS] =
                 std::array::from_fn(|i| params.pushes()[i]);
             let lengths: [&IntParam; crate::track::MAX_TRACKS] =
@@ -172,7 +172,6 @@ pub fn draw_grid_v2(
                     inst,
                     row,
                     &fusions,
-                    hums[slot_idx],
                     pushes[slot_idx],
                     lengths[slot_idx],
                     page_offset,
@@ -191,7 +190,15 @@ pub fn draw_grid_v2(
                 lane_row_rects[slot_idx] = Some(row_response.rect);
             }
 
-            if state.lane_drag_source.is_some() {
+            // [286] The effect buses stay on lanes 13 / 14: they are not dragged, and an
+            // instrument never lands among them.
+            let dragging_instrument = state.lane_drag_source.is_some_and(|from| {
+                !crate::track::is_fx_slot(from)
+                    || !PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| {
+                        s.slots[from].kind.is_effect()
+                    })
+            });
+            if dragging_instrument {
                 if let Some(pointer_pos) = ui.input(|input| input.pointer.interact_pos()) {
                     if let Some(gap) = compute_reorder_gap(&lane_row_rects, pointer_pos) {
                         // [191] Same snap as the drop, so the line is drawn where
@@ -199,7 +206,8 @@ pub fn draw_grid_v2(
                         let gap =
                             PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| {
                                 s.snap_gap_out_of_chains(gap)
-                            });
+                            })
+                            .min(crate::track::FX_FIRST_SLOT);
                         draw_lane_reorder_indicator(ui, &lane_row_rects, gap);
                     }
                 }
@@ -300,7 +308,6 @@ fn draw_legacy_slot_lane_v2(
     voice_idx: usize,
     row: &MixerRow<'_>,
     fusions: &[FusedGroup],
-    hum_param: &FloatParam,
     push_param: &FloatParam,
     length_param: &IntParam,
     page_offset: usize,
@@ -325,6 +332,9 @@ fn draw_legacy_slot_lane_v2(
 
         let layout_state =
             PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());
+        // [286] An effect bus: its cells carry p-locks, never steps.
+        let is_fx = layout_state.slots[slot_idx].kind.is_effect();
+        let fusion_mode_active = fusion_mode_active && !is_fx;
 
         // [191] A link is positional, so a follower cannot travel on its own:
         // moving it, or slipping a lane above it, would re-point the link at
@@ -426,7 +436,7 @@ fn draw_legacy_slot_lane_v2(
             0.0
         };
         let name_response =
-            draw_lane_name_v2(ui, name_w, selected, &slot_name, flash).help(help::LANE_NAME);
+            draw_lane_name_v2(ui, name_w, selected, &slot_name, flash, is_fx).help(help::LANE_NAME);
 
         if name_response.clicked() {
             select_legacy_track(state, slot_idx);
@@ -460,7 +470,7 @@ fn draw_legacy_slot_lane_v2(
                     ui.set_min_width(110.0);
                     ui.set_max_width(110.0);
                     // Shared category▸kind picker (identical everywhere).
-                    picked_kind = crate::ui::menus::instrument_category_menu(ui, Some(current_kind));
+                    picked_kind = crate::ui::menus::instrument_category_menu(ui, Some(current_kind), slot_idx);
                 },
             );
             instrument_menu.response.help(help::MENU_INSTRUMENT);
@@ -567,48 +577,62 @@ fn draw_legacy_slot_lane_v2(
                     state.lane_clear_grid_confirm = None;
                 }
             }
-            // Randomize density (drives the Randomize Lane row below).
-            {
-                let mut density = state.randomize_density();
-                let response = ui.horizontal(|ui| {
-                    ui.label(RichText::new("Density").font(f_sans_med(10.0)).color(INK3()));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(
-                            crate::ui::local_param_slider::LocalParamSlider::new(
-                                &mut density,
-                                0.05..=1.0,
+            // [286] Nothing to randomize on an effect bus.
+            if !is_fx {
+                // Randomize density (drives the Randomize Lane row below).
+                {
+                    let mut density = state.randomize_density();
+                    let response = ui.horizontal(|ui| {
+                        ui.label(RichText::new("Density").font(f_sans_med(10.0)).color(INK3()));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add(
+                                crate::ui::local_param_slider::LocalParamSlider::new(
+                                    &mut density,
+                                    0.05..=1.0,
+                                )
+                                .with_width(72.0)
+                                .without_value()
+                                .reset_value(crate::ui::editor_state::DEFAULT_RANDOMIZE_DENSITY),
                             )
-                            .with_width(72.0)
-                            .without_value()
-                            .reset_value(crate::ui::editor_state::DEFAULT_RANDOMIZE_DENSITY),
-                        )
-                    })
-                    .inner
-                });
-                help::rect(ui, response.response.rect, "menu_density", help::MENU_DENSITY);
-                if response.inner.changed() {
-                    state.randomize_density = density;
+                        })
+                        .inner
+                    });
+                    help::rect(ui, response.response.rect, "menu_density", help::MENU_DENSITY);
+                    if response.inner.changed() {
+                        state.randomize_density = density;
+                    }
                 }
-            }
-            if context_menu_button(ui, "Randomize Lane", INK(), true)
-                .help_or(
-                    help::MENU_RANDOMIZE,
-                    "Fill this lane with random steps (clears fusions and plocks) at the Density above",
-                )
-                .clicked()
-            {
-                state.randomize_lane(params, slot_idx, pattern, plock);
-                // Flash visual feedback
-                state.slot_flash_until[slot_idx] = ui.ctx().input(|i| i.time) + 0.5;
-                state.lane_delete_confirm = None;
-                ui.close_menu();
+                if context_menu_button(ui, "Randomize Lane", INK(), true)
+                    .help_or(
+                        help::MENU_RANDOMIZE,
+                        "Fill this lane with random steps (clears fusions and plocks) at the Density above",
+                    )
+                    .clicked()
+                {
+                    state.randomize_lane(params, slot_idx, pattern, plock);
+                    // Flash visual feedback
+                    state.slot_flash_until[slot_idx] = ui.ctx().input(|i| i.time) + 0.5;
+                    state.lane_delete_confirm = None;
+                    ui.close_menu();
+                }
             }
         });
 
         let inst_state = &sound_settings.instruments[slot_idx];
-        let mut lane_vol = f32::from_bits(inst_state.volume.load(Ordering::Relaxed));
+        // [288] Displayed 0..1; the stored gain keeps its 0..2 range.
+        let mut lane_vol =
+            f32::from_bits(inst_state.volume.load(Ordering::Relaxed)) * 0.5;
         let lane_vol_response =
-            draw_mini_value_slider(ui, &mut lane_vol, 0.0, 2.0, 1.0, vol_w, BLUE(), "")
+            draw_mini_value_slider(
+                ui,
+                &mut lane_vol,
+                0.0,
+                1.0,
+                0.5,
+                vol_w,
+                if is_fx { AMBER() } else { BLUE() },
+                "",
+            )
                 .help(help::LANE_VOL);
         if lane_vol_response.clicked() || lane_vol_response.dragged() {
             select_legacy_track(state, slot_idx);
@@ -616,7 +640,7 @@ fn draw_legacy_slot_lane_v2(
         if lane_vol_response.changed() {
             inst_state
                 .volume
-                .store(lane_vol.to_bits(), Ordering::Relaxed);
+                .store((lane_vol * 2.0).to_bits(), Ordering::Relaxed);
             sound_settings.bump_version();
         }
 
@@ -631,26 +655,31 @@ fn draw_legacy_slot_lane_v2(
                 Color32::WHITE,
                 "",
             )
-            .help(help::LANE_MUTE)
+            .help(if is_fx { help::LANE_FX_MUTE } else { help::LANE_MUTE })
             .clicked()
                 && params.auto_edit.value()
             {
                 select_legacy_track(state, slot_idx);
             }
-            if draw_tag_param_v2(
-                ui,
-                setter,
-                row.solo,
-                "S",
-                GREEN(),
-                SOLO_FILL(),
-                "",
-            )
-            .help(help::LANE_SOLO)
-            .clicked()
-                && params.auto_edit.value()
-            {
-                select_legacy_track(state, slot_idx);
+            if is_fx {
+                // [286] A bus has no solo; keep its column.
+                let _ = ui.allocate_exact_size(Vec2::splat(TAG_SIZE), egui::Sense::hover());
+            } else {
+                if draw_tag_param_v2(
+                    ui,
+                    setter,
+                    row.solo,
+                    "S",
+                    GREEN(),
+                    SOLO_FILL(),
+                    "",
+                )
+                .help(help::LANE_SOLO)
+                .clicked()
+                    && params.auto_edit.value()
+                {
+                    select_legacy_track(state, slot_idx);
+                }
             }
             // [216] Two tags instead of three: the "T" audition button is gone.
             // Its MIDI lamp moved to the name plate, above.
@@ -707,8 +736,10 @@ fn draw_legacy_slot_lane_v2(
 
             // [282] Ctrl / Cmd + click selects a cell for the Lane Editor. Shift wins
             // when both are held: it is the fusion gesture already in progress.
-            let select_cell_mode =
-                !fusion_mode_active && crate::ui::controls::select_cell_modifier_pressed(ui);
+            // [286] On an effect bus a click always selects the cell (to edit its
+            // p-lock): there is no step to switch on.
+            let select_cell_mode = is_fx
+                || (!fusion_mode_active && crate::ui::controls::select_cell_modifier_pressed(ui));
             for local_step in 0..16 {
                 let global_step = page_offset + local_step;
                 let beyond_len = global_step >= lane_length;
@@ -786,11 +817,12 @@ fn draw_legacy_slot_lane_v2(
                     d.active && d.slot == slot_idx && d.current_target == global_step
                 });
 
+                // [286] On an effect bus a cell with a lock reads as "on".
                 let (fill, mut stroke) = step_colors_v2(
                     ui.ctx(),
-                    state.sequencer_mode,
+                    state.sequencer_mode && !is_fx,
                     local_step,
-                    active,
+                    active || (is_fx && has_sound_plock),
                     has_sound_plock,
                     is_snapshot,
                     has_seq_plock,
@@ -804,6 +836,13 @@ fn draw_legacy_slot_lane_v2(
                 if is_drag_target {
                     stroke = egui::Stroke::new(2.0, DRAG_TARGET());
                 }
+                // [286] The first cell of an effect lane carries the loop-restart mark: a
+                // green icon while the lane goes back to its own values at every loop,
+                // a struck-out grey one when that restart is switched off.
+                let fx_loop_start = is_fx && global_step == 0 && !has_sound_plock && !beyond_len;
+                let fx_restart_on = sound_settings.instruments[slot_idx]
+                    .special_value(crate::synthesis::reverb_sp::NO_RESTART)
+                    < 0.5;
                 let text = if is_fusion_start {
                     fusion_group
                         .map(|g| g.step_count.to_string())
@@ -830,6 +869,16 @@ fn draw_legacy_slot_lane_v2(
                     active,
                     is_editing,
                 );
+
+                if fx_loop_start {
+                    if fx_restart_on {
+                        draw_loop_reset_icon(ui.painter(), response.rect, PL_LINK(), false);
+                        help::rect(ui, response.rect, ("fx_loop_start", slot_idx), help::FX_LOOP_START);
+                    } else {
+                        draw_loop_reset_icon(ui.painter(), response.rect, INK3(), false);
+                        help::rect(ui, response.rect, ("fx_loop_start", slot_idx), help::FX_LOOP_HOLD);
+                    }
+                }
 
                 // [210] The `[` that opens the span, over the cell that is
                 // waiting for its end.
@@ -965,6 +1014,22 @@ fn draw_legacy_slot_lane_v2(
                         fusions,
                         &mut state.fusion_selection_start[slot_idx],
                     );
+                } else if fx_loop_start
+                    && !suppress_click
+                    && response.clicked_by(egui::PointerButton::Primary)
+                {
+                    // [286] The loop-restart arrow of an effect lane: a click switches the
+                    // restart on or off for the lane (green / grey). A right-click still
+                    // opens the cell's lock menu.
+                    let lane = &sound_settings.instruments[slot_idx];
+                    let off = lane.special_value(crate::synthesis::reverb_sp::NO_RESTART) >= 0.5;
+                    lane.set_special(
+                        crate::synthesis::reverb_sp::NO_RESTART,
+                        if off { 0.0 } else { 1.0 },
+                    );
+                    sound_settings.bump_version();
+                    select_legacy_track(state, slot_idx);
+                    ui.ctx().request_repaint();
                 } else if !beyond_len
                     && !suppress_click
                     && response.clicked_by(egui::PointerButton::Primary)
@@ -1029,7 +1094,7 @@ fn draw_legacy_slot_lane_v2(
                         // earlier Sound-mode right-click on the same lane —
                         // otherwise creating a seq plock leaves the panel stuck
                         // on the sound plock Step tab.
-                        if !state.sequencer_mode {
+                        if is_fx || !state.sequencer_mode {
                             state.sound_edit_target =
                                 Some(crate::ui::editor_state::SelectedCell {
                                     slot: slot_idx,
@@ -1049,7 +1114,7 @@ fn draw_legacy_slot_lane_v2(
                                 just_opened: true,
                                 // [213] Seeded from the grid mode, then free to
                                 // change inside the menu.
-                                sequencer: state.sequencer_mode,
+                                sequencer: state.sequencer_mode && !is_fx,
                             });
                         }
                     }
@@ -1058,40 +1123,31 @@ fn draw_legacy_slot_lane_v2(
         })
         .response
         .rect;
-        help::rect(ui, steps_rect, ("lane_steps", slot_idx), help::LANE_STEPS);
+        help::rect(ui, steps_rect, ("lane_steps", slot_idx), if is_fx { help::LANE_FX_STEPS } else { help::LANE_STEPS });
 
-        let hum_response = draw_param_mini_slider_with_value(
-            ui,
-            setter,
-            hum_param,
-            0.0,
-            1.0,
-            extra_w,
-            BLUE(),
-            "Humanize",
-            |value| format!("{:>3}%", (value * 100.0).round() as i32),
-        )
-        .help(help::LANE_HUM);
-        if hum_response.clicked() || hum_response.dragged() || hum_response.double_clicked() {
-            select_legacy_track(state, slot_idx);
-        }
-        let push_response = draw_param_mini_slider_with_value(
-            ui,
-            setter,
-            push_param,
-            -50.0,
-            50.0,
-            extra_w,
-            BLUE(),
-            "Push/Pull",
-            |value| format!("{:+.0} ms", value),
-        )
-        .help(help::LANE_PUSH);
-        if push_response.clicked() || push_response.dragged() || push_response.double_clicked() {
-            select_legacy_track(state, slot_idx);
-        }
-        if draw_track_length_control(ui, setter, params, length_param, slot_idx, master_length) {
-            select_legacy_track(state, slot_idx);
+        if is_fx {
+            // [286] A bus has no push/pull and no length of its own: keep the columns.
+            draw_empty_lane_chip_v2(ui, extra_w, "");
+            draw_empty_lane_chip_v2(ui, extra_w, "");
+        } else {
+            let push_response = draw_param_mini_slider_with_value(
+                ui,
+                setter,
+                push_param,
+                -50.0,
+                50.0,
+                extra_w,
+                BLUE(),
+                "Push/Pull",
+                |value| format!("{:+.0} ms", value),
+            )
+            .help(help::LANE_PUSH);
+            if push_response.clicked() || push_response.dragged() || push_response.double_clicked() {
+                select_legacy_track(state, slot_idx);
+            }
+            if draw_track_length_control(ui, setter, params, length_param, slot_idx, master_length) {
+                select_legacy_track(state, slot_idx);
+            }
         }
     })
     .response
@@ -1137,19 +1193,25 @@ fn draw_empty_slot_lane_v2(
         // The +N chip opens the SHARED category▸kind picker (native menu root,
         // so the submenus work) — identical to the Track-tab Type field and the
         // lane right-click menu.
+        // [286] Lanes 13 and 14 are reserved for effects: their empty chip says so, in amber.
+        let fx_slot = crate::track::is_fx_slot(slot_idx);
         let add_btn = egui::Button::new(
-            RichText::new(format!("+{}", slot_idx + 1))
-                .font(f_mono_sb(11.0))
-                .color(FAINT()),
+            RichText::new(if fx_slot {
+                format!("Fx{}", slot_idx + 1 - crate::track::FX_FIRST_SLOT)
+            } else {
+                format!("+{}", slot_idx + 1)
+            })
+            .font(f_mono_sb(11.0))
+            .color(if fx_slot { AMBER() } else { FAINT() }),
         )
         .fill(BG())
-        .stroke(egui::Stroke::new(1.0, LINE()))
+        .stroke(egui::Stroke::new(1.0, if fx_slot { AMBER() } else { LINE() }))
         .corner_radius(RADIUS_PAD)
         .min_size(Vec2::new(name_w, 21.0));
         let picker = egui::menu::menu_custom_button(ui, add_btn, |ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
             ui.set_min_width(130.0);
-            crate::ui::menus::instrument_category_menu(ui, None)
+            crate::ui::menus::instrument_category_menu(ui, None, slot_idx)
         });
         if let Some(kind) = picker.inner.flatten() {
             activate_slot(
@@ -1165,7 +1227,7 @@ fn draw_empty_slot_lane_v2(
         picker
             .response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .help(help::EMPTY_SLOT)
+            .help(if crate::track::is_fx_slot(slot_idx) { help::EMPTY_FX_SLOT } else { help::EMPTY_SLOT })
             .context_menu(|ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 ui.set_min_width(118.0);
@@ -1206,7 +1268,6 @@ fn draw_empty_slot_lane_v2(
             }
         });
 
-        draw_empty_lane_chip_v2(ui, extra_w, "");
         draw_empty_lane_chip_v2(ui, extra_w, "");
         draw_empty_lane_chip_v2(ui, extra_w, "");
     });
@@ -1350,7 +1411,11 @@ fn handle_lane_reorder_drop(
     // the same snap the drop indicator draws, so what is shown is what happens.
     let gap = layout.snap_gap_out_of_chains(gap);
     let len = layout.chain_len(from).max(1);
-    let to = gap.min(crate::track::MAX_TRACKS.saturating_sub(len));
+    // [286] An effect lane never moves; an instrument stays above the buses.
+    if from < crate::track::MAX_TRACKS && layout.slots[from].kind.is_effect() {
+        return;
+    }
+    let to = gap.min(crate::track::FX_FIRST_SLOT.saturating_sub(len));
 
     // Dropping a chain inside itself changes nothing.
     if to >= from && to < from + len {
@@ -1621,6 +1686,11 @@ pub fn activate_slot(
         return;
     }
     new_state.slots[slot_idx] = TrackSlot::active_with_kind(kind);
+    // [286] An effect bus is named after its place: Fx1 (lane 13), Fx2 (lane 14).
+    if kind.is_effect() {
+        new_state.slots[slot_idx].name =
+            format!("Fx{}", slot_idx.saturating_sub(crate::track::FX_FIRST_SLOT) + 1);
+    }
     PersistentField::<TrackLayoutState>::set(&params.track_layout, new_state);
     // The slot's settings still hold whatever they were initialized with
     // (legacy defaults of the same index) — align them with the new kind.
@@ -1935,7 +2005,7 @@ fn draw_seq_header_v2(
         // (steps, fusions and p-locks wrap inside the pattern length).
         // The column is reserved at its FULL width first: `allocate_ui` kept
         // only what the two 14 px arrows use, which pulled every heading after
-        // it (Vol, M / S, the step numbers, Hum / Push / Len) ~32 px left of
+        // it (Vol, M / S, the step numbers, Push / Len) ~32 px left of
         // its column.
         let (name_rect, _) = ui.allocate_exact_size(Vec2::new(name_w, 16.0), egui::Sense::hover());
         let mut arrows = ui.new_child(
@@ -2011,7 +2081,6 @@ fn draw_seq_header_v2(
             }
         });
         for (label, text) in [
-            ("Hum", help::LANE_HUM),
             ("Push", help::LANE_PUSH),
             ("Len", help::LANE_LEN),
         ] {
@@ -2164,16 +2233,23 @@ fn create_oneshot_from_drop(
 }
 
 /// The drop target: the row UNDER the pointer when it hosts no active lane,
-/// else the first inactive slot. An occupied row is never replaced.
+/// else the first inactive slot. An occupied row is never replaced, and the
+/// effect-bus rows ([286]) never take an instrument.
 fn pick_drop_lane(pos: egui::Pos2, rects: &[Option<egui::Rect>], active: &[bool]) -> Option<usize> {
     for (i, rect) in rects.iter().enumerate() {
         if let Some(rect) = rect {
-            if rect.contains(pos) && !active.get(i).copied().unwrap_or(true) {
+            if rect.contains(pos)
+                && !crate::track::is_fx_slot(i)
+                && !active.get(i).copied().unwrap_or(true)
+            {
                 return Some(i);
             }
         }
     }
-    active.iter().position(|a| !*a)
+    active
+        .iter()
+        .take(crate::track::FX_FIRST_SLOT)
+        .position(|a| !*a)
 }
 
 fn draw_lane_name_v2(
@@ -2182,9 +2258,10 @@ fn draw_lane_name_v2(
     selected: bool,
     label: &str,
     flash: f32,
+    fx: bool,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 21.0), egui::Sense::click());
-    crate::ui::skeuo::lane_name(ui, rect, label, selected, flash);
+    crate::ui::skeuo::lane_name(ui, rect, label, selected, flash, fx);
     response
 }
 
@@ -2503,6 +2580,40 @@ fn step_colors_v2(
     }
 
     (fill, egui::Stroke::new(1.0, border))
+}
+
+/// [286] A small "back to the start" mark: three quarters of a circle with an arrow head,
+/// drawn with the painter (no font glyph to depend on).
+fn draw_loop_reset_icon(painter: &egui::Painter, rect: egui::Rect, color: Color32, struck: bool) {
+    let c = rect.center();
+    let r = (rect.height().min(rect.width()) * 0.27).clamp(4.0, 7.5);
+    let start = -0.35f32 * std::f32::consts::PI; // where the arrow head sits
+    let sweep = 1.55f32 * std::f32::consts::PI;
+    let points: Vec<egui::Pos2> = (0..=14)
+        .map(|i| {
+            let a = start - sweep * i as f32 / 14.0;
+            egui::pos2(c.x + r * a.cos(), c.y + r * a.sin())
+        })
+        .collect();
+    painter.add(egui::Shape::line(points, egui::Stroke::new(2.0, color)));
+    // Arrow head at the start of the arc, pointing along the sweep's reverse.
+    let tip = egui::pos2(c.x + r * start.cos(), c.y + r * start.sin());
+    let tangent = egui::vec2(-start.sin(), start.cos());
+    let normal = egui::vec2(start.cos(), start.sin());
+    let a = tip + tangent * (r * 0.55);
+    painter.add(egui::Shape::convex_polygon(
+        vec![a, tip + normal * (r * 0.5), tip - normal * (r * 0.5)],
+        color,
+        egui::Stroke::NONE,
+    ));
+    // Struck out: restart switched off.
+    if struck {
+        let d = r + 2.0;
+        painter.line_segment(
+            [egui::pos2(c.x - d, c.y + d), egui::pos2(c.x + d, c.y - d)],
+            egui::Stroke::new(2.0, color),
+        );
+    }
 }
 
 fn draw_mini_value_slider(
@@ -3576,7 +3687,7 @@ mod tests {
 
     /// The column headings must sit over their columns: the header row takes
     /// exactly the widths the lane rows use (grip, name, Vol, M / S, 16 cells,
-    /// Hum / Push / Len). The ‹ › arrows once shrank the name column to their
+    /// Push / Len). The ‹ › arrows once shrank the name column to their
     /// own width and pulled every heading after it ~32 px left.
     #[test]
     fn grid_header_keeps_every_column_at_its_width() {
@@ -3587,7 +3698,7 @@ mod tests {
         let mut state = crate::ui::editor_state::EditorUIState::default();
         let ctx = egui::Context::default();
         crate::ui::install_egui_fonts(&ctx);
-        let (grip_w, name_w, vol_w, extra_w, gap, cell_w) = (14.0, 62.0, 56.0, 44.0, 7.0, 30.0);
+        let (grip_w, name_w, vol_w, extra_w, gap, cell_w) = (14.0, 88.0, 81.0, 44.0, 7.0, 30.0);
         let mst_w = STEP_H * 2.0 + GAP_TIGHT;
         let mut width = 0.0;
         // A few passes: egui settles fonts and sizes over the first frames.
@@ -3631,8 +3742,8 @@ mod tests {
             + mst_w
             + 16.0 * cell_w
             + 15.0 * GAP_TIGHT
-            + 3.0 * extra_w
-            + 7.0 * gap;
+            + 2.0 * extra_w
+            + 6.0 * gap;
         assert!(
             (width - expected).abs() < 0.5,
             "header {width} px wide, its columns {expected} px"

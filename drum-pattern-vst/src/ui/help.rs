@@ -173,7 +173,7 @@ pub const GRID_STEP_NUMBERS: &str = "Step numbers of the page shown. Blue = the 
 // --- Grid: lane row ----------------------------------------------------------
 
 pub const LANE_GRIP: &str = "Drag to move this lane up or down.\n\
-It moves with everything it owns: steps, fusions, sound, p-locks, M/S, Hum/Push/Len and its place in every saved pattern. Linked lanes move together.";
+It moves with everything it owns: steps, fusions, sound, p-locks, M/S, Humanize/Push/Len and its place in every saved pattern. Linked lanes move together.";
 
 pub const LANE_GRIP_FOLLOWER: &str = "A linked lane follows the one above it, so it cannot be moved on its own. Move that lane instead: it takes its linked lanes with it.";
 
@@ -199,12 +199,22 @@ pub const LANE_STEPS: &str = "Steps of this lane.\n\
 - Right-click: this step's p-lock menu (sound or sequencer locks, fusion settings).\n\
 Colours: blue = on, green = sound p-lock, violet = sequencer p-lock, small dot in a corner = the other kind of p-lock, or a p-lock of a linked lane on that step. Dark dashed cells are beyond this lane's length.";
 
-pub const LANE_HUM: &str = "Hum = Humanize: random velocity on every hit. 0% = all hits equal, 100% = from soft to full. The timing is never changed.";
+pub const LANE_HUM: &str = "Humanize: random velocity on every hit. 0% = all hits equal, 100% = from soft to full. The timing is never changed.";
 
 pub const LANE_PUSH: &str = "Push = Push/Pull: moves the whole lane in time, -50 to +50 ms. Positive = later (laid back), negative = earlier (rushing).";
 
 pub const LANE_LEN: &str = "Len = this lane's own length (polymeter). Unlocked, it follows the pattern length.\n\
 Drag or type a value to lock it: the lane then loops on its own length, the other lanes keep theirs. Right-click > Follow pattern length to unlock.";
+
+pub const EMPTY_FX_SLOT: &str = "Effect bus (Fx1 = lane 13, Fx2 = lane 14). Click to add an effect here (Reverb or Delay); the other lanes then send to it from their Sound tab. Right-click: Paste Lane.";
+
+pub const FX_LOOP_START: &str = "Loop restart ON (green arrow): every time the pattern loops, this effect goes back to the lane's own values (its sliders). Click to switch it off. To lock this step, right-click it.";
+
+pub const FX_LOOP_HOLD: &str = "Loop restart OFF (grey arrow): nothing resets when the pattern loops, the last lock carries on into the first of the next loop. Click to switch the restart back on.";
+
+pub const LANE_FX_MUTE: &str = "M = Mute: bypasses this effect. Nothing enters it and no tail comes out. Automatable from the DAW.";
+
+pub const LANE_FX_STEPS: &str = "Cells of this effect lane. Click a cell to select it, then change the effect's parameters in the Lane Editor: each one you change becomes a lock on that cell. A lock holds until the next one, or until the pattern loops, then the sliders are back. With Glide on, the value moves smoothly from the sliders to the first lock and between locks. Right-click: copy, paste or clear the cell's locks.";
 
 pub const EMPTY_SLOT: &str = "Empty slot. Click to choose an instrument and create a lane here. Right-click: Paste Lane.\n\
 You can also drop a WAV file from your computer on the grid: it creates a One-Shot lane playing that file.";
@@ -213,9 +223,9 @@ You can also drop a WAV file from your computer on the grid: it creates a One-Sh
 
 pub const MENU_INSTRUMENT: &str = "Changes this lane's instrument. Its sound goes back to the new instrument's default settings; steps and p-locks are kept.";
 
-pub const MENU_COPY_LANE: &str = "Copies the whole lane: instrument, sound, steps, fusions, p-locks, Hum, Push, Len and its WAV file.";
+pub const MENU_COPY_LANE: &str = "Copies the whole lane: instrument, sound, steps, fusions, p-locks, Humanize, Push, Len and its WAV file.";
 
-pub const MENU_PASTE_LANE: &str = "Replaces this lane with the copied one: instrument, sound, steps, fusions, p-locks, Hum, Push and Len. Its routing and M/S stay.";
+pub const MENU_PASTE_LANE: &str = "Replaces this lane with the copied one: instrument, sound, steps, fusions, p-locks, Humanize, Push and Len. Its routing and M/S stay.";
 
 pub const MENU_PASTE_GRID: &str =
     "Pastes only the copied lane's steps (on/off). No fusions, no p-locks, no sound.";
@@ -484,6 +494,8 @@ pub const TRACK_MAIN_MIX: &str = "Main Mix: the lane plays in the plugin's main 
 
 pub const TRACK_AUX: &str = "Aux Out: sends the lane to one of the 14 extra stereo outputs, to mix it on its own track in the DAW (activate the plugin's outputs in the DAW). Choosing an output turns Main Mix off.\n\
 Several lanes can share an output; the list shows how many already use each one.";
+
+pub const TRACK_FX_SEND: &str = "Send: how much of this lane goes into the effect on lane 13 (Fx1) or lane 14 (Fx2). 0 = dry. Taken after the lane Volume, whatever the Main Mix switch. On a selected cell it is that step's lock: the hit thrown from that step goes to the effect by that amount. Greyed until that lane holds an effect.";
 
 pub const TRACK_CHOKE: &str = "Choke group: when this lane plays, it cuts the other lanes of the same group (a closed hi-hat cutting the open one). None = never cut.";
 

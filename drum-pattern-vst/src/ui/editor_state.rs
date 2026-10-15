@@ -43,6 +43,8 @@ pub struct LaneClipboardData {
     /// on the target lane - shared with the source through the decode cache,
     /// so it costs no second copy.
     pub texture_path: Option<std::path::PathBuf>,
+    /// [286] The lane's sends to Fx1 / Fx2.
+    pub fx_send: [f32; crate::track::FX_SLOT_COUNT],
 }
 
 #[derive(Debug, Clone)]
@@ -650,6 +652,7 @@ impl EditorUIState {
         let length = params.lengths()[slot].value();
         let length_locked = params.lane_length_locks.is_locked(slot);
         let texture_path = params.user_textures.path(slot);
+        let fx_send = std::array::from_fn(|bus| params.track_layout.state.fx_send(slot, bus));
 
         self.lane_clipboard = Some(LaneClipboardData {
             kind,
@@ -664,6 +667,7 @@ impl EditorUIState {
             length,
             length_locked,
             texture_path,
+            fx_send,
         });
     }
 
@@ -688,6 +692,11 @@ impl EditorUIState {
 
         let mut layout =
             PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());
+        // [286] An effect only goes on an effect slot, an instrument elsewhere.
+        let existing = layout.slots[target_slot].active.then_some(layout.slots[target_slot].kind);
+        if !crate::track::kind_allowed_on_slot(clipboard.kind, target_slot, existing) {
+            return false;
+        }
         let filled_an_empty_lane = !layout.slots[target_slot].active;
         if layout.slots[target_slot].active {
             layout.slots[target_slot].kind = clipboard.kind;
@@ -696,6 +705,7 @@ impl EditorUIState {
         } else {
             layout.slots[target_slot] = TrackSlot::active_with_kind(clipboard.kind);
         }
+        layout.slots[target_slot].fx_send = clipboard.fx_send;
         PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
 
         // Pasting onto an EMPTY lane also turns a slot into a new instrument,
@@ -751,13 +761,11 @@ impl EditorUIState {
         if target_slot >= crate::track::MAX_TRACKS {
             return false;
         }
-        if params
-            .track_layout
-            .state
-            .kind_for_slot(target_slot)
-            .is_none()
-        {
-            return false;
+        // [286] An effect lane has no steps to paste onto.
+        match params.track_layout.state.kind_for_slot(target_slot) {
+            None => return false,
+            Some(kind) if kind.is_effect() => return false,
+            Some(_) => {}
         }
 
         let Some(clipboard) = &self.lane_clipboard else {

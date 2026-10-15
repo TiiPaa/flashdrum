@@ -227,13 +227,22 @@ pub fn context_menu_row_plain(
 /// each listing its kinds. The current kind (if any) is prefixed "> " and
 /// highlighted. Returns the picked kind, or `None` if nothing was chosen this
 /// frame. Keeping this in one place is what makes the three selectors identical.
+///
+/// [286] `slot` decides what is offered: an effect-bus slot (12 / 13) takes the
+/// EFFECT category only, every other slot takes instruments only. A
+/// grandfathered instrument sitting on an effect slot keeps the instrument list.
 pub fn instrument_category_menu(
     ui: &mut egui::Ui,
     current: Option<crate::track::TrackInstrumentKind>,
+    slot: usize,
 ) -> Option<crate::track::TrackInstrumentKind> {
     use crate::track::{InstrumentCategory, TrackInstrumentKind};
     let mut picked = None;
+    let effects_only = crate::track::is_fx_slot(slot) && current.map_or(true, |k| k.is_effect());
     for cat in InstrumentCategory::ALL {
+        if (cat == InstrumentCategory::Effect) != effects_only {
+            continue;
+        }
         ui.menu_button(
             RichText::new(cat.label())
                 .font(f_sans_med(10.5))

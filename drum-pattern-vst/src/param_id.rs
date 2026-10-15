@@ -55,8 +55,14 @@ use crate::instrument_registry::StandardField;
 // is what lets the headless `test_standalone` binary include this module
 // without dragging in the persistence layer.
 
-/// 13 standard + 1 algo + 32 special.
-pub const FIELD_COUNT: usize = 46;
+/// 13 standard + 1 algo + 32 special + 2 sends ([286]).
+pub const FIELD_COUNT: usize = 48;
+/// The field count before the sends existed: `plock-v1` blobs, pattern-bank slots
+/// and presets written by earlier builds use this stride. Frozen.
+pub const PRE_SEND_FIELD_COUNT: usize = 46;
+/// [286] The send levels of a lane to Fx1 and Fx2, appended after the specials.
+pub const SEND_FIELD_START: usize = 46;
+pub const SEND_FIELD_COUNT: usize = 2;
 /// The per-slot synthesis algorithm.
 pub const ALGO_FIELD: usize = 13;
 /// Where the 32 special fields start.
@@ -80,12 +86,16 @@ pub const RESERVED_SPECIAL_INDEX: usize = 31;
 
 /// Every field a parameter can own. The only hole is field 12, the dead legacy
 /// clap-echo slot, which is not a parameter.
-pub const ADDRESSABLE_MASK: u64 = ((1u64 << FIELD_COUNT) - 1) & !(1u64 << LEGACY_CLAP_ECHO_FIELD);
+///
+/// The SOUND fields only: a snapshot never claims the send fields ([286]), which are
+/// not part of `VoiceSettings`.
+pub const ADDRESSABLE_MASK: u64 =
+    ((1u64 << PRE_SEND_FIELD_COUNT) - 1) & !(1u64 << LEGACY_CLAP_ECHO_FIELD);
 /// What `set_all()` used to write: all 46 bits, field 12 included. Because a
 /// snapshot taken since [187] writes [`ADDRESSABLE_MASK`] instead, this exact
 /// value now identifies a mask written by an **older build** — which is what lets
 /// [`sanitize_field_mask`] refuse to trust its field 45.
-pub const LEGACY_ALL_BITS: u64 = (1u64 << FIELD_COUNT) - 1;
+pub const LEGACY_ALL_BITS: u64 = (1u64 << PRE_SEND_FIELD_COUNT) - 1;
 
 /// Repair a raw field mask coming from persistence, a pattern-bank slot, a preset
 /// or the clipboard.
@@ -105,8 +115,10 @@ pub const fn sanitize_field_mask(mask: u64) -> u64 {
 }
 
 const _: () = assert!(ATTACK_FIELD == SPECIAL_FIELD_START + 4);
-const _: () = assert!(FIELD_COUNT == SPECIAL_FIELD_START + SPECIAL_FIELD_COUNT);
-const _: () = assert!(SPECIAL_4_FIELD == FIELD_COUNT - 1);
+const _: () = assert!(PRE_SEND_FIELD_COUNT == SPECIAL_FIELD_START + SPECIAL_FIELD_COUNT);
+const _: () = assert!(FIELD_COUNT == PRE_SEND_FIELD_COUNT + SEND_FIELD_COUNT);
+const _: () = assert!(SEND_FIELD_START == PRE_SEND_FIELD_COUNT);
+const _: () = assert!(SPECIAL_4_FIELD == PRE_SEND_FIELD_COUNT - 1);
 const _: () = assert!(SPECIAL_4_FIELD != ATTACK_FIELD);
 
 /// Identity of one editable per-slot parameter, independent of which store
@@ -120,6 +132,10 @@ pub enum ParamId {
     Algo,
     /// A registry `special_index` (0..32).
     Special(usize),
+    /// [286] The send level of a lane to effect bus `0` (Fx1) or `1` (Fx2). Lane-global it
+    /// lives in the track layout, per step in p-lock fields 46 / 47; not a sound value,
+    /// so it is never morphed and no voice reads it.
+    FxSend(usize),
     /// The per-slot Hz/Note display flag. Never p-locked and never morphed: it
     /// is a display preference, not a sound value, so every scope routes it to
     /// the lane's own state.
@@ -140,6 +156,13 @@ impl ParamId {
             ParamId::Special(index) => {
                 if index < SPECIAL_FIELD_COUNT {
                     Some(SPECIAL_FIELD_START + index)
+                } else {
+                    None
+                }
+            }
+            ParamId::FxSend(bus) => {
+                if bus < SEND_FIELD_COUNT {
+                    Some(SEND_FIELD_START + bus)
                 } else {
                     None
                 }
@@ -170,7 +193,10 @@ impl ParamId {
         {
             return Some(ParamId::Std(std_field));
         }
-        if field >= SPECIAL_FIELD_START && field < FIELD_COUNT {
+        if field >= SEND_FIELD_START && field < FIELD_COUNT {
+            return Some(ParamId::FxSend(field - SEND_FIELD_START));
+        }
+        if field >= SPECIAL_FIELD_START && field < SPECIAL_FIELD_START + SPECIAL_FIELD_COUNT {
             return Some(ParamId::Special(field - SPECIAL_FIELD_START));
         }
         None
@@ -253,6 +279,20 @@ mod tests {
         );
     }
 
+    /// [286] The send fields come right after the specials and never alias one.
+    #[test]
+    fn the_send_fields_follow_the_specials() {
+        assert_eq!(ParamId::FxSend(0).plock_field(), Some(46));
+        assert_eq!(ParamId::FxSend(1).plock_field(), Some(47));
+        assert_eq!(ParamId::FxSend(2).plock_field(), None);
+        assert_eq!(ParamId::from_plock_field(46), Some(ParamId::FxSend(0)));
+        assert_eq!(ParamId::from_plock_field(47), Some(ParamId::FxSend(1)));
+        assert_eq!(ParamId::from_plock_field(48), None);
+        // A snapshot (and the legacy all-bits mask) never claims a send.
+        assert_eq!(ADDRESSABLE_MASK >> SEND_FIELD_START, 0);
+        assert_eq!(LEGACY_ALL_BITS >> SEND_FIELD_START, 0);
+    }
+
     #[test]
     fn from_plock_field_round_trips_every_id() {
         for field in StandardField::ALL {
@@ -295,7 +335,8 @@ mod tests {
             .iter()
             .map(|f| ParamId::Std(*f))
             .chain(std::iter::once(ParamId::Algo))
-            .chain((0..SPECIAL_FIELD_COUNT).map(ParamId::Special));
+            .chain((0..SPECIAL_FIELD_COUNT).map(ParamId::Special))
+            .chain((0..SEND_FIELD_COUNT).map(ParamId::FxSend));
         for id in ids {
             if !id.is_lockable() {
                 continue;
@@ -357,7 +398,7 @@ mod tests {
             "field 12 is not a param"
         );
         // Everything else the old snapshot claimed is still claimed.
-        for field in 0..FIELD_COUNT {
+        for field in 0..PRE_SEND_FIELD_COUNT {
             if field == SPECIAL_4_FIELD || field == LEGACY_CLAP_ECHO_FIELD {
                 continue;
             }

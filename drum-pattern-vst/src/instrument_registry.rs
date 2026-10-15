@@ -173,6 +173,43 @@ pub struct SpecialParamDef {
     pub options: Option<&'static [&'static str]>,
 }
 
+/// [287] Specials added after sessions existed: an older lane stores 0 for
+/// them, below their minimum. `DrumFlashVst::seed_late_specials` reseeds those.
+pub const LATE_SPECIALS: [&str; 5] = [
+    "tom_resonance",
+    "sdrex_resonance",
+    "buzz_resonance",
+    "reverb_highcut",
+    "delay_highcut",
+];
+
+/// [292] TM6(AC) Model: 0 was "Auto" (the model followed the pitch), now retired;
+/// 1 = Low tom, 2 = High tom. The stored index stays so saved lanes keep their model.
+pub const TM6_MODEL: &str = "ac_tm_model";
+
+/// [292] The pitch the recorded toms were played at: Frequency is the tom's own
+/// pitch, so each model has its own sensible range and starting point.
+pub const TM6_LOW_HZ: f32 = 124.435;
+pub const TM6_HIGH_HZ: f32 = 208.0;
+
+/// Frequency range of the TM6(AC) slider for a Model value (2 = High, else Low).
+pub fn tm6_freq_range(model: f32) -> (f32, f32) {
+    if model.round() as i32 == 2 {
+        (140.0, 420.0)
+    } else {
+        (70.0, 200.0)
+    }
+}
+
+/// The recorded pitch of a Model value.
+pub fn tm6_recorded_hz(model: f32) -> f32 {
+    if model.round() as i32 == 2 {
+        TM6_HIGH_HZ
+    } else {
+        TM6_LOW_HZ
+    }
+}
+
 /// Helper for continuous special parameters (morphable).
 const fn sp(
     name: &'static str,
@@ -318,6 +355,13 @@ pub fn source_section_title(voice_idx: usize) -> &'static str {
         return "Sample";
     }
     let def = INSTRUMENTS.get(voice_idx);
+    // [286] The reverb's knobs are its whole source section.
+    if def.is_some_and(|d| d.special_params.iter().any(|p| p.name.starts_with("reverb_"))) {
+        return "Reverb";
+    }
+    if def.is_some_and(|d| d.special_params.iter().any(|p| p.name.starts_with("delay_"))) {
+        return "Delay";
+    }
     let has = |suffix: &str| {
         def.map(|d| d.special_params.iter().any(|p| p.name.ends_with(suffix)))
             .unwrap_or(false)
@@ -387,9 +431,28 @@ pub fn param_default(voice_idx: usize, id: crate::param_id::ParamId) -> f32 {
             .find(|def| def.special_index == index)
             .map(|def| def.default)
             .unwrap_or(0.0),
-        // The algo dropdown and the Hz/Note switch have no reset gesture.
-        ParamId::Algo | ParamId::FreqMode => 0.0,
+        // The algo dropdown and the Hz/Note switch have no reset gesture; a send
+        // starts at 0 ([286]).
+        ParamId::Algo | ParamId::FreqMode | ParamId::FxSend(_) => 0.0,
     }
+}
+
+/// [286] A parameter that belongs to the whole lane and is never locked per step: the
+/// effect lane's Glide switch is how its OTHER locks behave, so a lock on it would
+/// mean nothing (the audio reads the lane's own value). Every scope edits the lane.
+pub fn param_is_lane_global(voice_idx: usize, id: crate::param_id::ParamId) -> bool {
+    use crate::param_id::ParamId;
+    let ParamId::Special(index) = id else {
+        return false;
+    };
+    INSTRUMENTS.get(voice_idx).is_some_and(|inst| {
+        inst.special_params
+            .iter()
+            .any(|def| def.special_index == index && matches!(
+                def.name,
+                "reverb_glide" | "delay_glide" | "reverb_norestart" | "delay_norestart" | "delay_sync"
+            ))
+    })
 }
 
 /// Can this parameter be morphed across a fused group ([184] phase 3)?
@@ -401,8 +464,9 @@ pub fn param_default(voice_idx: usize, id: crate::param_id::ParamId) -> f32 {
 pub fn param_is_morphable(voice_idx: usize, id: crate::param_id::ParamId) -> bool {
     use crate::param_id::ParamId;
     match id {
-        // The algo is a discrete selector, and a display mode is not a sound.
-        ParamId::Algo | ParamId::FreqMode => false,
+        // The algo is a discrete selector, a display mode is not a sound, and a send
+        // level is not part of the voice at all ([286]).
+        ParamId::Algo | ParamId::FreqMode | ParamId::FxSend(_) => false,
         // Every standard field interpolates, checkboxes included (a switch
         // crossing 0.5 mid-roll is a legitimate effect).
         ParamId::Std(_) => true,
@@ -1399,6 +1463,18 @@ const RIFT_STD: &[StandardParamDef] = &[
 /// the played region's heard duration (1.0 = the whole sample), so the
 /// envelope always fits the file, short or long, pitched or not (user report
 /// 2026-09-23: absolute seconds were meaningless on short samples).
+/// [286] The reverb exposes only its return level (the lane Volume); its
+/// knobs are special params.
+const REVERB_STD: &[StandardParamDef] = &[s(
+    StandardField::Volume,
+    "Volume",
+    ParamFamily::Output,
+    0.0,
+    2.0,
+    false,
+    None,
+)];
+
 const ONE_SHOT_STD: &[StandardParamDef] = &[
     s(
         StandardField::Freq,
@@ -1933,10 +2009,10 @@ const AC_TOM_STD: &[StandardParamDef] = &[
         StandardField::Freq,
         "Frequency",
         ParamFamily::Osc,
-        50.0,
-        400.0,
+        70.0,
+        420.0,
         true,
-        None,
+        Some(" Hz"),
     ),
     s(
         StandardField::Decay,
@@ -2369,6 +2445,15 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
                 5,
                 ParamFamily::Saturation,
             ),
+            sp(
+                "tom_resonance",
+                "Resonance",
+                0.7071,
+                0.5,
+                10.0,
+                6,
+                ParamFamily::Filter,
+            ),
         ],
         // No hold, filter env, no stereo
         sound_settings_default: [
@@ -2444,6 +2529,15 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
                 5,
                 ParamFamily::Saturation,
             ),
+            sp(
+                "tom_resonance",
+                "Resonance",
+                0.7071,
+                0.5,
+                10.0,
+                6,
+                ParamFamily::Filter,
+            ),
         ],
         // No hold, filter env, no stereo
         sound_settings_default: [
@@ -2518,6 +2612,15 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
                 1.0,
                 5,
                 ParamFamily::Saturation,
+            ),
+            sp(
+                "tom_resonance",
+                "Resonance",
+                0.7071,
+                0.5,
+                10.0,
+                6,
+                ParamFamily::Filter,
             ),
         ],
         // No hold, filter env, no stereo
@@ -3455,6 +3558,15 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
                 14,
                 ParamFamily::Filter,
             ),
+            sp(
+                "buzz_resonance",
+                "Resonance",
+                0.9,
+                0.5,
+                10.0,
+                17,
+                ParamFamily::Filter,
+            ),
             sp_discrete(
                 "buzz_saturation_type",
                 "Saturation Type",
@@ -3555,7 +3667,7 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
                 "sdrex_flanger_depth",
                 "Depth",
                 1.8,
-                0.0,
+                -3.0,
                 3.0,
                 2,
                 ParamFamily::Modulation,
@@ -3687,6 +3799,15 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
                 -1.0,
                 1.0,
                 15,
+                ParamFamily::Filter,
+            ),
+            sp(
+                "sdrex_resonance",
+                "Resonance",
+                0.7071,
+                0.5,
+                10.0,
+                18,
                 ParamFamily::Filter,
             ),
         ],
@@ -4084,11 +4205,18 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
         algo_count: 1,
         standard_params: AC_TOM_STD,
         special_params: &[
-            sp_discrete("ac_tm_model", "Model", 0.0, 0.0, 2.0, 0, ParamFamily::Osc),
+            sp_options(
+                "ac_tm_model",
+                "Model",
+                1.0,
+                0,
+                ParamFamily::Osc,
+                &["Auto", "Low tom", "High tom"],
+            ),
             sp("ac_tm_strike", "Strike", 0.5, 0.0, 1.0, 1, ParamFamily::Osc),
             sp("ac_tm_snap", "Snap", 0.5, 0.0, 1.0, 2, ParamFamily::Osc),
             sp("ac_tm_glide", "Glide", 0.5, 0.0, 1.0, 3, ParamFamily::Osc),
-            sp("ac_tm_modes", "Modes", 0.5, 0.0, 1.0, 4, ParamFamily::Osc),
+            sp("ac_tm_modes", "Overtones", 0.5, 0.0, 1.0, 4, ParamFamily::Osc),
             sp(
                 "ac_tm_tail_noise",
                 "Tail Noise",
@@ -4137,7 +4265,7 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
             ),
         ],
         sound_settings_default: [
-            150.0, 0.35, 0.8, 20000.0, 0.0005, 0.0, 5.0, 3.0, 0.0, 0.0, 0.05, 0.5, 0.0,
+            124.435, 0.35, 0.8, 20000.0, 0.0005, 0.0, 5.0, 3.0, 0.0, 0.0, 0.05, 0.5, 0.0,
         ],
         freq_display_ratio: 1.0,
         filter_type_label: "",
@@ -4267,14 +4395,15 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
         special_params: &[
             // [228] Les quatre textures embarquees, puis le fichier de la
             // LANE ("Custom", charge par la ligne File ; le panneau affiche
-            // le nom du fichier a la place).
+            // le nom du fichier a la place). [291] "Pad" vient APRES Custom :
+            // les lanes sauvegardees stockent l'indice du menu (Custom = 4).
             sp_options(
                 "rift_texture",
                 "Texture",
                 0.0,
                 0,
                 ParamFamily::Osc,
-                &["Noise", "Metal", "Crackle", "Sweep", "Custom"],
+                &["Noise", "Metal", "Crackle", "Sweep", "Custom", "Pad"],
             ),
             // 0,05 : mesure sur la texture Noise v2, la zone la plus stable
             // (variation d'amplitude 5 % entre fenetres de 10 ms) et brillante ;
@@ -4792,6 +4921,93 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
         freq_as_notes: false,
         analog_fixed: false,
     },
+    // [286] Reverb: the send effect of an effect-bus slot. Not a sound source:
+    // no steps, no note. Its knobs are specials 0-3, 5, 6 (4 and 31 are reserved
+    // by the p-lock layout); special 7 is the lane's p-lock mode (Glide).
+    InstrumentDef {
+        index: 27,
+        name: "Reverb",
+        label: "RV",
+        full_name: "Reverb",
+        midi_note: 0,
+        algo_count: 1,
+        standard_params: REVERB_STD,
+        special_params: &[
+            sp("reverb_size", "Size", 1.0, 0.5, 2.0, 0, ParamFamily::Osc),
+            sp_unit("reverb_decay", "Decay", 2.5, 0.2, 12.0, 1, ParamFamily::Osc, " s"),
+            sp("reverb_damping", "Damping", 0.5, 0.0, 1.0, 2, ParamFamily::Osc),
+            sp_unit("reverb_predelay", "Pre-delay", 20.0, 0.0, 250.0, 3, ParamFamily::Osc, " ms"),
+            sp_unit("reverb_lowcut", "Low Cut", 120.0, 20.0, 1000.0, 5, ParamFamily::Osc, " Hz"),
+            sp_unit("reverb_highcut", "High Cut", 20000.0, 1000.0, 20000.0, 9, ParamFamily::Osc, " Hz"),
+            sp("reverb_width", "Width", 1.0, 0.0, 1.0, 6, ParamFamily::Osc),
+            // p-lock mode of this lane: 0 = a lock holds until the next, 1 = the value
+            // glides from one lock to the next (see `fx_locks.rs`).
+            sp_discrete("reverb_glide", "Glide", 0.0, 0.0, 1.0, 7, ParamFamily::Osc),
+            // Loop restart (shown as an ON switch; stored inverted so older lanes, which
+            // hold 0 here, keep restarting).
+            sp_discrete("reverb_norestart", "Loop Restart", 0.0, 0.0, 1.0, 8, ParamFamily::Osc),
+        ],
+        // [freq, decay, vol, filter_freq, attack, release, decay_curve,
+        //  release_curve, hold, filter_env_amount, filter_env_decay, analog, stereo]
+        // Only Volume (the return level) is exposed; the rest is inert.
+        sound_settings_default: [
+            1000.0, 1.0, 1.0, 20000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.5, 0.0,
+        ],
+        freq_display_ratio: 1.0,
+        filter_type_label: "",
+        is_sampler: false,
+        freq_as_notes: false,
+        analog_fixed: true,
+    },
+    // [286] Delay: the second send effect of an effect-bus slot. Not a sound source.
+    // Its knobs are specials 0-3 and 5 (4 and 31 are reserved by the p-lock layout);
+    // special 7 is the lane's p-lock mode (Glide). Gliding the time bends the repeats.
+    InstrumentDef {
+        index: 28,
+        name: "Delay",
+        label: "DL",
+        full_name: "Delay",
+        midi_note: 0,
+        algo_count: 1,
+        standard_params: REVERB_STD,
+        special_params: &[
+            sp_unit("delay_time", "Time", 375.0, 1.0, 2000.0, 0, ParamFamily::Osc, " ms"),
+            sp("delay_feedback", "Feedback", 0.4, 0.0, 0.95, 1, ParamFamily::Osc),
+            sp("delay_damping", "Damping", 0.4, 0.0, 1.0, 2, ParamFamily::Osc),
+            sp_unit("delay_lowcut", "Low Cut", 100.0, 20.0, 1000.0, 3, ParamFamily::Osc, " Hz"),
+            sp_unit("delay_highcut", "High Cut", 20000.0, 1000.0, 20000.0, 9, ParamFamily::Osc, " Hz"),
+            sp("delay_pingpong", "Ping-pong", 0.5, 0.0, 1.0, 5, ParamFamily::Osc),
+            sp("delay_width", "Width", 0.0, 0.0, 1.0, 10, ParamFamily::Osc),
+            // Free = the Time knob; the others lock the time to a note value at the
+            // host tempo (the Time knob is then greyed). A lane-wide choice.
+            sp_options(
+                "delay_sync",
+                "Sync",
+                0.0,
+                6,
+                ParamFamily::Osc,
+                &[
+                    "Free", "1/32", "1/16T", "1/16", "1/8T", "1/16.", "1/8", "1/4T", "1/8.", "1/4", "1/2T",
+                    "1/4.", "1/2", "1 bar",
+                ],
+            ),
+            // p-lock mode of this lane: 0 = a lock holds until the next, 1 = the value
+            // glides from one lock to the next (see `fx_locks.rs`).
+            sp_discrete("delay_glide", "Glide", 0.0, 0.0, 1.0, 7, ParamFamily::Osc),
+            sp_discrete("delay_norestart", "Loop Restart", 0.0, 0.0, 1.0, 8, ParamFamily::Osc),
+        ],
+        // [freq, decay, vol, filter_freq, attack, release, decay_curve,
+        //  release_curve, hold, filter_env_amount, filter_env_decay, analog, stereo]
+        // Only Volume (the return level) is exposed; the rest is inert.
+        sound_settings_default: [
+            1000.0, 1.0, 1.0, 20000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.5, 0.0,
+        ],
+        freq_display_ratio: 1.0,
+        filter_type_label: "",
+        is_sampler: false,
+        freq_as_notes: false,
+        analog_fixed: true,
+    },
 ];
 
 /// Highest algo index across all instruments. Used as the shared range of the
@@ -5146,6 +5362,13 @@ mod tests {
                 ("rift_pitch_lfo_rate", " Hz"),
                 ("rift_filter_lfo_rate", " Hz"),
                 ("oneshot_pitch_fine", " ct"),
+                ("reverb_decay", " s"),
+                ("reverb_predelay", " ms"),
+                ("reverb_lowcut", " Hz"),
+                ("reverb_highcut", " Hz"),
+                ("delay_time", " ms"),
+                ("delay_lowcut", " Hz"),
+                ("delay_highcut", " Hz"),
             ]
         );
 

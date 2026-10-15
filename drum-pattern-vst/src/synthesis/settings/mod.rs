@@ -25,6 +25,16 @@ pub mod snare;
 pub mod snare606;
 pub mod tom;
 
+/// A resonance stored as 0 comes from a session saved before the voice had the
+/// control (its slot was never seeded): it keeps the filter's former fixed Q.
+pub(crate) fn resonance_or(stored: f32, former_q: f32) -> f32 {
+    if stored < 0.1 {
+        former_q
+    } else {
+        stored
+    }
+}
+
 #[macro_export]
 macro_rules! settings_roundtrip_test {
     ($name:ident, $voice:ident, $settings:ty) => {

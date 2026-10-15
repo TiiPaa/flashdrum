@@ -134,10 +134,17 @@ fn export_pattern_to_midi_data(
         if !track_layout.is_active(slot) {
             continue;
         }
+        // [286] An effect bus plays no note.
+        if track_layout.kind_for_slot(slot).is_some_and(|k| k.is_effect()) {
+            continue;
+        }
         let note = track_layout.midi_note_for_slot(slot);
-        let fusions = pattern.load_fusions(slot);
+        // A linked lane plays the steps + fusions of the lane it follows
+        // (like the sequencer); microtiming and stutter stay its own.
+        let grid = track_layout.grid_slot(slot);
+        let fusions = pattern.load_fusions(grid);
         for step in 0..steps {
-            let bit = (pattern.load_step_mask(step) & (1u16 << slot)) != 0;
+            let bit = (pattern.load_step_mask(step) & (1u16 << grid)) != 0;
 
             // A cell covered by a fusion plays nothing on its own; only the
             // fusion's START cell emits (matching the sequencer).
@@ -298,6 +305,58 @@ mod tests {
                 "nudge {nudge_ms} ms should move the note-on to tick {expected_tick}"
             );
         }
+    }
+
+    /// [286] An effect bus plays no note, even if a step bit was stamped on it.
+    #[test]
+    fn midi_export_skips_effect_buses() {
+        let pattern = SharedPattern::new(&Pattern::empty());
+        pattern.set_step_mask(0, (1u16 << 0) | (1u16 << 12));
+        let mut state = TrackLayoutState::empty_layout();
+        state.slots[0] = crate::track::TrackSlot::active_with_kind(TrackInstrumentKind::Kick);
+        state.slots[12] = crate::track::TrackSlot::active_with_kind(TrackInstrumentKind::Reverb);
+        let layout = AtomicTrackLayout::from_state(&state);
+        let seq = SequencerPlockState::new();
+        let bytes = export_pattern_to_midi_bytes(
+            &pattern,
+            &layout,
+            120.0,
+            16,
+            0.0,
+            GrooveType::Straight,
+            &seq,
+        )
+        .expect("MIDI export should succeed");
+        assert_eq!(count_note_ons(&bytes, 36), 1);
+        assert_eq!(count_note_ons(&bytes, 0), 0, "the bus must not emit a note");
+    }
+
+    #[test]
+    fn midi_export_linked_lane_plays_the_followed_lanes_steps() {
+        let pattern = SharedPattern::new(&Pattern::empty());
+        pattern.set_step_mask(0, 1u16 << 0); // Kick (followed lane) on step 0
+        pattern.set_step_mask(4, 1u16 << 1); // Snare's own hidden step: ignored
+        let mut state = TrackLayoutState::from_legacy_13();
+        state.slots[1].linked_up = true; // Snare follows Kick
+        let layout = AtomicTrackLayout::from_state(&state);
+        let seq = SequencerPlockState::new();
+
+        let bytes = export_pattern_to_midi_bytes(
+            &pattern,
+            &layout,
+            120.0,
+            16,
+            0.0,
+            GrooveType::Straight,
+            &seq,
+        )
+        .expect("MIDI export should succeed");
+        assert_eq!(count_note_ons(&bytes, 36), 1, "the followed lane keeps its note");
+        assert_eq!(
+            count_note_ons(&bytes, 38),
+            1,
+            "the linked lane plays the followed lane's step, not its own hidden one"
+        );
     }
 
     #[test]

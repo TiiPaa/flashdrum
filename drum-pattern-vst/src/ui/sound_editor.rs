@@ -6,7 +6,7 @@ use crate::sequencer::SharedPattern;
 use crate::sound_settings::SoundSettingsState;
 use crate::synthesis::{self, DrumVoice, VoiceSettings};
 use crate::track::TrackLayoutState;
-use crate::ui::controls::{algo_combo, draw_track_length_control};
+use crate::ui::controls::algo_combo;
 use crate::ui::editor_state::{
     schema_voice_idx, select_legacy_track, EditorUIState, SoundEditorTab,
 };
@@ -1176,7 +1176,7 @@ fn draw_track_tab(
                 let picker = egui::menu::menu_custom_button(ui, type_btn, |ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
                     ui.set_min_width(130.0);
-                    crate::ui::menus::instrument_category_menu(ui, Some(current_kind))
+                    crate::ui::menus::instrument_category_menu(ui, Some(current_kind), slot_idx)
                 });
                 if let Some(kind) = picker.inner.flatten() {
                     if kind != current_kind {
@@ -1321,87 +1321,96 @@ fn draw_track_tab(
         })
     });
 
-    // Choke group (dropdown) — when this slot triggers, every other active
-    // slot in the same group is silenced (classic HH→OH, generalized).
-    let current_choke = slot
-        .routing
-        .choke_group
-        .min(crate::track::CHOKE_GROUP_COUNT) as usize;
-    let choke_labels = ["None", "1", "2", "3", "4"];
-    help::zone(ui, "track_choke", help::TRACK_CHOKE, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            editor_label(ui, "Choke");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let (_, Some(i)) = crate::ui::widgets::styled_select(
-                    ui,
-                    "track_choke",
-                    current_choke,
-                    &choke_labels,
-                    146.0,
-                ) {
-                    if i != current_choke {
-                        new_state.slots[slot_idx].routing.choke_group = i as u8;
+    // [286] An effect lane has no choke group, no MIDI note, no humanize and
+    // no sends of its own: only its name, type, preset and routing apply.
+    if !slot.kind.is_effect() {
+        // Choke group (dropdown) — when this slot triggers, every other active
+        // slot in the same group is silenced (classic HH→OH, generalized).
+        let current_choke = slot
+            .routing
+            .choke_group
+            .min(crate::track::CHOKE_GROUP_COUNT) as usize;
+        let choke_labels = ["None", "1", "2", "3", "4"];
+        help::zone(ui, "track_choke", help::TRACK_CHOKE, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                editor_label(ui, "Choke");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let (_, Some(i)) = crate::ui::widgets::styled_select(
+                        ui,
+                        "track_choke",
+                        current_choke,
+                        &choke_labels,
+                        146.0,
+                    ) {
+                        if i != current_choke {
+                            new_state.slots[slot_idx].routing.choke_group = i as u8;
+                            changed = true;
+                        }
+                    }
+                });
+            })
+        });
+
+        // ---- MIDI ----
+        editor_section_header(ui, "MIDI");
+
+        // Channel (global, read-only)
+        help::zone(ui, "track_channel", help::TRACK_CHANNEL, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                editor_label(ui, "Channel");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("{}", layout_state.global_midi_channel))
+                            .font(f_mono_med(12.0))
+                            .color(Color32::WHITE),
+                    );
+                });
+            })
+        });
+
+        // Note
+        help::zone(ui, "track_note", help::TRACK_NOTE, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                editor_label(ui, "Note");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut note = slot.midi_note as i32;
+                    if ui
+                        .add(egui::DragValue::new(&mut note).range(0..=127).speed(1.0))
+                        .changed()
+                    {
+                        new_state.slots[slot_idx].midi_note = note.clamp(0, 127) as u8;
                         changed = true;
                     }
-                }
-            });
-        })
-    });
-
-    // ---- MIDI ----
-    editor_section_header(ui, "MIDI");
-
-    // Channel (global, read-only)
-    help::zone(ui, "track_channel", help::TRACK_CHANNEL, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            editor_label(ui, "Channel");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("{}", layout_state.global_midi_channel))
-                        .font(f_mono_med(12.0))
-                        .color(Color32::WHITE),
-                );
-            });
-        })
-    });
-
-    // Note
-    help::zone(ui, "track_note", help::TRACK_NOTE, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            editor_label(ui, "Note");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut note = slot.midi_note as i32;
-                if ui
-                    .add(egui::DragValue::new(&mut note).range(0..=127).speed(1.0))
-                    .changed()
-                {
-                    new_state.slots[slot_idx].midi_note = note.clamp(0, 127) as u8;
-                    changed = true;
-                }
-            });
-        })
-    });
-
-    // ---- Sequencing ----
-    editor_section_header(ui, "Sequencing");
-    let master_length = params.pattern_length.value().clamp(1, 64) as usize;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        editor_label(ui, "Length");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            draw_track_length_control(
-                ui,
-                setter,
-                params,
-                params.lengths()[slot_idx],
-                slot_idx,
-                master_length,
-            );
+                });
+            })
         });
-    });
+
+        // ---- Sequencing ----
+        editor_section_header(ui, "Sequencing");
+        // [289] Humanize (random velocity) lives here now, not in the grid row.
+        help::zone(ui, "track_humanize", help::LANE_HUM, |ui| {
+            let hum_param = params.humanizes()[slot_idx];
+            let mut hum_pct = hum_param.value() * 100.0;
+            let response = draw_editor_slider_row(
+                ui,
+                "Humanize",
+                &mut hum_pct,
+                0.0,
+                100.0,
+                hum_param.default_plain_value() * 100.0,
+                false,
+                Some("%"),
+            );
+            if response.changed() {
+                setter.begin_set_parameter(hum_param);
+                setter.set_parameter(hum_param, (hum_pct / 100.0).clamp(0.0, 1.0));
+                setter.end_set_parameter(hum_param);
+            }
+        });
+    }
 
     if changed {
         PersistentField::<TrackLayoutState>::set(&params.track_layout, new_state);
@@ -1573,16 +1582,15 @@ pub fn draw_sound_panel(
         state.sound_edit_target = None;
     }
     let mut src: Box<dyn ParamSource + '_> = match resolved.scope {
-        crate::ui::editor_state::EditScope::LaneGlobal => Box::new(GlobalSource::new(
-            sound_settings,
-            slot,
-            voice_idx,
-            &panel_algo,
-        )),
+        crate::ui::editor_state::EditScope::LaneGlobal => Box::new(
+            GlobalSource::new(sound_settings, slot, voice_idx, &panel_algo)
+                .with_layout(&params.track_layout),
+        ),
         crate::ui::editor_state::EditScope::StepPlock { step } => Box::new(PlockSource::new(
             plock,
             step,
-            GlobalSource::new(sound_settings, slot, voice_idx, &panel_algo),
+            GlobalSource::new(sound_settings, slot, voice_idx, &panel_algo)
+                .with_layout(&params.track_layout),
         )),
         crate::ui::editor_state::EditScope::Morph {
             step,
@@ -1597,7 +1605,8 @@ pub fn draw_sound_panel(
                 PlockSource::new(
                     plock,
                     step,
-                    GlobalSource::new(sound_settings, slot, voice_idx, &panel_algo),
+                    GlobalSource::new(sound_settings, slot, voice_idx, &panel_algo)
+                .with_layout(&params.track_layout),
                 ),
             )
             .following(grid),
@@ -1711,17 +1720,23 @@ pub fn draw_sound_panel(
                             src.is_overridden(vol_id),
                             src.supports(vol_id).reason(),
                             |ui| {
-                                draw_editor_slider_row(
+                                // [288] Displayed 0..1; the stored gain keeps its 0..2 range.
+                                let mut vol_disp = vol * 0.5;
+                                let vol_changed = draw_editor_slider_row(
                                     ui,
                                     "Volume",
-                                    &mut vol,
+                                    &mut vol_disp,
                                     0.0,
-                                    2.0,
-                                    VoiceSettings::default().volume,
+                                    1.0,
+                                    VoiceSettings::default().volume * 0.5,
                                     false,
                                     Some(""),
                                 )
-                                .changed()
+                                .changed();
+                                if vol_changed {
+                                    vol = vol_disp * 2.0;
+                                }
+                                vol_changed
                             },
                         )
                     })
@@ -1874,6 +1889,157 @@ pub fn draw_sound_panel(
 
             draw_gate_row(ui, &cx, family, params_w, &mut src, state);
             module_end(ui, section_module);
+            }
+
+            // [286] Sends to the effect buses. On the lane they are its own send levels;
+            // on a selected cell they are that step's locks (the hit keeps them).
+            if !layout_snapshot.slots[slot].kind.is_effect() {
+                let sends_module = module_begin(ui, Some("Sends"));
+                for bus in 0..crate::track::FX_SLOT_COUNT {
+                    let id = ParamId::FxSend(bus);
+                    let bus_slot = &layout_snapshot.slots[crate::track::FX_FIRST_SLOT + bus];
+                    let bus_on = bus_slot.active && bus_slot.kind.is_effect();
+                    let send_help = row_help(&*src, id, help::TRACK_FX_SEND.to_string());
+                    let current = src.get(id) * 100.0;
+                    let default = src.inherited(id) * 100.0;
+                    let (reverted, edited) = help::zone(ui, ("fx_send_row", bus), &send_help, |ui| {
+                        ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
+                            ui.add_enabled_ui(bus_on, |ui| {
+                                row_scoped(
+                                    ui,
+                                    src.is_overridden(id),
+                                    src.supports(id).reason(),
+                                    |ui| {
+                                        let mut pct = current;
+                                        let row = draw_editor_slider_row(
+                                            ui,
+                                            if bus == 0 { "Fx1" } else { "Fx2" },
+                                            &mut pct,
+                                            0.0,
+                                            100.0,
+                                            default,
+                                            false,
+                                            Some("%"),
+                                        );
+                                        (row.changed(), pct)
+                                    },
+                                )
+                            })
+                            .inner
+                        })
+                        .inner
+                    });
+                    let (row_changed, pct) = edited;
+                    if reverted {
+                        src.clear(id);
+                        changed = true;
+                    } else if row_changed {
+                        src.set(id, (pct / 100.0).clamp(0.0, 1.0));
+                        changed = true;
+                    }
+                }
+                module_end(ui, sends_module);
+            }
+
+            // [286] On an effect lane: what the reverb is using RIGHT NOW. While the
+            // transport plays, the p-locks of the lane move its knobs; this shows where
+            // they actually are (a value that differs from the lane's own is lit).
+            if crate::track::is_fx_slot(slot) && layout_snapshot.slots[slot].kind.is_effect() {
+                let bus = slot - crate::track::FX_FIRST_SLOT;
+                let live_module = module_begin(ui, Some("Playing now"));
+                match sound_settings.fx_live(bus) {
+                    None => {
+                        ui.label(
+                            RichText::new("Stopped: the effect uses the sliders above.")
+                                .font(f_sans_med(10.5))
+                                .color(INK3()),
+                        );
+                    }
+                    Some(values) => {
+                        ui.ctx().request_repaint();
+                        let lane = &sound_settings.instruments[slot];
+                        // Rows and the lane's own values follow the effect on this lane.
+                        let volume = lane.standard(StandardField::Volume);
+                        let (rows, own, glide_on): (Vec<(&str, &str)>, Vec<f32>, bool) =
+                            if layout_snapshot.slots[slot].kind
+                                == crate::track::TrackInstrumentKind::Delay
+                            {
+                                use crate::synthesis::delay_sp as sp;
+                                (
+                                    vec![
+                                        ("Time", " ms"),
+                                        ("Feedback", ""),
+                                        ("Damping", ""),
+                                        ("Low Cut", " Hz"),
+                                        ("High Cut", " Hz"),
+                                        ("Ping-pong", ""),
+                                        ("Width", ""),
+                                        ("Volume", ""),
+                                    ],
+                                    vec![
+                                        lane.special_value(sp::TIME),
+                                        lane.special_value(sp::FEEDBACK),
+                                        lane.special_value(sp::DAMPING),
+                                        lane.special_value(sp::LOW_CUT),
+                                        lane.special_value(sp::HIGH_CUT),
+                                        lane.special_value(sp::PINGPONG),
+                                        lane.special_value(sp::WIDTH),
+                                        volume,
+                                    ],
+                                    lane.special_value(sp::GLIDE) >= 0.5,
+                                )
+                            } else {
+                                use crate::synthesis::reverb_sp as sp;
+                                (
+                                    vec![
+                                        ("Size", ""),
+                                        ("Decay", " s"),
+                                        ("Damping", ""),
+                                        ("Pre-delay", " ms"),
+                                        ("Low Cut", " Hz"),
+                                        ("High Cut", " Hz"),
+                                        ("Width", ""),
+                                        ("Volume", ""),
+                                    ],
+                                    vec![
+                                        lane.special_value(sp::SIZE),
+                                        lane.special_value(sp::DECAY),
+                                        lane.special_value(sp::DAMPING),
+                                        lane.special_value(sp::PREDELAY),
+                                        lane.special_value(sp::LOW_CUT),
+                                        lane.special_value(sp::HIGH_CUT),
+                                        lane.special_value(sp::WIDTH),
+                                        volume,
+                                    ],
+                                    lane.special_value(sp::GLIDE) >= 0.5,
+                                )
+                            };
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Mode").font(f_sans_med(11.0)).color(INK3()));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(
+                                    RichText::new(if glide_on { "Glide" } else { "Step" })
+                                        .font(f_mono_med(11.0))
+                                        .color(INK()),
+                                );
+                            });
+                        });
+                        for (i, (label, unit)) in rows.iter().enumerate() {
+                            let differs = (values[i] - own[i]).abs() > 1.0e-3 * own[i].abs().max(1.0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(*label).font(f_sans_med(11.0)).color(INK3()));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(
+                                        RichText::new(format!("{}{}", format_editor_value(values[i], None), unit))
+                                            .font(f_mono_med(11.0))
+                                            .color(if differs { PL_LINK() } else { INK() }),
+                                    );
+                                });
+                            });
+                        }
+                    }
+                }
+                module_end(ui, live_module);
             }
                     }
                         SoundEditorTab::Track => {
@@ -2901,6 +3067,19 @@ fn draw_standard_rows(
                                     == crate::instrument_registry::StandardField::Freq
                                     && crate::instrument_registry::is_sampler(voice_idx);
                                 let id = ParamId::Std(field);
+                                // [292] TM6(AC): the Frequency range (and its reset
+                                // value) follow the Model: each recorded tom has
+                                // its own pitch.
+                                let (min_v, max_v, default_value) = if voice_idx
+                                    == crate::synthesis::DrumVoice::Tm6Ac as usize
+                                    && field == crate::instrument_registry::StandardField::Freq
+                                {
+                                    let model = src.get(ParamId::Special(0));
+                                    let (lo, hi) = crate::instrument_registry::tm6_freq_range(model);
+                                    (lo, hi, crate::instrument_registry::tm6_recorded_hz(model))
+                                } else {
+                                    (*min, *max, default_value)
+                                };
                                 let (reverted, edited) = row_scoped(
                                     ui,
                                     src.is_overridden(id),
@@ -2910,8 +3089,8 @@ fn draw_standard_rows(
                                             ui,
                                             &label_text,
                                             value,
-                                            *min,
-                                            *max,
+                                            min_v,
+                                            max_v,
                                             default_value,
                                             *logarithmic,
                                             *suffix,
@@ -2923,8 +3102,8 @@ fn draw_standard_rows(
                                             slot,
                                             page,
                                             id,
-                                            *min,
-                                            *max,
+                                            min_v,
+                                            max_v,
                                             *logarithmic,
                                         );
                                         row.changed()
@@ -3112,6 +3291,21 @@ fn draw_special_rows(
         if hoisted.contains(&def.name) {
             continue;
         }
+        // [286] Loop Restart is switched with the arrow on the effect lane's first
+        // cell, not with a row.
+        if def.name.ends_with("_norestart") {
+            continue;
+        }
+        // [286] A lane-wide switch (the effect lane's Glide) is not part of a step's
+        // lock: it only shows when the lane itself is edited (salt scope 0).
+        if src.salt().0 != 0
+            && crate::instrument_registry::param_is_lane_global(
+                voice_idx,
+                ParamId::Special(def.special_index),
+            )
+        {
+            continue;
+        }
         // [223] The filter type heads the section, above the
         // standard rows.
         if def.name.ends_with("_filter_type") {
@@ -3211,6 +3405,9 @@ fn draw_special_rows(
                 .find(|d| d.name.ends_with("_saturation_type"))
                 .map(|d| src.get(ParamId::Special(d.special_index)) < 0.5)
                 .unwrap_or(false);
+        // [286] The delay's Time knob is the sync menu's business once a note value is chosen.
+        let sync_disabled = def.name == "delay_time"
+            && src.get(ParamId::Special(crate::synthesis::delay_sp::SYNC)) >= 0.5;
         let special_id = ParamId::Special(def.special_index);
         // [184] A parameter with no per-step slot of its own is
         // greyed WITH its reason rather than hidden: the special
@@ -3247,6 +3444,7 @@ fn draw_special_rows(
             !(sample_disabled
                 || modulation_disabled
                 || grain_disabled
+                || sync_disabled
                 || advance_disabled
                 || saturation_off
                 || unsupported.is_some()),
@@ -3262,6 +3460,14 @@ fn draw_special_rows(
                         src.clear(special_id);
                     } else if let Some(value) = new_value {
                         src.set(special_id, value);
+                        // [292] Switching the TM6 Model moves Frequency to that
+                        // tom's recorded pitch (inside its own range).
+                        if def.name == crate::instrument_registry::TM6_MODEL {
+                            src.set(
+                                ParamId::Std(crate::instrument_registry::StandardField::Freq),
+                                crate::instrument_registry::tm6_recorded_hz(value),
+                            );
+                        }
                     }
                 });
             },
@@ -3459,8 +3665,26 @@ fn special_row_widget(
             .as_ref()
             .map(|v| v.iter().map(|s| s.as_str()).collect());
         let shown: &[&str] = dynamic_refs.as_deref().unwrap_or(options);
-        if let Some(idx) = right_aligned_select(ui, (def.name, row_salt), current_idx, shown) {
-            new_value = Some(idx as f32);
+        // Saved lanes store the menu index, so "Custom" keeps its index; the
+        // Texture menu only DISPLAYS it last (the embedded textures first).
+        let order: Vec<usize> = if def.name == crate::instrument_registry::TM6_MODEL {
+            // [292] The retired Auto (0) is not offered; saved lanes keep 1 / 2.
+            (1..shown.len()).collect()
+        } else if def.name.ends_with("_texture") {
+            let custom = crate::synthesis::sample_bank::CUSTOM_TEXTURE_INDEX;
+            (0..shown.len())
+                .filter(|&i| i != custom)
+                .chain((custom < shown.len()).then_some(custom))
+                .collect()
+        } else {
+            (0..shown.len()).collect()
+        };
+        let shown_in_order: Vec<&str> = order.iter().map(|&i| shown[i]).collect();
+        let current_pos = order.iter().position(|&i| i == current_idx).unwrap_or(0);
+        if let Some(pos) =
+            right_aligned_select(ui, (def.name, row_salt), current_pos, &shown_in_order)
+        {
+            new_value = Some(order[pos] as f32);
         }
     // Boolean mode switches, including SDrex's modulation
     // target and free-running LFO phase.
@@ -3489,9 +3713,11 @@ fn special_row_widget(
     && def.min == 0.0
     && def.max == 1.0)
     {
-        let mut value = current;
+        // [286] "Loop Restart" is shown as an ON switch but stored inverted.
+        let inverted = def.name.ends_with("_norestart");
+        let mut value = if inverted { 1.0 - current } else { current };
         if draw_editor_switch_row(ui, def.label, &mut value).changed() {
-            new_value = Some(value);
+            new_value = Some(if inverted { 1.0 - value } else { value });
         }
     // Multisample voices: Sample select 1..8 (stored 1-based)
     } else if def.name.ends_with("_sample") {

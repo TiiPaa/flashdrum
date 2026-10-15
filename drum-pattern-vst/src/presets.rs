@@ -296,7 +296,11 @@ pub fn layout_from_kit(kit: &[i8; MAX_TRACKS]) -> crate::track::TrackLayoutState
     for (i, k) in kit.iter().enumerate() {
         if *k >= 0 {
             if let Some(kind) = TrackInstrumentKind::from_index(*k as usize) {
-                layout.slots[i] = crate::track::TrackSlot::active_with_kind(kind);
+                // [286] Lanes 13 and 14 are reserved for effects: a kit never puts an
+                // instrument there, nor an effect anywhere else.
+                if crate::track::kind_allowed_on_slot(kind, i, None) {
+                    layout.slots[i] = crate::track::TrackSlot::active_with_kind(kind);
+                }
             }
         }
     }

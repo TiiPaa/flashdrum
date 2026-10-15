@@ -12,6 +12,7 @@ use std::sync::{
 mod atomic_song;
 mod config;
 mod factory_presets;
+mod fx_locks;
 mod generator;
 mod groove;
 mod instrument_registry;
@@ -2885,6 +2886,138 @@ impl DrumFlashVst {
         (track_routings, mix_gains)
     }
 
+    /// [286] A hit's sends: the p-locked levels of its step, else the lane's own.
+    /// The levels hold until the lane's next hit, so the tail of a hit keeps the
+    /// send it was thrown with.
+    fn apply_step_sends(&mut self, slot: usize, step: usize) {
+        if crate::track::is_fx_slot(slot) {
+            return;
+        }
+        let plock = &self.params.plock_state.state;
+        for bus in 0..crate::track::FX_SLOT_COUNT {
+            let field = crate::plock::SEND_FIELD_START + bus;
+            let level = (plock.masks.is_active(slot, step)
+                && plock.field_masks.is_set(slot, step, field))
+            .then(|| plock.values.get(slot, step, field));
+            self.synthesizer.set_send_override(slot, bus, level);
+        }
+    }
+
+    /// [286] The parameters of effect bus `bus` for this moment: the sliders, with
+    /// each parameter that carries p-locks on the lane replaced by its value at
+    /// the playhead (`fx_locks::locked_value`). Stopped, or a lane without any
+    /// lock, it is just the sliders. Atomic reads only; called at control rate.
+    fn fx_params_now(
+        &self,
+        bus: usize,
+        playing: bool,
+        clock: fx_locks::StepClock,
+        bpm: f32,
+    ) -> Option<synthesis::FxParams> {
+        use crate::param_id::ParamId;
+        use synthesis::{DelayParams, FxParams, ReverbParams};
+        let slot = crate::track::FX_FIRST_SLOT + bus;
+        let kind = self.params.track_layout.state.kind_for_slot(slot)?;
+        if !kind.is_effect() {
+            return None;
+        }
+        let inst = &self.sound_settings_state.instruments[slot];
+        let (freq, decay, vol, filt, attack, release, dc, rc, hold, fea, fed, analog, stereo) =
+            inst.load();
+        let global = self.voice_settings_for(
+            slot,
+            kind.drum_voice_index(),
+            freq, decay, vol, filt, attack, release, dc, rc, hold, fea, fed, analog, stereo,
+        );
+        let restart = global.special[synthesis::reverb_sp::NO_RESTART] < 0.5;
+        let (mut params, glide) = match kind {
+            crate::track::TrackInstrumentKind::Delay => (
+                FxParams::Delay(DelayParams::from(&global)),
+                global.special[synthesis::delay_sp::GLIDE] >= 0.5,
+            ),
+            _ => (
+                FxParams::Reverb(ReverbParams::from(&global)),
+                global.special[synthesis::reverb_sp::GLIDE] >= 0.5,
+            ),
+        };
+        // The delay's Sync menu locks its time to a note value at the host tempo.
+        let sync_entry = global.special[synthesis::delay_sp::SYNC].round().max(0.0) as usize;
+        let with_sync = |mut p: FxParams| {
+            if let FxParams::Delay(d) = &mut p {
+                if let Some(ms) = synthesis::delay_synced_time_ms(sync_entry, bpm) {
+                    d.time_ms = ms;
+                }
+            }
+            p
+        };
+        let plock = &self.params.plock_state.state;
+        if !playing || plock.masks.masks[slot].load(Ordering::Relaxed) == 0 {
+            return Some(with_sync(params));
+        }
+        let beat = self.sequencer.beat_position();
+        let locked = |id: ParamId, global_value: f32| -> f32 {
+            let Some(field) = id.plock_field() else {
+                return global_value;
+            };
+            fx_locks::locked_value_restart(global_value, beat, clock, glide, restart, |step| {
+                (plock.masks.is_active(slot, step)
+                    && plock.field_masks.get(slot, step) & (1u64 << field) != 0)
+                    .then(|| plock.values.get(slot, step, field))
+            })
+        };
+        let volume = ParamId::Std(crate::instrument_registry::StandardField::Volume);
+        match &mut params {
+            FxParams::Reverb(p) => {
+                use synthesis::reverb_sp as sp;
+                p.size = locked(ParamId::Special(sp::SIZE), p.size);
+                p.decay_s = locked(ParamId::Special(sp::DECAY), p.decay_s);
+                p.damping = locked(ParamId::Special(sp::DAMPING), p.damping);
+                p.predelay_ms = locked(ParamId::Special(sp::PREDELAY), p.predelay_ms);
+                p.low_cut_hz = locked(ParamId::Special(sp::LOW_CUT), p.low_cut_hz);
+                p.high_cut_hz = locked(ParamId::Special(sp::HIGH_CUT), p.high_cut_hz);
+                p.width = locked(ParamId::Special(sp::WIDTH), p.width);
+                p.level = locked(volume, p.level);
+            }
+            FxParams::Delay(p) => {
+                use synthesis::delay_sp as sp;
+                p.time_ms = locked(ParamId::Special(sp::TIME), p.time_ms);
+                p.feedback = locked(ParamId::Special(sp::FEEDBACK), p.feedback);
+                p.damping = locked(ParamId::Special(sp::DAMPING), p.damping);
+                p.low_cut_hz = locked(ParamId::Special(sp::LOW_CUT), p.low_cut_hz);
+                p.high_cut_hz = locked(ParamId::Special(sp::HIGH_CUT), p.high_cut_hz);
+                p.pingpong = locked(ParamId::Special(sp::PINGPONG), p.pingpong);
+                p.width = locked(ParamId::Special(sp::WIDTH), p.width);
+                p.level = locked(volume, p.level);
+            }
+        }
+        Some(with_sync(params))
+    }
+
+    /// [286] Send levels of every instrument lane to Fx1 / Fx2, and the mute of
+    /// each bus (a muted bus bypasses its reverb; Solo never touches the buses),
+    /// read once per block.
+    fn fx_block_state(
+        &self,
+    ) -> (
+        [[f32; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
+        [bool; crate::track::FX_SLOT_COUNT],
+    ) {
+        let layout = &self.params.track_layout.state;
+        let sends = std::array::from_fn(|slot| {
+            std::array::from_fn(|bus| {
+                if crate::track::is_fx_slot(slot) {
+                    0.0
+                } else {
+                    layout.fx_send(slot, bus)
+                }
+            })
+        });
+        let bypass = std::array::from_fn(|bus| {
+            self.params.mutes()[crate::track::FX_FIRST_SLOT + bus].value()
+        });
+        (sends, bypass)
+    }
+
     /// Per-track groove parameters and the page loop, once per block.
     /// Returns the audio-side master length.
     fn update_track_params(&mut self) -> usize {
@@ -3052,6 +3185,42 @@ impl DrumFlashVst {
                 };
                 inst.set_freq_mode(in_notes);
             }
+            self.sound_settings_state.bump_version();
+        }
+    }
+
+    /// [287] A lane saved (or a preset written) before a special existed holds 0
+    /// for it, below its declared minimum: reseed it to the registry default so
+    /// the slider reads its real value. Atomic loads/stores only (RT-safe); a
+    /// no-op once seeded.
+    fn seed_late_specials(&mut self, slot_voices: &[Option<usize>; crate::track::MAX_TRACKS]) {
+        let mut changed = false;
+        for slot_idx in 0..crate::track::MAX_TRACKS {
+            let Some(voice_idx) = slot_voices[slot_idx] else {
+                continue;
+            };
+            let inst = &self.sound_settings_state.instruments[slot_idx];
+            for sp_def in crate::instrument_registry::INSTRUMENTS[voice_idx].special_params {
+                if crate::instrument_registry::LATE_SPECIALS.contains(&sp_def.name)
+                    && inst.special_value(sp_def.special_index) < sp_def.min
+                {
+                    inst.set_special(sp_def.special_index, sp_def.default);
+                    changed = true;
+                }
+                // [292] TM6 Model: the retired Auto (0) becomes the model it
+                // would have picked at the lane's pitch, so the sound is kept.
+                if sp_def.name == crate::instrument_registry::TM6_MODEL
+                    && inst.special_value(sp_def.special_index) < 0.5
+                {
+                    let hz = inst.get(crate::param_id::ParamId::Std(
+                        crate::instrument_registry::StandardField::Freq,
+                    ));
+                    inst.set_special(sp_def.special_index, if hz < 166.0 { 1.0 } else { 2.0 });
+                    changed = true;
+                }
+            }
+        }
+        if changed {
             self.sound_settings_state.bump_version();
         }
     }
@@ -3236,6 +3405,10 @@ impl DrumFlashVst {
             let Some(voice_idx) = slot_voices[slot_idx] else {
                 continue;
             };
+            // [286] An effect bus has no steps to play (and sends no MIDI note).
+            if synthesis::DrumVoice::is_effect_index(voice_idx) {
+                continue;
+            }
             if trigger.should_trigger {
                 let step = trigger.step;
 
@@ -3276,6 +3449,7 @@ impl DrumFlashVst {
                 let step_for_trigger = step as u32;
 
                 let base_settings = self.voice_settings_at_step(slot_idx, voice_idx, step);
+                self.apply_step_sends(slot_idx, step);
 
                 // Fusion pulses are not stutter plocks: they are evenly
                 // distributed over the whole fused-cell duration and use
@@ -3454,6 +3628,7 @@ impl DrumFlashVst {
                         };
                         self.external_midi_triggers[slot_idx].store(true, Ordering::Release);
                         let settings = self.voice_settings_at_step(slot_idx, voice_idx, 0);
+                        self.apply_step_sends(slot_idx, 0);
                         let hit = self.advance_hit_index(slot_idx, 0);
                         self.synthesizer.set_hit_index(slot_idx, hit);
                         self.synthesizer.set_voice_settings(slot_idx, settings);
@@ -3852,6 +4027,10 @@ impl Plugin for DrumFlashVst {
         );
 
         let (track_routings, mix_gains) = self.update_mix_gating();
+        let (fx_sends, fx_bypass) = self.fx_block_state();
+        if !self.sequencer.is_playing() {
+            self.synthesizer.clear_send_overrides();
+        }
         clear_aux_outputs(aux);
 
         let master_length = self.update_track_params();
@@ -3865,6 +4044,7 @@ impl Plugin for DrumFlashVst {
         let slot_voices = self.sync_sequencer_layout();
         self.sync_synthesizer_slots(&slot_voices);
         self.seed_legacy_specials(&slot_voices);
+        self.seed_late_specials(&slot_voices);
         self.apply_macro_knobs(&slot_voices);
         self.push_sound_settings(&slot_voices);
 
@@ -3896,10 +4076,30 @@ impl Plugin for DrumFlashVst {
 
             self.fire_voice_test_triggers(&slot_voices);
 
+            // [286] Effect-lane p-locks, evaluated at control rate (every 32 samples).
+            if sample_idx % 32 == 0 {
+                let clock = fx_locks::StepClock {
+                    steps: master_length,
+                    swing: self.params.swing.value(),
+                    groove: self.params.groove_type.value(),
+                };
+                for bus in 0..crate::track::FX_SLOT_COUNT {
+                    let playing = self.sequencer.is_playing();
+                    if let Some(params) = self.fx_params_now(bus, playing, clock, bpm) {
+                        self.sound_settings_state
+                            .publish_fx_live(bus, params.live_values(), playing);
+                        self.synthesizer.set_fx_params(bus, params);
+                    }
+                }
+            }
+
             let master_vol = self.params.master_volume.smoothed.next();
             let mut voice_outputs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
             self.synthesizer
                 .process_voice_samples_stereo(&mut voice_outputs);
+            // [286] The effect buses: sends in, wet return into the bus slots.
+            self.synthesizer
+                .process_fx(&mut voice_outputs, &fx_sends, fx_bypass);
             let (mixed_left, mixed_right) = main_mix(&voice_outputs, &mix_gains, master_vol);
 
             for (ch, sample) in channel_samples.iter_mut().enumerate() {
@@ -4811,6 +5011,192 @@ mod tests {
 
         assert_eq!(channels[0][2], 1.25);
         assert_eq!(channels[1][2], -1.5);
+    }
+
+    /// [286] The effect-lane p-lock chain end to end: a lock placed on a late step
+    /// holds until the end of the loop, and the lane's own value is back at the loop's
+    /// start.
+    #[test]
+    fn an_effect_lock_ends_where_the_pattern_loops() {
+        use nih_plug::params::persist::PersistentField;
+        let mut vst = DrumFlashVst::default();
+        let mut layout = crate::track::TrackLayoutState::modular_default_layout();
+        layout.slots[12] = crate::track::TrackSlot::active_with_kind(
+            crate::track::TrackInstrumentKind::Reverb,
+        );
+        PersistentField::<crate::track::TrackLayoutState>::set(&vst.params.track_layout, layout);
+        let inst = &vst.sound_settings_state.instruments[12];
+        inst.set_special(synthesis::reverb_sp::DECAY, 0.5); // the lane's own: short
+        inst.set_special(synthesis::reverb_sp::GLIDE, 0.0);
+        // A long decay locked on the 13th step.
+        let field = crate::param_id::ParamId::Special(synthesis::reverb_sp::DECAY)
+            .plock_field()
+            .unwrap();
+        vst.params.plock_state.state.set_field(12, 12, field, 8.0);
+        vst.sequencer.play();
+
+        let clock = fx_locks::StepClock {
+            steps: 16,
+            swing: 0.0,
+            groove: groove::GrooveType::Straight,
+        };
+        let decay_at = |vst: &mut DrumFlashVst, step: f64| {
+            vst.sequencer.sync_to_host(step * 0.25, 120.0, 44100.0);
+            vst.fx_params_now(0, true, clock, 120.0).and_then(|p| p.reverb()).expect("a reverb lane").decay_s
+        };
+        println!("decay by step: {:?}", (0..16).map(|s| decay_at(&mut vst, s as f64 + 0.5)).collect::<Vec<_>>());
+        assert_eq!(decay_at(&mut vst, 0.5), 0.5, "loop start: the lane's own value");
+        assert_eq!(decay_at(&mut vst, 11.5), 0.5, "before the lock");
+        assert_eq!(decay_at(&mut vst, 12.5), 8.0, "on the lock");
+        assert_eq!(decay_at(&mut vst, 15.5), 8.0, "held to the end of the loop");
+        assert_eq!(decay_at(&mut vst, 16.5), 0.5, "back at the lane's value after the wrap");
+    }
+
+    /// [286] The whole audio path of an effect lane, simulated: a kick feeds a reverb
+    /// whose Decay is locked long on the 13th step. The return heard at the start of
+    /// the next loop must be the lane's short decay again.
+    /// [286] Glide on: the decay moves between two locks, never past the last one.
+    #[test]
+    fn an_effect_lane_glides_between_its_locks_when_glide_is_on() {
+        use nih_plug::params::persist::PersistentField;
+        let mut vst = DrumFlashVst::default();
+        let mut layout = crate::track::TrackLayoutState::modular_default_layout();
+        layout.slots[12] = crate::track::TrackSlot::active_with_kind(
+            crate::track::TrackInstrumentKind::Reverb,
+        );
+        PersistentField::<crate::track::TrackLayoutState>::set(&vst.params.track_layout, layout);
+        vst.sound_settings_state.reset_slot_to_defaults(12, crate::track::TrackInstrumentKind::Reverb, 0.5);
+        let inst = &vst.sound_settings_state.instruments[12];
+        inst.set_special(synthesis::reverb_sp::DECAY, 0.5);
+        inst.set_special(synthesis::reverb_sp::GLIDE, 1.0);
+        let field = crate::param_id::ParamId::Special(synthesis::reverb_sp::DECAY).plock_field().unwrap();
+        vst.params.plock_state.state.set_field(12, 4, field, 2.0);
+        vst.params.plock_state.state.set_field(12, 12, field, 8.0);
+        vst.sequencer.play();
+        let clock = fx_locks::StepClock { steps: 16, swing: 0.0, groove: groove::GrooveType::Straight };
+        let decay_at = |vst: &mut DrumFlashVst, step: f64| {
+            vst.sequencer.sync_to_host(step * 0.25, 120.0, 44100.0);
+            vst.fx_params_now(0, true, clock, 120.0).and_then(|p| p.reverb()).expect("a reverb lane").decay_s
+        };
+        assert_eq!(decay_at(&mut vst, 0.0), 0.5, "starts on the slider");
+        let early = decay_at(&mut vst, 2.0);
+        assert!((early - 1.25).abs() < 0.01, "rises towards the first lock, got {early}");
+        assert_eq!(decay_at(&mut vst, 4.0), 2.0, "on the first lock");
+        let mid = decay_at(&mut vst, 8.0);
+        assert!((mid - 5.0).abs() < 0.01, "halfway between 2 and 8, got {mid}");
+        assert_eq!(decay_at(&mut vst, 12.0), 8.0, "on the second lock");
+        assert_eq!(decay_at(&mut vst, 15.5), 8.0, "held after the last lock");
+        assert_eq!(decay_at(&mut vst, 16.0), 0.5, "the lane again at the next loop");
+    }
+
+    /// [286] Loop Restart off: nothing resets at the loop point, the last lock carries on.
+    #[test]
+    fn without_loop_restart_the_last_lock_carries_into_the_next_loop() {
+        use nih_plug::params::persist::PersistentField;
+        let mut vst = DrumFlashVst::default();
+        let mut layout = crate::track::TrackLayoutState::modular_default_layout();
+        layout.slots[12] = crate::track::TrackSlot::active_with_kind(
+            crate::track::TrackInstrumentKind::Reverb,
+        );
+        PersistentField::<crate::track::TrackLayoutState>::set(&vst.params.track_layout, layout);
+        vst.sound_settings_state.reset_slot_to_defaults(12, crate::track::TrackInstrumentKind::Reverb, 0.5);
+        let inst = &vst.sound_settings_state.instruments[12];
+        inst.set_special(synthesis::reverb_sp::DECAY, 0.5);
+        let field = crate::param_id::ParamId::Special(synthesis::reverb_sp::DECAY).plock_field().unwrap();
+        vst.params.plock_state.state.set_field(12, 12, field, 8.0);
+        vst.sequencer.play();
+        let clock = fx_locks::StepClock { steps: 16, swing: 0.0, groove: groove::GrooveType::Straight };
+        let decay_at = |vst: &mut DrumFlashVst, step: f64| {
+            vst.sequencer.sync_to_host(step * 0.25, 120.0, 44100.0);
+            vst.fx_params_now(0, true, clock, 120.0).and_then(|p| p.reverb()).expect("a reverb lane").decay_s
+        };
+        assert_eq!(decay_at(&mut vst, 0.5), 0.5, "restart on (the default): back to the lane");
+        vst.sound_settings_state.instruments[12].set_special(synthesis::reverb_sp::NO_RESTART, 1.0);
+        assert_eq!(decay_at(&mut vst, 0.5), 8.0, "restart off: the lock carries on");
+        assert_eq!(decay_at(&mut vst, 11.5), 8.0);
+    }
+
+    /// [286] The delay's Sync menu locks its time to a note value at the host tempo.
+    #[test]
+    fn the_delay_time_follows_the_tempo_when_synced() {
+        use nih_plug::params::persist::PersistentField;
+        let vst = DrumFlashVst::default();
+        let mut layout = crate::track::TrackLayoutState::modular_default_layout();
+        layout.slots[13] = crate::track::TrackSlot::active_with_kind(
+            crate::track::TrackInstrumentKind::Delay,
+        );
+        PersistentField::<crate::track::TrackLayoutState>::set(&vst.params.track_layout, layout);
+        vst.sound_settings_state.reset_slot_to_defaults(13, crate::track::TrackInstrumentKind::Delay, 0.5);
+        let inst = &vst.sound_settings_state.instruments[13];
+        inst.set_special(synthesis::delay_sp::TIME, 400.0);
+        let clock = fx_locks::StepClock { steps: 16, swing: 0.0, groove: groove::GrooveType::Straight };
+        let time = |bpm: f32| match vst.fx_params_now(1, false, clock, bpm) {
+            Some(synthesis::FxParams::Delay(d)) => d.time_ms,
+            other => panic!("a delay lane, got {other:?}"),
+        };
+        assert_eq!(time(90.0), 400.0, "Free: the Time knob");
+        inst.set_special(synthesis::delay_sp::SYNC, 9.0); // 1/4
+        assert!((time(90.0) - 666.67).abs() < 0.1);
+        assert!((time(120.0) - 500.0).abs() < 0.01);
+        inst.set_special(synthesis::delay_sp::SYNC, 8.0); // dotted 1/8
+        assert!((time(120.0) - 375.0).abs() < 0.01);
+        // Width comes through too.
+        inst.set_special(synthesis::delay_sp::WIDTH, 0.6);
+        match vst.fx_params_now(1, false, clock, 120.0) {
+            Some(synthesis::FxParams::Delay(d)) => assert!((d.width - 0.6).abs() < 1e-6),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_locked_decay_is_not_heard_after_the_loop_wraps() {
+        use nih_plug::params::persist::PersistentField;
+        let mut vst = DrumFlashVst::default();
+        let mut layout = crate::track::TrackLayoutState::modular_default_layout();
+        layout.slots[0].fx_send = [1.0, 0.0];
+        layout.slots[12] = crate::track::TrackSlot::active_with_kind(
+            crate::track::TrackInstrumentKind::Reverb,
+        );
+        PersistentField::<crate::track::TrackLayoutState>::set(&vst.params.track_layout, layout.clone());
+        vst.synthesizer.initialize_with_layout(44100.0, &layout);
+        vst.sound_settings_state.reset_slot_to_defaults(12, crate::track::TrackInstrumentKind::Reverb, 0.5);
+        let inst = &vst.sound_settings_state.instruments[12];
+        inst.set_special(synthesis::reverb_sp::DECAY, 0.5);
+        let field = crate::param_id::ParamId::Special(synthesis::reverb_sp::DECAY).plock_field().unwrap();
+        vst.params.plock_state.state.set_field(12, 12, field, 8.0);
+        vst.synthesizer.set_voice_settings(0, synthesis::VoiceSettings::kick());
+        let reverb_now = vst.voice_settings_at_step(12, synthesis::DrumVoice::Reverb as usize, 0);
+        vst.synthesizer.set_voice_settings(12, reverb_now);
+        vst.sequencer.set_track_params([16; 14], [0.0; 14], [0.0; 14], 16);
+        vst.sequencer.play();
+        let clock = fx_locks::StepClock { steps: 16, swing: 0.0, groove: groove::GrooveType::Straight };
+        let (sends, bypass) = vst.fx_block_state();
+        let mut per_step = vec![0.0f32; 16];
+        let mut last_step = usize::MAX;
+        let total = 44_100 * 7;
+        for n in 0..total {
+            vst.sequencer.process_sample(120.0, 44_100.0, 0.0, groove::GrooveType::Straight);
+            let step = vst.sequencer.current_step();
+            if step != last_step {
+                last_step = step;
+                if step == 8 {
+                    vst.synthesizer.trigger(0, 1.0);
+                }
+            }
+            if n % 32 == 0 {
+                if let Some(p) = vst.fx_params_now(0, true, clock, 120.0) {
+                    vst.synthesizer.set_fx_params(0, p);
+                }
+            }
+            let mut outs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
+            vst.synthesizer.process_voice_samples_stereo(&mut outs);
+            vst.synthesizer.process_fx(&mut outs, &sends, bypass);
+            if n > 44_100 * 4 {
+                per_step[step.min(15)] += outs[12][0].powi(2) + outs[12][1].powi(2);
+            }
+        }
+        let rms: Vec<String> = per_step.iter().map(|e| format!("{:.4}", e.sqrt())).collect();
+        println!("return level by step (3rd loop on): {rms:?}");
     }
 
     #[test]

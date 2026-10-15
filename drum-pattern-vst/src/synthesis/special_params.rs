@@ -120,5 +120,7 @@ pub fn algos_for(voice: DrumVoice) -> &'static [AlgoDef] {
         | DrumVoice::Oh6Ac
         | DrumVoice::Cl6Ac
         | DrumVoice::Tm6Ac => AC606_ALGOS,
+        // [286] An effect, not a synthesis voice: a single "Standard" entry.
+        DrumVoice::Reverb | DrumVoice::Delay => AC606_ALGOS,
     }
 }

@@ -167,7 +167,8 @@ pub fn assign_outputs_in_order(params: &DrumFlashParams) {
     let mut next = layout.clone();
     let mut changed = false;
     for (i, slot) in layout.slots.iter().enumerate() {
-        if !slot.active {
+        // [286] An effect bus keeps its own routing (it returns into the main mix).
+        if !slot.active || slot.kind.is_effect() {
             continue;
         }
         let want = crate::track::TrackAudioOut::Out(i as u8 + 1);
@@ -190,7 +191,8 @@ fn auto_assign_notes_in_order(layout: &mut TrackLayoutState, base: u8) -> bool {
     let mut note = base;
     let mut changed = false;
     for slot in layout.slots.iter_mut() {
-        if !slot.active {
+        // [286] An effect bus has no MIDI note.
+        if !slot.active || slot.kind.is_effect() {
             continue;
         }
         let want = note.min(127);

@@ -45,8 +45,6 @@ pub struct TomVoice {
 impl TomVoice {
     /// Steepness of the filter envelope decay stage used by the engine and the UI graph.
     pub const FILTER_ENV_CURVE: f32 = 6.0;
-    /// Butterworth Q (no resonance bump) for the 12 dB/oct lowpass.
-    const FILTER_Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
     pub fn new(sample_rate: f32, settings: TomSettings) -> Self {
         let sweep_time = 0.14f32.min(settings.decay);
@@ -54,9 +52,9 @@ impl TomVoice {
         osc.set_freq(settings.frequency);
 
         let mut filter = dsp::Biquad::new();
-        filter.set_lowpass(settings.filter_freq, Self::FILTER_Q, sample_rate);
+        filter.set_lowpass(settings.filter_freq, settings.resonance, sample_rate);
         let mut stick_filter = dsp::Biquad::new();
-        stick_filter.set_lowpass(settings.filter_freq, Self::FILTER_Q, sample_rate);
+        stick_filter.set_lowpass(settings.filter_freq, settings.resonance, sample_rate);
 
         let mut voice = Self {
             settings,
@@ -100,7 +98,7 @@ impl TomVoice {
     fn update_derived_params(&mut self) {
         self.osc.set_freq(self.settings.frequency);
         self.filter
-            .set_lowpass(self.settings.filter_freq, Self::FILTER_Q, self.sample_rate);
+            .set_lowpass(self.settings.filter_freq, self.settings.resonance, self.sample_rate);
         self.amp_env.set_decay(self.settings.decay);
         self.amp_env
             .set_attack_ms((self.settings.attack * 1000.0).max(MIN_AMP_ATTACK_MS));
@@ -200,7 +198,7 @@ impl Voice for TomVoice {
                     }
                 };
                 self.filter
-                    .set_lowpass(modulated_cutoff, Self::FILTER_Q, self.sample_rate);
+                    .set_lowpass(modulated_cutoff, self.settings.resonance, self.sample_rate);
                 self.last_cutoff = modulated_cutoff;
                 let filtered = self.filter.process(self.saturation.process_at(true, body));
                 tone = filtered * env * self.drift.level;
@@ -211,7 +209,7 @@ impl Voice for TomVoice {
         // through the same cutoff so the Filter knob governs the WHOLE voice.
         let attack = if self.stick_amount() > 0.0 && self.stick_attack.is_active() {
             self.stick_filter
-                .set_lowpass(self.last_cutoff, Self::FILTER_Q, self.sample_rate);
+                .set_lowpass(self.last_cutoff, self.settings.resonance, self.sample_rate);
             self.stick_filter.process(self.stick_attack.next()) * self.stick_amount()
         } else {
             0.0

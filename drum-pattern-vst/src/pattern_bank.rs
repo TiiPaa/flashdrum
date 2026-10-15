@@ -400,16 +400,18 @@ impl PatternSlot {
         // Detect field count from data size to support legacy slots (FIELD_COUNT=18)
         // and current slots (FIELD_COUNT=46).
         let legacy_field_count = 18usize;
-        let current_expected = INSTRUMENT_COUNT * STEP_COUNT * FIELD_COUNT * 4
-            + INSTRUMENT_COUNT * 8
-            + INSTRUMENT_COUNT * STEP_COUNT * 8;
-        let legacy_expected = INSTRUMENT_COUNT * STEP_COUNT * legacy_field_count * 4
-            + INSTRUMENT_COUNT * 8
-            + INSTRUMENT_COUNT * STEP_COUNT * 8;
+        let size_for = |fields: usize| {
+            INSTRUMENT_COUNT * STEP_COUNT * fields * 4
+                + INSTRUMENT_COUNT * 8
+                + INSTRUMENT_COUNT * STEP_COUNT * 8
+        };
 
-        let field_count = if self.plock_bytes.len() >= current_expected {
+        // [286] 48 fields (sends), then the 46 before them, then the 18 of the oldest.
+        let field_count = if self.plock_bytes.len() >= size_for(FIELD_COUNT) {
             FIELD_COUNT
-        } else if self.plock_bytes.len() >= legacy_expected {
+        } else if self.plock_bytes.len() >= size_for(crate::param_id::PRE_SEND_FIELD_COUNT) {
+            crate::param_id::PRE_SEND_FIELD_COUNT
+        } else if self.plock_bytes.len() >= size_for(legacy_field_count) {
             legacy_field_count
         } else {
             0
@@ -419,6 +421,10 @@ impl PatternSlot {
             let mut offset = 0usize;
             for inst in 0..INSTRUMENT_COUNT {
                 for step in 0..STEP_COUNT {
+                    // [286] A slot saved with fewer fields leaves the newer ones empty.
+                    for field in field_count..FIELD_COUNT {
+                        plock_state.values.set(inst, step, field, 0.0);
+                    }
                     for field in 0..field_count {
                         let val = f32::from_le_bytes([
                             self.plock_bytes[offset],
@@ -600,7 +606,11 @@ impl LaneRegions {
 fn plock_lane_regions(len: usize) -> Option<LaneRegions> {
     let masks = INSTRUMENT_COUNT * 8;
     let field_masks = INSTRUMENT_COUNT * STEP_COUNT * 8;
-    for field_count in [crate::plock::FIELD_COUNT, LEGACY_PLOCK_FIELD_COUNT] {
+    for field_count in [
+        crate::plock::FIELD_COUNT,
+        crate::param_id::PRE_SEND_FIELD_COUNT,
+        LEGACY_PLOCK_FIELD_COUNT,
+    ] {
         let values = INSTRUMENT_COUNT * STEP_COUNT * field_count * 4;
         if len >= values + masks + field_masks {
             return Some(LaneRegions::new(&[
@@ -694,16 +704,18 @@ pub fn restore_from_buffers(
     // Detect field count from data size to support legacy slots (FIELD_COUNT=18)
     // and current slots (FIELD_COUNT=46).
     let legacy_field_count = 18usize;
-    let current_expected = INSTRUMENT_COUNT * STEP_COUNT * FIELD_COUNT * 4
-        + INSTRUMENT_COUNT * 8
-        + INSTRUMENT_COUNT * STEP_COUNT * 8;
-    let legacy_expected = INSTRUMENT_COUNT * STEP_COUNT * legacy_field_count * 4
-        + INSTRUMENT_COUNT * 8
-        + INSTRUMENT_COUNT * STEP_COUNT * 8;
+    let size_for = |fields: usize| {
+        INSTRUMENT_COUNT * STEP_COUNT * fields * 4
+            + INSTRUMENT_COUNT * 8
+            + INSTRUMENT_COUNT * STEP_COUNT * 8
+    };
 
-    let (field_count, has_plock_data) = if plock_bytes.len() >= current_expected {
+    // [286] 48 fields (sends), then the 46 before them, then the 18 of the oldest.
+    let (field_count, has_plock_data) = if plock_bytes.len() >= size_for(FIELD_COUNT) {
         (FIELD_COUNT, true)
-    } else if plock_bytes.len() >= legacy_expected {
+    } else if plock_bytes.len() >= size_for(crate::param_id::PRE_SEND_FIELD_COUNT) {
+        (crate::param_id::PRE_SEND_FIELD_COUNT, true)
+    } else if plock_bytes.len() >= size_for(legacy_field_count) {
         (legacy_field_count, true)
     } else {
         (FIELD_COUNT, false)
@@ -713,6 +725,10 @@ pub fn restore_from_buffers(
         let mut offset = 0usize;
         for inst in 0..INSTRUMENT_COUNT {
             for step in 0..STEP_COUNT {
+                // [286] Data saved with fewer fields leaves the newer ones empty.
+                for field in field_count..FIELD_COUNT {
+                    plock_state.values.set(inst, step, field, 0.0);
+                }
                 for field in 0..field_count {
                     let val = f32::from_le_bytes([
                         plock_bytes[offset],
@@ -1012,6 +1028,10 @@ impl PatternSlot {
         let tail = INSTRUMENT_COUNT * 8 + cells * 8;
         let field_count = if self.plock_bytes.len() >= cells * FIELD_COUNT * 4 + tail {
             Some(FIELD_COUNT)
+        } else if self.plock_bytes.len()
+            >= cells * crate::param_id::PRE_SEND_FIELD_COUNT * 4 + tail
+        {
+            Some(crate::param_id::PRE_SEND_FIELD_COUNT)
         } else if self.plock_bytes.len() >= cells * LEGACY_PLOCK_FIELD_COUNT * 4 + tail {
             Some(LEGACY_PLOCK_FIELD_COUNT)
         } else {

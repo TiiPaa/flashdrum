@@ -49,6 +49,8 @@ pub struct SdrexSettings {
     pub filter_atk_curve: f32,
     /// Bipolar filter-DECAY curve.
     pub filter_dec_curve: f32,
+    /// Low-pass Q (0.7071 = the former fixed Butterworth response).
+    pub resonance: f32,
     pub saturation_type: u8,
     pub saturation_amount: f32,
     pub saturation_mix: f32,
@@ -85,6 +87,7 @@ impl From<VoiceSettings> for SdrexSettings {
             filter_attack: v.special[13],
             filter_atk_curve: v.special[14],
             filter_dec_curve: v.special[15],
+            resonance: super::resonance_or(v.special[18], std::f32::consts::FRAC_1_SQRT_2),
             filter_hold: v.special[16],
             saturation_type: v.special[5] as u8,
             saturation_amount: v.special[6],
@@ -111,6 +114,7 @@ impl From<SdrexSettings> for VoiceSettings {
         special[13] = s.filter_attack;
         special[14] = s.filter_atk_curve;
         special[15] = s.filter_dec_curve;
+        special[18] = s.resonance;
         special[16] = s.filter_hold;
         special[5] = s.saturation_type as f32;
         special[6] = s.saturation_amount;

@@ -182,6 +182,18 @@ impl AcVoice {
         v.clamp(0.0, 1.0) * 2.0
     }
 
+    /// A knob whose centre is the fitted sound (x1) and whose right half climbs
+    /// to x`top`: for levels so small in the fitted spec that a plain x2 is
+    /// inaudible ([292], TM6 Modes and Tail Noise).
+    fn boost(v: f32, top: f32) -> f32 {
+        let v = v.clamp(0.0, 1.0);
+        if v <= 0.5 {
+            v * 2.0
+        } else {
+            1.0 + (v - 0.5) * 2.0 * (top - 1.0)
+        }
+    }
+
     fn update_saturation(&mut self) {
         let s = &self.settings.special;
         self.saturation.saturation_type = saturation::SaturationType::from(s[SAT_TYPE] as u8);
@@ -273,27 +285,37 @@ impl Voice for AcVoice {
                 );
             }
             AcEngine::Tom(e) => {
-                // Model: Auto picks the fitted spec closest to the requested
-                // note (mains are 124.435 and 208 Hz); Low/High force it.
-                let spec = match sp[tm::MODEL].round() as i32 {
-                    1 => &ac606::LOW_TOM_SPEC,
-                    2 => &ac606::HIGH_TOM_SPEC,
-                    _ => {
-                        if freq < 166.0 {
-                            &ac606::LOW_TOM_SPEC
-                        } else {
-                            &ac606::HIGH_TOM_SPEC
-                        }
-                    }
+                // Model: 1 = the Low tom, 2 = the High tom (mains 124.435 and
+                // 208 Hz). 0 is the retired Auto (sessions saved before [292]):
+                // `seed_late_specials` converts it; until then it still picks by
+                // pitch, as it always did.
+                let low = match sp[tm::MODEL].round() as i32 {
+                    1 => true,
+                    2 => false,
+                    _ => freq < 166.0,
+                };
+                let spec = if low {
+                    &ac606::LOW_TOM_SPEC
+                } else {
+                    &ac606::HIGH_TOM_SPEC
+                };
+                // [292] The two models are pushed apart on top of their fitted
+                // specs: Low = long, booming, with a pitch fall and a purer
+                // body; High = short, tight, clicky and ringing.
+                let (decay_x, strike_x, snap_x, glide_x, modes_x) = if low {
+                    (1.35, 1.2, 1.0, 1.5, 0.6)
+                } else {
+                    (0.7, 0.8, 1.6, 1.0, 1.5)
                 };
                 let ratio = (freq / spec.main_hz * self.drift.pitch).clamp(0.25, 4.0);
-                let decay_pct = (s.decay / AcEngineKind::Tom.decay_ref()).clamp(0.05, 1.0);
+                let decay_pct =
+                    (s.decay / AcEngineKind::Tom.decay_ref() * decay_x).clamp(0.05, 5.0);
                 let mods = ac606::TomMods {
-                    strike: Self::times2(sp[tm::STRIKE]),
-                    snap: Self::times2(sp[tm::SNAP]),
-                    glide: Self::times2(sp[tm::GLIDE]),
-                    modes: Self::times2(sp[tm::MODES]),
-                    tail_noise: Self::times2(sp[tm::TAIL_NOISE]),
+                    strike: Self::times2(sp[tm::STRIKE]) * strike_x,
+                    snap: Self::times2(sp[tm::SNAP]) * snap_x,
+                    glide: Self::times2(sp[tm::GLIDE]) * glide_x,
+                    modes: Self::boost(sp[tm::MODES], 60.0) * modes_x,
+                    tail_noise: Self::boost(sp[tm::TAIL_NOISE], 200.0),
                 };
                 e.trigger(spec, decay_pct, ratio, &mods);
             }
@@ -369,5 +391,65 @@ impl Voice for AcVoice {
         if (SAT_TYPE..=SAT_GAIN).contains(&index) {
             self.update_saturation();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tom_tail(model: f32) -> f32 {
+        let mut settings = VoiceSettings::tm6ac();
+        settings.frequency = 150.0;
+        settings.special[tm::MODEL] = model;
+        let mut voice = AcVoice::new(44100.0, AcEngineKind::Tom, AcVoiceSettings::from(settings));
+        voice.trigger();
+        let out: Vec<f32> = (0..22050).map(|_| voice.process_sample()).collect();
+        assert!(out.iter().all(|x| x.is_finite()));
+        out[11025..].iter().map(|x| x * x).sum::<f32>()
+    }
+
+    /// Energy of the second half-second of a hit with `set` applied to the defaults.
+    fn tom_energy(model: f32, window: std::ops::Range<usize>, set: impl Fn(&mut VoiceSettings)) -> f32 {
+        let mut settings = VoiceSettings::tm6ac();
+        settings.special[tm::MODEL] = model;
+        settings.frequency = if model == 2.0 { 208.0 } else { 124.435 };
+        set(&mut settings);
+        let mut voice = AcVoice::new(44100.0, AcEngineKind::Tom, AcVoiceSettings::from(settings));
+        voice.trigger();
+        let out: Vec<f32> = (0..window.end).map(|_| voice.process_sample()).collect();
+        assert!(out.iter().all(|x| x.is_finite()));
+        out[window].iter().map(|x| x * x).sum::<f32>()
+    }
+
+    /// [292] Modes, Tail Noise and Decay must be audible across their whole range,
+    /// on both models (they were inaudible or capped before).
+    #[test]
+    fn tom_modes_tail_noise_and_decay_all_act() {
+        for model in [1.0f32, 2.0] {
+            let window = 2000..22050;
+            let base = tom_energy(model, window.clone(), |_| {});
+            let modes = tom_energy(model, window.clone(), |s| s.special[tm::MODES] = 1.0);
+            let tail = tom_energy(model, window.clone(), |s| s.special[tm::TAIL_NOISE] = 1.0);
+            assert!(modes > base * 1.1, "model {model}: Modes at max {modes} vs centre {base}");
+            assert!(tail > base * 1.1, "model {model}: Tail Noise at max {tail} vs centre {base}");
+            // Decay past the former 0.45 s cap keeps lengthening the hit.
+            let late = 30000..60000;
+            let d_half = tom_energy(model, late.clone(), |s| s.decay = 0.5);
+            let d_two = tom_energy(model, late.clone(), |s| s.decay = 2.0);
+            assert!(d_two > d_half * 2.0, "model {model}: Decay 2 s {d_two} vs 0.5 s {d_half}");
+        }
+    }
+
+    /// [292] At the same pitch, Low rings long and High is short: the model is a
+    /// different drum, not a pitch offset.
+    #[test]
+    fn tom_models_differ_clearly_at_the_same_pitch() {
+        let low = tom_tail(1.0);
+        let high = tom_tail(2.0);
+        assert!(
+            low > high * 3.0,
+            "Low tail {low} should clearly outlast High tail {high}"
+        );
     }
 }

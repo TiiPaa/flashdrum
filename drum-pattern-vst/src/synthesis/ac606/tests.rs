@@ -36,6 +36,12 @@ fn fnv_hash(buf: &[f32]) -> u64 {
 /// (`0.10 + transient*0.5` = 1 ulp above a direct `0.2`) shifted those two
 /// levels by exactly one float ulp — inaudible, and the new direct mapping
 /// is the intended semantics. The five other kinds match bit-for-bit.
+///
+/// Second exception, deliberate ([292]): TM6 was re-captured when its two models
+/// were pushed apart (Low = longer, more glide; High = shorter, clickier) and
+/// the default Model became Low (124.435 Hz) instead of Auto at 150 Hz, and Modes
+/// / Tail Noise / Decay got their wider ranges. The engine at the fitted values
+/// is untouched; the other five kinds still match bit-for-bit.
 #[test]
 fn golden_default_render_unchanged() {
     let n = (SR * 0.15) as usize;
@@ -74,7 +80,7 @@ fn golden_default_render_unchanged() {
             AcEngineKind::Tom,
             VoiceSettings::tm6ac(),
             "TM6",
-            0x2cda402af0f39c7bu64,
+            0x70e8a8eaca17e731u64,
         ),
     ] {
         let mut voice = make(kind, settings);

@@ -27,7 +27,7 @@ const GATE_ATTACK_MS: f32 = 0.3;
 const GATE_RATE_MAX: f32 = 500.0;
 /// Percussive pitch-sweep duration.
 const SWEEP_TIME_S: f32 = 0.05;
-/// Filter resonance (Q): gentle for LP/HP, tighter for the band-pass.
+/// Default Q for LP/HP; the band-pass is tighter by `FILTER_Q_BP / FILTER_Q`.
 const FILTER_Q: f32 = 0.9;
 const FILTER_Q_BP: f32 = 2.5;
 const NOISE_SEED_L: u32 = 0xB022_1111;
@@ -268,9 +268,13 @@ impl BuzzVoice {
         // source → gate → filter → amp → saturation → dc → volume
         let pre = sat.process_at(true, gated);
         match settings.filter_type {
-            1 => filter.set_highpass(cutoff, FILTER_Q, sample_rate),
-            2 => filter.set_bandpass(cutoff, FILTER_Q_BP, sample_rate),
-            _ => filter.set_lowpass(cutoff, FILTER_Q, sample_rate),
+            1 => filter.set_highpass(cutoff, settings.resonance, sample_rate),
+            2 => filter.set_bandpass(
+                cutoff,
+                settings.resonance * (FILTER_Q_BP / FILTER_Q),
+                sample_rate,
+            ),
+            _ => filter.set_lowpass(cutoff, settings.resonance, sample_rate),
         }
         let filtered = filter.process(pre);
         let enveloped = filtered * amp * drift_level;

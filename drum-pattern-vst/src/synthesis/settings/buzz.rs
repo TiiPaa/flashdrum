@@ -43,6 +43,9 @@ pub struct BuzzSettings {
     pub filter_atk_curve: f32,
     /// Base filter type: 0 = low-pass, 1 = high-pass, 2 = band-pass.
     pub filter_type: u8,
+    /// Filter Q for low-/high-pass (0.9 = the former fixed value); the band-pass
+    /// keeps its tighter ratio on top of it.
+    pub resonance: f32,
     pub saturation_type: u8,
     pub saturation_amount: f32,
     pub saturation_mix: f32,
@@ -78,6 +81,7 @@ impl From<VoiceSettings> for BuzzSettings {
             filter_env_attack: v.special[12],
             filter_env_hold: v.special[13],
             filter_type: v.special[14] as u8,
+            resonance: super::resonance_or(v.special[17], 0.9),
             filter_curve: v.special[15],
             filter_atk_curve: v.special[16],
             saturation_type: v.special[6] as u8,
@@ -103,6 +107,7 @@ impl From<BuzzSettings> for VoiceSettings {
         special[12] = b.filter_env_attack;
         special[13] = b.filter_env_hold;
         special[14] = b.filter_type as f32;
+        special[17] = b.resonance;
         special[15] = b.filter_curve;
         special[16] = b.filter_atk_curve;
         special[6] = b.saturation_type as f32;

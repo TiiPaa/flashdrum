@@ -25,8 +25,8 @@ pub const PAGE_STEPS: usize = 16;
 // `crate::plock::FIELD_COUNT`-style path keeps working.
 #[allow(unused_imports)] // part of this module's public surface, by history
 pub use crate::param_id::{
-    ALGO_FIELD, ATTACK_FIELD, FIELD_COUNT, LEGACY_CLAP_ECHO_FIELD, SPECIAL_FIELD_COUNT,
-    SPECIAL_FIELD_START,
+    ALGO_FIELD, ATTACK_FIELD, FIELD_COUNT, LEGACY_CLAP_ECHO_FIELD, PRE_SEND_FIELD_COUNT,
+    SEND_FIELD_COUNT, SEND_FIELD_START, SPECIAL_FIELD_COUNT, SPECIAL_FIELD_START,
 };
 const LEGACY_FIELD_COUNT: usize = 18;
 
@@ -148,7 +148,8 @@ impl PlockFieldMasks {
         if instrument >= INSTRUMENT_COUNT || step >= STEP_COUNT {
             return;
         }
-        self.masks[instrument][step].store((1u64 << FIELD_COUNT) - 1, Ordering::Relaxed);
+        // The 46 sound fields of a pre-[286] snapshot: the sends are never part of one.
+        self.masks[instrument][step].store(crate::param_id::LEGACY_ALL_BITS, Ordering::Relaxed);
     }
 
     pub fn set_legacy_snapshot(&self, instrument: usize, step: usize) {
@@ -425,25 +426,36 @@ impl<'a> PersistentField<'a, Vec<u8>> for PersistentPlockState {
         // Binary format: instrument * step * field f32 values (little-endian u32),
         // followed by instrument u64 step masks (new) or u16 step masks (old),
         // followed by instrument * step u64 field masks.
-        let expected_values = INSTRUMENT_COUNT * STEP_COUNT * FIELD_COUNT * 4;
+        // [286] Three strides: the current 48 fields (sends included), the 46 of the
+        // builds before the sends, and the 18 of the oldest. The current one is
+        // recognised by its EXACT length, because a 46-field blob is as long as a
+        // 48-field one without field masks; the older ones keep the original
+        // thresholds, with 46 standing for "current".
+        let expected_values = INSTRUMENT_COUNT * STEP_COUNT * PRE_SEND_FIELD_COUNT * 4;
         let legacy_expected_values = INSTRUMENT_COUNT * STEP_COUNT * LEGACY_FIELD_COUNT * 4;
         let expected_masks_old = INSTRUMENT_COUNT * 2; // u16 (legacy format)
         let expected_masks_new = INSTRUMENT_COUNT * 8; // u64 (current format)
         let expected_field_masks = INSTRUMENT_COUNT * STEP_COUNT * 8;
+        let sends_total = INSTRUMENT_COUNT * STEP_COUNT * FIELD_COUNT * 4
+            + expected_masks_new
+            + expected_field_masks;
 
         // Detect format based on total size.
-        let has_new_format = new_value.len()
-            >= expected_values + expected_masks_new + expected_field_masks
+        let has_sends = new_value.len() == sends_total;
+        let has_new_format = has_sends
+            || new_value.len() >= expected_values + expected_masks_new + expected_field_masks
             || (new_value.len()
                 >= legacy_expected_values + expected_masks_new + expected_field_masks
                 && new_value.len() < expected_values + expected_masks_old + expected_field_masks);
 
-        let value_field_count = if new_value.len() >= expected_values + expected_masks_new {
+        let value_field_count = if has_sends {
             FIELD_COUNT
+        } else if new_value.len() >= expected_values + expected_masks_new {
+            PRE_SEND_FIELD_COUNT
         } else if new_value.len() >= legacy_expected_values + expected_masks_new {
             LEGACY_FIELD_COUNT
         } else if new_value.len() >= expected_values + expected_masks_old {
-            FIELD_COUNT
+            PRE_SEND_FIELD_COUNT
         } else if new_value.len() >= legacy_expected_values + expected_masks_old {
             LEGACY_FIELD_COUNT
         } else {
@@ -459,6 +471,10 @@ impl<'a> PersistentField<'a, Vec<u8>> for PersistentPlockState {
         let mut offset = 0usize;
         for inst in 0..INSTRUMENT_COUNT {
             for step in 0..STEP_COUNT {
+                // A blob with fewer fields leaves the newer ones at zero.
+                for field in value_field_count..FIELD_COUNT {
+                    self.state.values.set(inst, step, field, 0.0);
+                }
                 for field in 0..value_field_count {
                     let bytes = [
                         new_value[offset],
@@ -1492,6 +1508,72 @@ mod tests {
             .get_settings(2, 63, &global)
             .expect("restored step 63");
         assert_eq!(r63.filter_freq, 5000.0);
+    }
+
+    /// [286] The send locks (fields 46 / 47) survive a save and a load.
+    #[test]
+    fn send_locks_roundtrip_through_persistence() {
+        let state = PlockState::new();
+        state.set_field(3, 10, SEND_FIELD_START, 0.8);
+        state.set_field(3, 10, SEND_FIELD_START + 1, 0.25);
+        state.set_field(3, 40, 1, 0.5); // an ordinary lock next to them
+        let src = PersistentPlockState { state };
+        let blob = src.map(|v| v.clone());
+        let dst = PersistentPlockState::new();
+        dst.set(blob);
+        let (f0, f1) = (SEND_FIELD_START, SEND_FIELD_START + 1);
+        assert!(dst.state.field_masks.is_set(3, 10, f0) && dst.state.field_masks.is_set(3, 10, f1));
+        assert_eq!(dst.state.values.get(3, 10, f0), 0.8);
+        assert_eq!(dst.state.values.get(3, 10, f1), 0.25);
+        assert!(!dst.state.field_masks.is_set(3, 40, f0), "no send lock on the other cell");
+        assert_eq!(dst.state.values.get(3, 40, 1), 0.5);
+    }
+
+    /// [286] A blob written by a build before the sends has 46 fields per cell. It
+    /// is as long as a 48-field blob without field masks, so it must be told apart
+    /// by its exact length: its values and masks load, the sends stay empty.
+    #[test]
+    fn a_46_field_blob_from_before_the_sends_still_loads() {
+        let state = PlockState::new();
+        let mut settings = base_settings();
+        settings.decay = 0.77;
+        state.set_settings(0, 5, &settings);
+        state.set_field(1, 9, 3, 1234.0);
+        let current = PersistentPlockState { state }.map(|v| v.clone());
+
+        // Rebuild the old layout: drop fields 46 and 47 of every cell.
+        let cells = INSTRUMENT_COUNT * STEP_COUNT;
+        let mut old = Vec::new();
+        for cell in 0..cells {
+            let base = cell * FIELD_COUNT * 4;
+            old.extend_from_slice(&current[base..base + PRE_SEND_FIELD_COUNT * 4]);
+        }
+        old.extend_from_slice(&current[cells * FIELD_COUNT * 4..]);
+        assert_eq!(
+            old.len(),
+            cells * PRE_SEND_FIELD_COUNT * 4 + INSTRUMENT_COUNT * 8 + cells * 8,
+            "the old layout"
+        );
+
+        let dst = PersistentPlockState::new();
+        // Dirty the send fields first: loading must not leave stale locks behind.
+        dst.state.set_field(0, 5, SEND_FIELD_START, 0.9);
+        dst.set(old);
+        let global = base_settings();
+        assert_eq!(dst.state.get_settings(0, 5, &global).expect("step 5").decay, 0.77);
+        assert_eq!(dst.state.values.get(1, 9, 3), 1234.0);
+        assert!(dst.state.masks.is_active(1, 9));
+        assert!(!dst.state.field_masks.is_set(0, 5, SEND_FIELD_START), "no send in an old blob");
+        assert_eq!(dst.state.values.get(0, 5, SEND_FIELD_START), 0.0);
+    }
+
+    /// [286] A snapshot never locks the sends.
+    #[test]
+    fn a_snapshot_does_not_claim_the_send_fields() {
+        let state = PlockState::new();
+        state.set_settings(2, 4, &base_settings());
+        assert!(!state.field_masks.is_set(2, 4, SEND_FIELD_START));
+        assert!(!state.field_masks.is_set(2, 4, SEND_FIELD_START + 1));
     }
 
     #[test]

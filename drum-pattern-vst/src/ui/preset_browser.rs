@@ -803,7 +803,10 @@ fn apply_pattern(
         for (i, k) in preset.kit.iter().enumerate() {
             if *k >= 0 {
                 if let Some(kind) = TrackInstrumentKind::from_index(*k as usize) {
-                    layout.slots[i] = TrackSlot::active_with_kind(kind);
+                    // [286] Lanes 13 and 14 stay reserved for effects.
+                    if crate::track::kind_allowed_on_slot(kind, i, None) {
+                        layout.slots[i] = TrackSlot::active_with_kind(kind);
+                    }
                 }
             }
         }

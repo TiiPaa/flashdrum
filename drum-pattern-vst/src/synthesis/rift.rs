@@ -1172,7 +1172,7 @@ mod tests {
     fn every_texture_sounds() {
         for t in 0..sample_bank::TEXTURE_COUNT {
             let mut s = VoiceSettings::rift();
-            s.special[0] = t as f32;
+            s.special[0] = sample_bank::menu_index_of_bank(t) as f32;
             s.special[3] = 0.6; // a slice long enough to judge
             let mut voice = voice_with(s);
             let out = render(&mut voice, 44100);
@@ -1275,7 +1275,7 @@ mod tests {
     fn looped_grain_has_no_seam_click() {
         for texture in 0..sample_bank::TEXTURE_COUNT {
             let mut s = VoiceSettings::rift();
-            s.special[0] = texture as f32;
+            s.special[0] = sample_bank::menu_index_of_bank(texture) as f32;
             s.special[12] = 1.0; // Loop on
             s.special[3] = 0.25;
             s.special[4] = 0.1; // a deliberately short fade

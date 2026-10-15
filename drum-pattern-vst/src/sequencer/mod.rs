@@ -759,10 +759,25 @@ impl Sequencer {
     }
 
     /// Returns per-track current step for UI highlighting.
+    ///
+    /// Push/Pull moves a lane's AUDIO only: its counter runs on the shifted
+    /// timeline, so the playhead is brought back to the master's by the
+    /// whole steps that separate the two timelines (0 when Push/Pull is 0).
     pub fn current_steps(&self) -> [usize; MAX_TRACKS] {
+        let (start, end) = self.loop_bounds();
+        let loop_steps = (((end - start) / 0.25).round() as i64).max(1);
+        let master = groove::beat_to_step(self.beat_position, self.swing, self.groove_type) as i64;
         let mut steps = [0usize; MAX_TRACKS];
         for (i, track) in self.tracks.iter().enumerate() {
-            steps[i] = track.step_counter % track.track_length.max(1);
+            let len = track.track_length.max(1) as i64;
+            let push_pull_beats = track.push_pull_ms as f64 * self.bpm as f64 / (60.0 * 1000.0);
+            let shifted_beat = self.fold_shifted(self.beat_position - push_pull_beats);
+            let shifted = groove::beat_to_step(shifted_beat, self.swing, self.groove_type) as i64;
+            let mut ahead = (master - shifted).rem_euclid(loop_steps);
+            if ahead > loop_steps / 2 {
+                ahead -= loop_steps;
+            }
+            steps[i] = (track.step_counter as i64 + ahead).rem_euclid(len) as usize;
         }
         steps
     }
@@ -1563,6 +1578,25 @@ mod tests {
                 .any(|w| w[0] == 0 && w[31] == 31 && w[32] == 0),
             "{masters:?}"
         );
+    }
+
+    #[test]
+    fn push_pull_moves_the_audio_but_not_the_lane_playhead() {
+        for push in [50.0f32, -50.0] {
+            let mut seq = Sequencer::new(full_pattern_64());
+            let mut pushes = [0.0f32; 14];
+            pushes[0] = push;
+            seq.set_track_params([16; 14], pushes, [0.0; 14], 16);
+            seq.play();
+            for n in 0..88200 {
+                seq.process_sample(120.0, 44100.0, 0.0, GrooveType::Straight);
+                let steps = seq.current_steps();
+                assert_eq!(
+                    steps[0], steps[1],
+                    "push {push} ms: playhead of the pushed lane differs from the plain one at sample {n}"
+                );
+            }
+        }
     }
 
     #[test]

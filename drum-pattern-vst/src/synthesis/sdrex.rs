@@ -95,7 +95,7 @@ impl SdrexVoice {
                 let mut f = dsp::Biquad::new();
                 f.set_lowpass(
                     settings.filter_freq.max(20.0),
-                    std::f32::consts::FRAC_1_SQRT_2,
+                    settings.resonance,
                     sample_rate,
                 );
                 f
@@ -181,7 +181,10 @@ impl Voice for SdrexVoice {
         // how many octaves the cutoff climbs ABOVE the Filter setting ([183]);
         // the flanger reads the same Depth as milliseconds of delay.
         let modulation_rate = self.settings.flanger_rate.clamp(0.1, 20.0);
-        let modulation_depth = self.settings.flanger_depth.clamp(0.0, 3.0);
+        // [290] Bipolar: the sign is the direction of the sweep. Positive opens
+        // the cutoff above its base / grows the delay from its minimum; negative
+        // closes the cutoff below its base / starts the delay long and shrinks it.
+        let modulation_depth = self.settings.flanger_depth.clamp(-3.0, 3.0);
         // [181] Modulation fade-in: Wet ramps from 0 to its setting over
         // `Fade-in` ms after the hit, so the flanger sweep / filter LFO swells in
         // instead of being there on the attack. Applies to BOTH modes.
@@ -290,7 +293,7 @@ impl Voice for SdrexVoice {
             cutoff
         };
         self.filter
-            .set_lowpass(cutoff, std::f32::consts::FRAC_1_SQRT_2, self.sample_rate);
+            .set_lowpass(cutoff, self.settings.resonance, self.sample_rate);
         let mixed = self.filter.process(self.saturation.process_at(true, mixed));
 
         // 4. Flanger target. Filter Mod bypasses the delay line completely.
@@ -300,8 +303,13 @@ impl Voice for SdrexVoice {
             mixed
         } else {
             let len = self.flanger_len;
+            let sweep = if modulation_depth >= 0.0 {
+                modulation_unipolar
+            } else {
+                1.0 - modulation_unipolar
+            };
             let delay_samples =
-                ((min_delay + modulation_depth * modulation_unipolar) * 0.001 * self.sample_rate)
+                ((min_delay + modulation_depth.abs() * sweep) * 0.001 * self.sample_rate)
                     .clamp(0.0, (len - 2) as f32);
             let delay_int = delay_samples.floor() as usize;
             let frac = delay_samples - delay_int as f32;
@@ -566,6 +574,41 @@ mod tests {
                 "{name}: a 200 ms fade-in must delay the modulation (max diff {early})"
             );
         }
+    }
+
+    #[test]
+    fn negative_depth_sweeps_the_other_way() {
+        let render = |mode: f32, depth: f32| {
+            let mut settings = VoiceSettings::sdrex();
+            settings.analog = 0.0;
+            settings.filter_freq = 800.0;
+            settings.filter_env_amount = 0.0;
+            settings.special[0] = 7.0;
+            settings.special[1] = 0.0;
+            settings.special[2] = depth;
+            settings.special[4] = 1.0;
+            settings.special[17] = mode;
+            let mut voice = voice_with(settings);
+            voice.trigger();
+            (0..8192)
+                .map(|_| voice.process_sample())
+                .collect::<Vec<f32>>()
+        };
+        let energy = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>();
+        // Filter LFO: +3 opens the cutoff above its base, -3 closes it below.
+        let up = render(1.0, 3.0);
+        let down = render(1.0, -3.0);
+        assert!(up.iter().chain(&down).all(|x| x.is_finite()));
+        assert!(
+            energy(&up) > energy(&down),
+            "a negative Depth must close the filter, a positive one open it"
+        );
+        // Flanger: both signs stay finite and the sign changes the sound.
+        let fl_up = render(0.0, 3.0);
+        let fl_down = render(0.0, -3.0);
+        assert!(fl_up.iter().chain(&fl_down).all(|x| x.is_finite()));
+        let diff = fl_up.iter().zip(&fl_down).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(diff > 0.001, "the flanger sweep direction must be audible");
     }
 
     #[test]

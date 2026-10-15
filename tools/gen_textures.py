@@ -1,4 +1,4 @@
-"""Génère les quatre textures longues de l'instrument Rift ([221]).
+"""Génère les cinq textures longues de l'instrument Rift ([221], [291]).
 
 Ces WAV sont embarqués dans le binaire (`include_bytes!`), donc ils sont
 fabriqués ici plutôt que sourcés : contenu original, aucune licence à gérer, et
@@ -11,7 +11,7 @@ Sortie : `drum-pattern-vst/assets/textures/*.wav`, mono, PCM 16 bits, 44 100 Hz,
 12 s chacune (~1,06 Mo par fichier), 16 s pour le champ de bruit. Le parseur RIFF du plugin
 (`src/synthesis/sample_bank.rs`) lit ce format tel quel.
 
-La consigne commune aux quatre : **la matière doit changer de caractère au fil
+La consigne commune aux cinq : **la matière doit changer de caractère au fil
 des secondes**. Rift prélève une tranche à un offset choisi — si la texture est
 uniforme, déplacer l'offset ne produit rien d'audible et l'instrument perd sa
 raison d'être.
@@ -368,6 +368,53 @@ def sweep(seed=0x21F4):
     return fade_edges(normalize(body))
 
 
+PAD_DURATION = 16.0
+
+
+def pad(seed=0x21F5):
+    """5 — Pad évolutif lent, atonal ([291]), 16 s.
+
+    Trente-deux partiels dont les hauteurs sont tirées au hasard sur une échelle
+    logarithmique (aucun rapport entier : pas de note, pas d'accord) ; chacun
+    enfle et s'efface sur sa propre période de 4 à 25 s et dérive de quelques
+    centièmes de ton. Dessous, un souffle filtré par un passe-bande très lent.
+    Le tout traverse un passe-bas qui s'ouvre et se ferme sur plusieurs secondes :
+    déplacer l'offset change la couleur, jamais la tonalité (il n'y en a pas).
+    """
+    r = rng(seed)
+    n = int(SR * PAD_DURATION)
+    t = np.arange(n) / SR
+    body = np.zeros(n)
+    partials = 32
+    # Hauteurs : log-uniformes entre 70 Hz et 3,5 kHz, sans rapport simple.
+    freqs = np.exp(r.uniform(np.log(70.0), np.log(3500.0), partials))
+    for hz in freqs:
+        vib_hz = r.uniform(0.04, 0.3)
+        vib = 1.0 + 0.004 * np.sin(2 * np.pi * vib_hz * t + r.uniform(0, 2 * np.pi))
+        phase = np.cumsum(hz * vib) / SR + r.uniform(0, 1)
+        swell_hz = r.uniform(1.0 / 25.0, 1.0 / 4.0)
+        swell = 0.12 + 0.88 * (0.5 + 0.5 * np.sin(2 * np.pi * swell_hz * t + r.uniform(0, 2 * np.pi)))
+        body += swell * np.sin(2 * np.pi * phase) / np.sqrt(hz)
+
+    # Souffle sous les partiels, passe-bande lent.
+    hiss = r.standard_normal(n)
+    band = svf_varying(
+        hiss,
+        180.0 * (14.0 ** drift(r, n, [0.021, 0.053], [1.0, 0.6])),
+        np.full(n, 3.0),
+    )
+    body = body / np.max(np.abs(body)) + 0.18 * band / max(np.max(np.abs(band)), 1e-9)
+
+    # Passe-bas qui respire sur plusieurs secondes.
+    body = svf_varying(
+        body,
+        500.0 * (9.0 ** drift(r, n, [0.031, 0.077], [1.0, 0.5])),
+        np.full(n, 0.9),
+        out="lp",
+    )
+    return fade_edges(normalize(level_flat(body)))
+
+
 def main(only=None):
     print(f"Textures Rift [221] - {SR} Hz, mono PCM 16 bits")
     for name, fn in [
@@ -375,6 +422,7 @@ def main(only=None):
         ("metal.wav", metal),
         ("crackle.wav", crackle),
         ("sweep.wav", sweep),
+        ("pad.wav", pad),
     ]:
         if only and not any(name.startswith(o) for o in only):
             continue

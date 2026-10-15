@@ -217,6 +217,9 @@ pub struct AcTom {
     main_phase: f32,
     lower_mode_phase: f32,
     strike_phase: f32,
+    /// The modes actually played: the spec's own, or the High tom's when the
+    /// spec has none (the Low tom), so the Modes knob works on both.
+    upper_modes: [TomMode; 4],
     upper_mode_hz: [f32; 4],
     upper_mode_phase: [f32; 4],
     upper_mode_envelope: [f32; 4],
@@ -283,6 +286,7 @@ impl AcTom {
             main_phase: 0.0,
             lower_mode_phase: 0.0,
             strike_phase: 0.0,
+            upper_modes: HIGH_TOM_SPEC.upper_modes,
             upper_mode_hz: [0.0; 4],
             upper_mode_phase: [0.0; 4],
             upper_mode_envelope: [0.0; 4],
@@ -326,7 +330,7 @@ impl AcTom {
         }
     }
 
-    /// `spec`: low or high tom, `decay_percent` 0..1,
+    /// `spec`: low or high tom, `decay_percent` 0.05..5 (1 = the fitted decay),
     /// `pitch_ratio` (1 = original tuning), `mods`: exploration knobs.
     pub fn trigger(
         &mut self,
@@ -341,7 +345,12 @@ impl AcTom {
         }
 
         self.spec = spec;
-        let decay = clampf(decay_percent, 0.05, 1.0);
+        self.upper_modes = if spec.upper_modes.iter().any(|m| m.level != 0.0) {
+            spec.upper_modes
+        } else {
+            HIGH_TOM_SPEC.upper_modes
+        };
+        let decay = clampf(decay_percent, 0.05, 5.0);
         let ratio = clampf(pitch_ratio, 0.25, 4.0);
         self.mod_strike = mods.strike.max(0.0);
         self.mod_snap = mods.snap.max(0.0);
@@ -369,8 +378,8 @@ impl AcTom {
         self.lower_mode_envelope = 1.0;
         self.strike_envelope = 1.0;
 
-        for index in 0..self.spec.upper_modes.len() {
-            let m = &self.spec.upper_modes[index];
+        for index in 0..self.upper_modes.len() {
+            let m = &self.upper_modes[index];
             self.upper_mode_hz[index] = self.main_hz * m.ratio;
             self.upper_mode_phase[index] = m.start_phase;
             self.upper_mode_envelope[index] = 1.0;
@@ -458,8 +467,8 @@ impl AcTom {
         }
         self.strike_phase =
             wrap_phase(self.strike_phase + TWO_PI * self.strike_hz / self.sample_rate);
-        for index in 0..self.spec.upper_modes.len() {
-            if self.spec.upper_modes[index].level == 0.0 {
+        for index in 0..self.upper_modes.len() {
+            if self.upper_modes[index].level == 0.0 {
                 continue;
             }
             self.upper_mode_phase[index] = wrap_phase(
@@ -489,11 +498,11 @@ impl AcTom {
             * self.strike_rise;
 
         let mut upper_modes = 0.0f32;
-        for index in 0..self.spec.upper_modes.len() {
-            if self.spec.upper_modes[index].level == 0.0 {
+        for index in 0..self.upper_modes.len() {
+            if self.upper_modes[index].level == 0.0 {
                 continue;
             }
-            upper_modes += self.spec.upper_modes[index].level
+            upper_modes += self.upper_modes[index].level
                 * self.mod_modes
                 * self.upper_mode_phase[index].sin()
                 * self.upper_mode_envelope[index];
@@ -538,10 +547,10 @@ impl AcTom {
         self.lower_mode_envelope = flush_denormal(self.lower_mode_envelope * self.lower_mode_pole);
         self.strike_envelope = flush_denormal(self.strike_envelope * self.strike_pole);
         let mut upper_modes_are_silent = true;
-        for index in 0..self.spec.upper_modes.len() {
+        for index in 0..self.upper_modes.len() {
             self.upper_mode_envelope[index] =
                 flush_denormal(self.upper_mode_envelope[index] * self.upper_mode_pole[index]);
-            if self.spec.upper_modes[index].level * self.upper_mode_envelope[index]
+            if self.upper_modes[index].level * self.mod_modes * self.upper_mode_envelope[index]
                 > TOM_SILENCE_THRESHOLD
             {
                 upper_modes_are_silent = false;
@@ -553,6 +562,8 @@ impl AcTom {
         if self.main_envelope <= TOM_SILENCE_THRESHOLD
             && self.spec.lower_mode_level * self.lower_mode_envelope <= TOM_SILENCE_THRESHOLD
             && upper_modes_are_silent
+            && self.spec.tail_noise_level * self.mod_tail_noise * self.tail_noise_envelope
+                <= TOM_SILENCE_THRESHOLD
         {
             self.active = false;
         }

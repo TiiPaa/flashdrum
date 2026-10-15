@@ -136,6 +136,10 @@ fn remap_roles_to_slots(
         let Some(kind) = layout.kind_for_slot(slot_idx) else {
             continue;
         };
+        // [286] An effect bus has no steps: the generator never writes on it.
+        if kind.is_effect() {
+            continue;
+        }
 
         // The 606 multisample voices have no generator roles of their own:
         // they borrow the Kick / Snare roles so GENERATE still writes a line
@@ -173,6 +177,8 @@ fn remap_roles_to_slots(
             TrackInstrumentKind::Snare606 => 10,
             TrackInstrumentKind::BassDrum808 => 11,
             TrackInstrumentKind::Perc1 => 12,
+            // Skipped above (`is_effect`); kept for exhaustiveness.
+            TrackInstrumentKind::Reverb | TrackInstrumentKind::Delay => 12,
         };
         let duplicate_index = assigned_per_voice[base_voice];
         assigned_per_voice[base_voice] += 1;

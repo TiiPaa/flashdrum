@@ -637,27 +637,41 @@ pub fn tag(
 // `flash` (0..=1) flashes the whole plate white on MIDI activity ([238] —
 // replaces the small LED of [216]).
 // ============================================================
-pub fn lane_name(ui: &egui::Ui, rect: egui::Rect, text: &str, selected: bool, flash: f32) {
+/// `fx`: an effect lane (Fx1 / Fx2) wears amber instead of the instruments' blue-grey.
+pub fn lane_name(ui: &egui::Ui, rect: egui::Rect, text: &str, selected: bool, flash: f32, fx: bool) {
     let p = ui.painter();
     let f = flash.clamp(0.0, 1.0);
     // FLAT: no gradient/border at rest (a raised look reads as a permanent hover);
     // only the selected lane is filled blue with a thin outline.
+    let (sel_fill, sel_line, rest_fill, sel_ink, plain_ink) = if fx {
+        (
+            rgb(150, 104, 30),
+            rgb(206, 154, 58),
+            rgb(74, 58, 30),
+            rgb(255, 244, 220),
+            rgb(236, 198, 124),
+        )
+    } else {
+        (
+            rgb(42, 104, 156),
+            rgb(60, 132, 186),
+            rgb(52, 53, 59),
+            rgb(234, 246, 255),
+            rgb(201, 203, 211),
+        )
+    };
     if selected {
-        p.rect_filled(rect, 5.0, lerp_c(rgb(42, 104, 156), FLASH_FILL, f));
+        p.rect_filled(rect, 5.0, lerp_c(sel_fill, FLASH_FILL, f));
         p.rect_stroke(
             rect,
             5.0,
-            egui::Stroke::new(1.0, lerp_c(rgb(60, 132, 186), FLASH_FILL, f)),
+            egui::Stroke::new(1.0, lerp_c(sel_line, FLASH_FILL, f)),
             egui::StrokeKind::Inside,
         );
     } else {
-        p.rect_filled(rect, 5.0, lerp_c(rgb(52, 53, 59), FLASH_FILL, f));
+        p.rect_filled(rect, 5.0, lerp_c(rest_fill, FLASH_FILL, f));
     }
-    let rest_ink = if selected {
-        rgb(234, 246, 255)
-    } else {
-        rgb(201, 203, 211)
-    };
+    let rest_ink = if selected { sel_ink } else { plain_ink };
     let tc = lerp_c(rest_ink, FLASH_INK, f);
     // Tight left padding so the button doesn't leave much empty space L/R.
     p.text(

@@ -136,6 +136,8 @@ impl InstrumentSettingsState {
                 );
                 0.0
             }
+            // [286] The send levels live in the track layout (`GlobalSource` routes them).
+            ParamId::FxSend(_) => 0.0,
         }
     }
 
@@ -147,6 +149,7 @@ impl InstrumentSettingsState {
             ParamId::Std(field) => self.set_standard(field, value),
             ParamId::Special(index) => self.set_special(index, value),
             ParamId::FreqMode => self.set_freq_mode(value >= 0.5),
+            ParamId::FxSend(_) => {}
             ParamId::Algo => {
                 debug_assert!(
                     false,
@@ -306,9 +309,39 @@ pub struct SoundSettingsState {
     /// True when the persisted state predates per-slot specials: the plugin
     /// must seed `special`/`freq_mode` once from the legacy per-voice params.
     pub needs_param_seed: AtomicBool,
+    /// [286] What each effect bus is really using right now (the sliders with the
+    /// p-locks applied), written by the audio thread, read by the Lane Editor to
+    /// show it. Not persisted. Order: size, decay, damping, pre-delay, low cut, width,
+    /// level; `fx_live_on` says whether the values are fresh (the transport plays).
+    pub fx_live: [[AtomicU32; FX_LIVE_FIELDS]; crate::track::FX_SLOT_COUNT],
+    pub fx_live_on: [AtomicBool; crate::track::FX_SLOT_COUNT],
 }
 
+pub use crate::synthesis::FX_LIVE_FIELDS;
+
 impl SoundSettingsState {
+    /// [286] Publish what effect bus `bus` is using (audio thread; atomic stores).
+    pub fn publish_fx_live(&self, bus: usize, values: [f32; FX_LIVE_FIELDS], playing: bool) {
+        if bus >= crate::track::FX_SLOT_COUNT {
+            return;
+        }
+        for (cell, value) in self.fx_live[bus].iter().zip(values) {
+            cell.store(value.to_bits(), Ordering::Relaxed);
+        }
+        self.fx_live_on[bus].store(playing, Ordering::Relaxed);
+    }
+
+    /// [286] The live values of effect bus `bus`, `None` while the transport is stopped.
+    pub fn fx_live(&self, bus: usize) -> Option<[f32; FX_LIVE_FIELDS]> {
+        if bus >= crate::track::FX_SLOT_COUNT || !self.fx_live_on[bus].load(Ordering::Relaxed) {
+            return None;
+        }
+        Some(std::array::from_fn(|i| {
+            f32::from_bits(self.fx_live[bus][i].load(Ordering::Relaxed))
+        }))
+    }
+
+
     /// Create settings using the registry defaults for every slot.
     pub fn new(layout: &crate::track::TrackLayoutState) -> Arc<Self> {
         Self::new_with_default_analog(layout, 0.5)
@@ -343,6 +376,8 @@ impl SoundSettingsState {
             instruments,
             version: AtomicU64::new(0),
             needs_param_seed: AtomicBool::new(false),
+            fx_live: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
+            fx_live_on: std::array::from_fn(|_| AtomicBool::new(false)),
         })
     }
 

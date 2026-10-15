@@ -35,6 +35,8 @@ pub fn standard(voice: usize, field: F) -> String {
                 "Tone: tuning of the metallic sound. Higher = brighter."
             } else if voice == V::Cl6Ac as usize {
                 "Tone: colour of the clap's noise. Higher = brighter."
+            } else if voice == V::Tm6Ac as usize {
+                "Frequency: pitch of the tom, in hertz. The range follows the Model: Low tom 70-200 Hz (124 Hz = the recording), High tom 140-420 Hz (208 Hz = the recording). Changing the Model moves it to that tom's recorded pitch."
             } else if is(voice, &TOMS) {
                 "Frequency: pitch of the tom. It drops a little at the start of each hit (the Deep algorithm plays lower)."
             } else if voice == V::Snare as usize {
@@ -211,7 +213,7 @@ Off: every hit plays the Sample chosen below.";
         "sdrex_filter_mod" => "Modulation: what the LFO moves. Flanger = a sweeping comb effect; Filter LFO = sweeps the filter up.",
         "sdrex_flanger_rate" => "Rate: speed of the modulation, in Hz.",
         "sdrex_modulation_fade" => "Fade-in: time for the modulation to come in after each hit.",
-        "sdrex_flanger_depth" => "Depth: amount of modulation.",
+        "sdrex_flanger_depth" => "Depth: amount of modulation. The sign sets the direction of the sweep: positive opens the filter above its Filter value (Flanger: the delay grows), negative closes it below (Flanger: the delay shrinks). 0 = none.",
         "sdrex_flanger_feedback" => "Feedback: resonance of the flanger (Flanger mode only).",
         "sdrex_flanger_wet" => "Wet: level of the modulated sound.",
         "sdrex_noise_level" => "Noise: level of the noise layer.",
@@ -236,12 +238,29 @@ Off: every hit plays the Sample chosen below.";
         "ac_cl_spread" => "Spread: timing of the clap's bursts.",
         "ac_cl_tail" => "Tail: level of the clap's tail.",
         "ac_cl_air" => "Air: level of the airy layer.",
-        "ac_tm_model" => "Model: 0 = Auto, 1 = Low tom, 2 = High tom.",
-        "ac_tm_strike" => "Strike: attack of the stick.",
-        "ac_tm_snap" => "Snap: noise snap at the hit.",
-        "ac_tm_glide" => "Glide: pitch glide of the tom.",
-        "ac_tm_modes" => "Modes: level of the drum's overtones.",
-        "ac_tm_tail_noise" => "Tail Noise: noise in the tail.",
+        "delay_time" => "Time: the gap between the repeats, in milliseconds. Moving it (a Glide p-lock, or the knob) bends the pitch of the repeats, like a tape delay.",
+        "delay_feedback" => "Feedback: how much of the repeats goes back into the delay. Higher = more repeats; close to the top they ring for a long time.",
+        "delay_damping" => "Damping: how fast each repeat loses its highs. Higher = darker, softer repeats.",
+        "delay_lowcut" => "Low Cut: removes the lows from the repeats, so they get thinner as they go and do not muddy the mix.",
+        "delay_pingpong" => "Ping-pong: 0 = left and right repeat on their own, 1 = the repeats bounce from one side to the other.",
+        "delay_glide" => "Glide: how this lane's p-locks behave. Off = the value jumps at each lock and holds until the next. On = the value moves smoothly: from the slider at the start of the pattern to the first lock, then from lock to lock. After the last lock it holds until the pattern loops, then the slider is back.",
+        "reverb_norestart" | "delay_norestart" => "Loop Restart: on, every time the pattern loops the effect goes back to its own sliders (and, in Glide, starts gliding from them). Off, nothing restarts: the locks form a circle and the last one carries on into the first of the next loop.",
+        "reverb_highcut" | "delay_highcut" => "High Cut: removes the highs, from this frequency up. 20 kHz = open. On the delay every repeat goes through it again, so each one is duller than the last.",
+        "delay_width" => "Width: a small gap between the left and right repeats. 0 = both sides together, 1 = the right side trails the left by about 45 ms, for a wider, looser delay.",
+        "delay_sync" => "Sync: Free = the delay time is the Time knob, in milliseconds. A note value (1/4, 1/8, dotted, triplet...) locks the time to the host tempo and greys the Time knob.",
+        "reverb_size" => "Size: the room. Larger = a longer build-up of echoes and a wider, slower tail.",
+        "reverb_decay" => "Decay: how long the tail takes to fade out (60 dB), in seconds.",
+        "reverb_damping" => "Damping: how fast the tail loses its highs. Higher = darker, softer tail.",
+        "reverb_predelay" => "Pre-delay: a gap between the dry sound and the start of the reverb, in milliseconds.",
+        "reverb_lowcut" => "Low Cut: removes the lows from what enters the reverb, so kicks do not muddy the tail.",
+        "reverb_glide" => "Glide: how this lane's p-locks behave. Off = the value jumps at each lock and holds until the next. On = the value moves smoothly: from the slider at the start of the pattern to the first lock, then from lock to lock, arriving exactly on each. After the last lock it holds until the pattern loops, then the slider is back.",
+        "reverb_width" => "Width: stereo spread of the return. 0 = mono, 1 = fully wide.",
+        "ac_tm_model" => "Model: which recorded 606 tom plays. Low tom = long and booming, the pitch falls at the start of each hit, a purer body. High tom = short and tight, a clicky attack, more ringing overtones. Same pitch, two different drums.",
+        "ac_tm_strike" => "Strike: attack of the stick. Centre = the recorded sound; left = softer, right = harder.",
+        "ac_tm_snap" => "Snap: noise snap at the hit. Centre = the recorded sound; left = less, right = more.",
+        "ac_tm_glide" => "Glide: pitch glide of the tom. Centre = the recorded sound; left = steadier pitch, right = longer glide.",
+        "ac_tm_modes" => "Overtones: level of the drum's ringing upper tones. Centre = the recorded sound (they are very quiet); right = they ring out loud, metallic; left = none.",
+        "ac_tm_tail_noise" => "Tail Noise: a hiss that rings on after the hit. Centre = the recorded sound (almost silent); right = a clear noisy tail; left = none.",
         "rift_offset" => "Offset: where in the texture the slice starts.",
         "oneshot_offset" => "Offset: where playback starts in the file (counted from the end in Reverse).",
         "rift_wander" => "Wander: random move of the start point on each hit, around Offset.",
@@ -263,6 +282,7 @@ Off: every hit plays the Sample chosen below.";
         "rift_pitch_lfo_depth" => "Pitch LFO Depth: depth of the vibrato, in semitones.",
         "rift_filter_lfo_rate" => "Filter LFO Rate: speed of the filter sweep.",
         "rift_filter_lfo_depth" => "Filter LFO Depth: depth of the filter sweep, in octaves.",
+        "tom_resonance" | "sdrex_resonance" | "buzz_resonance" => "Resonance: emphasis at the filter cutoff; high values ring.",
         "rift_resonance" | "oneshot_resonance" => "Resonance: emphasis at the filter cutoff; high values ring.",
         "rift_crush" => "Crush: fewer bits, for a gritty lo-fi sound.",
         "rift_decimate" => "Decimate: lower sample rate, for an aliased lo-fi sound.",

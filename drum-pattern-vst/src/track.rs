@@ -4,10 +4,37 @@
 //! active slots are visible in the UI. Each active slot holds an instrument
 //! kind, its own sound settings, routing, MIDI note and pattern data.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 
 pub const MAX_TRACKS: usize = 14;
+
+/// [286] The last slots are effect buses (Fx1, Fx2): they take effect kinds only,
+/// never an instrument, and instruments send to them.
+pub const FX_SLOT_COUNT: usize = 2;
+/// First effect slot (12): Fx1 = slot 12, Fx2 = slot 13.
+pub const FX_FIRST_SLOT: usize = MAX_TRACKS - FX_SLOT_COUNT;
+
+/// Whether `slot` is one of the effect-bus slots.
+pub const fn is_fx_slot(slot: usize) -> bool {
+    slot >= FX_FIRST_SLOT && slot < MAX_TRACKS
+}
+
+/// Can `kind` be put on `slot`? Effects only on the effect-bus slots, instruments
+/// only elsewhere. `existing` is the kind the slot already holds: an instrument
+/// that was there before the buses existed (sessions saved with 13 or 14
+/// lanes) may stay and be replaced by another instrument.
+pub fn kind_allowed_on_slot(
+    kind: TrackInstrumentKind,
+    slot: usize,
+    existing: Option<TrackInstrumentKind>,
+) -> bool {
+    if kind.is_effect() {
+        is_fx_slot(slot)
+    } else {
+        !is_fx_slot(slot) || existing.is_some_and(|k| !k.is_effect())
+    }
+}
 
 /// Functional instrument kind. 11 fixed types; the three legacy Tom voices
 /// collapse into a single `Tom` kind.
@@ -41,6 +68,10 @@ pub enum TrackInstrumentKind {
     Rift = 23,
     /// [243] One-Shot - the lane's own sample file, played start to finish.
     OneShot = 24,
+    /// [286] Reverb - a send effect living on an effect-bus slot (12 / 13).
+    Reverb = 25,
+    /// [286] Delay - the second send effect (an effect-bus slot, 12 / 13).
+    Delay = 26,
 }
 
 /// Instrument category used to group the kind pickers/menus
@@ -53,16 +84,19 @@ pub enum InstrumentCategory {
     Perc,
     Fx,
     Other,
+    /// [286] Send effects (reverb): offered on the effect-bus slots only.
+    Effect,
 }
 
 impl InstrumentCategory {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::BassDrum,
         Self::Snare,
         Self::HiHat,
         Self::Perc,
         Self::Fx,
         Self::Other,
+        Self::Effect,
     ];
 
     pub fn label(self) -> &'static str {
@@ -73,12 +107,13 @@ impl InstrumentCategory {
             Self::Perc => "PERC",
             Self::Fx => "FX",
             Self::Other => "OTHER",
+            Self::Effect => "EFFECT",
         }
     }
 }
 
 impl TrackInstrumentKind {
-    pub const COUNT: usize = 25;
+    pub const COUNT: usize = 27;
 
     /// Every kind, in stable declaration order.
     pub const ALL: [Self; Self::COUNT] = [
@@ -107,6 +142,8 @@ impl TrackInstrumentKind {
         Self::Oh6smp,
         Self::Rift,
         Self::OneShot,
+        Self::Reverb,
+        Self::Delay,
     ];
 
     /// Musical family of this kind (grouping for pickers/menus).
@@ -131,6 +168,7 @@ impl TrackInstrumentKind {
             Self::Tom | Self::Perc1 | Self::Tm6Ac | Self::OneShot => InstrumentCategory::Perc,
             Self::Buzz | Self::Rift => InstrumentCategory::Fx,
             Self::Ride | Self::Cymbal => InstrumentCategory::Other,
+            Self::Reverb | Self::Delay => InstrumentCategory::Effect,
         }
     }
 
@@ -193,6 +231,8 @@ impl TrackInstrumentKind {
             22 => Some(Self::Oh6smp),
             23 => Some(Self::Rift),
             24 => Some(Self::OneShot),
+            25 => Some(Self::Reverb),
+            26 => Some(Self::Delay),
             _ => None,
         }
     }
@@ -228,6 +268,8 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::Oh6smp => "o6",
             TrackInstrumentKind::Rift => "Rf",
             TrackInstrumentKind::OneShot => "OS",
+            TrackInstrumentKind::Reverb => "RV",
+            TrackInstrumentKind::Delay => "DL",
         }
     }
 
@@ -258,6 +300,8 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::Oh6smp => "OH6smp",
             TrackInstrumentKind::Rift => "Rift",
             TrackInstrumentKind::OneShot => "One-Shot",
+            TrackInstrumentKind::Reverb => "Reverb",
+            TrackInstrumentKind::Delay => "Delay",
         }
     }
 
@@ -292,6 +336,9 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::Rift => 58,
             // GM ride cymbal 2 - free.
             TrackInstrumentKind::OneShot => 59,
+            // An effect bus plays no note and listens to none; 0 is never matched
+            // (`slots_listening_to` skips effect kinds).
+            TrackInstrumentKind::Reverb | TrackInstrumentKind::Delay => 0,
         }
     }
 
@@ -326,6 +373,8 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::Oh6smp => 24,
             TrackInstrumentKind::Rift => 25,
             TrackInstrumentKind::OneShot => 26,
+            TrackInstrumentKind::Reverb => 27,
+            TrackInstrumentKind::Delay => 28,
         }
     }
 
@@ -357,8 +406,16 @@ impl TrackInstrumentKind {
             24 => Some(Self::Oh6smp),
             25 => Some(Self::Rift),
             26 => Some(Self::OneShot),
+            27 => Some(Self::Reverb),
+            28 => Some(Self::Delay),
             _ => None,
         }
+    }
+
+    /// [286] A send effect rather than an instrument: it has no steps, no note
+    /// and no trigger, and only lives on the effect-bus slots.
+    pub fn is_effect(self) -> bool {
+        matches!(self, Self::Reverb | Self::Delay)
     }
 
     pub fn algo_count(self) -> usize {
@@ -465,6 +522,10 @@ pub struct TrackSlot {
     /// is active. `#[serde(default)]` so older `track-layout-v1` blobs load.
     #[serde(default)]
     pub linked_up: bool,
+    /// [286] Send level (0..1) to Fx1 and Fx2. `#[serde(default)]` so older
+    /// `track-layout-v1` blobs load with no send.
+    #[serde(default)]
+    pub fx_send: [f32; FX_SLOT_COUNT],
 }
 
 impl TrackSlot {
@@ -476,6 +537,7 @@ impl TrackSlot {
             routing: TrackRouting::default(),
             midi_note: TrackInstrumentKind::Kick.default_midi_note(),
             linked_up: false,
+            fx_send: [0.0; FX_SLOT_COUNT],
         }
     }
 
@@ -487,6 +549,7 @@ impl TrackSlot {
             routing: TrackRouting::default(),
             midi_note: kind.default_midi_note(),
             linked_up: false,
+            fx_send: [0.0; FX_SLOT_COUNT],
         }
     }
 }
@@ -523,7 +586,12 @@ impl TrackLayoutState {
     /// Whether `slot` can be linked to the lane above (both must be active and
     /// there must be a lane above).
     pub fn can_link_up(&self, slot: usize) -> bool {
-        slot > 0 && slot < MAX_TRACKS && self.slots[slot].active && self.slots[slot - 1].active
+        slot > 0
+            && slot < MAX_TRACKS
+            && self.slots[slot].active
+            && self.slots[slot - 1].active
+            && !self.slots[slot].kind.is_effect()
+            && !self.slots[slot - 1].kind.is_effect()
     }
 
     /// Whether `slot` currently mirrors the lane above (link active + master active).
@@ -656,6 +724,15 @@ impl TrackLayoutState {
     pub fn keep_globals_of(&mut self, current: &TrackLayoutState) {
         self.global_midi_channel = current.global_midi_channel;
         self.global_base_note = current.global_base_note;
+        // [286] The effect buses belong to the project, not to a lane preset: a
+        // preset that has none of its own leaves the current ones in place.
+        for slot in FX_FIRST_SLOT..MAX_TRACKS {
+            let keeps = &current.slots[slot];
+            let is_effect = |s: &TrackSlot| s.active && s.kind.is_effect();
+            if is_effect(keeps) && !is_effect(&self.slots[slot]) {
+                self.slots[slot] = keeps.clone();
+            }
+        }
     }
 
     /// Does this lane mirror the grid of the lane above ([191])?
@@ -761,6 +838,7 @@ impl TrackLayoutState {
                 routing: TrackRouting::default(),
                 midi_note: crate::instrument_registry::INSTRUMENTS[i].midi_note,
                 linked_up: false,
+                fx_send: [0.0; FX_SLOT_COUNT],
             };
             // Classic HH↔OH choke out of the box.
             if matches!(
@@ -873,6 +951,8 @@ pub struct AtomicTrackLayout {
     /// Grid-link flag per slot (mirrors the lane above). Read by the audio
     /// thread to resolve which slot's steps/fusions a lane plays.
     pub slot_linked: [AtomicBool; MAX_TRACKS],
+    /// [286] Send levels (f32 bits) to Fx1 / Fx2, per slot.
+    pub slot_fx_send: [[AtomicU32; FX_SLOT_COUNT]; MAX_TRACKS],
     pub global_channel: AtomicU8,
     pub global_base_note: AtomicU8,
     pub version: std::sync::atomic::AtomicU64,
@@ -885,6 +965,7 @@ impl AtomicTrackLayout {
             slot_routing: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_midi_notes: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
+            slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
             global_channel: AtomicU8::new(10),
             global_base_note: AtomicU8::new(36),
             version: std::sync::atomic::AtomicU64::new(0),
@@ -930,6 +1011,10 @@ impl AtomicTrackLayout {
             self.slot_routing[i].store(routing_byte, Ordering::Relaxed);
             self.slot_midi_notes[i].store(slot.midi_note, Ordering::Relaxed);
             self.slot_linked[i].store(slot.linked_up, Ordering::Relaxed);
+            for (bus, send) in slot.fx_send.iter().enumerate() {
+                self.slot_fx_send[i][bus]
+                    .store(send.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+            }
         }
         self.global_channel
             .store(state.global_midi_channel.clamp(1, 16), Ordering::Relaxed);
@@ -952,6 +1037,19 @@ impl AtomicTrackLayout {
 
     pub fn is_active(&self, slot: usize) -> bool {
         slot < MAX_TRACKS && self.slot_kinds[slot].load(Ordering::Relaxed) != 0xFF
+    }
+
+    /// [286] Send level of `slot` to effect bus `bus` (0 = Fx1, 1 = Fx2).
+    pub fn fx_send(&self, slot: usize, bus: usize) -> f32 {
+        if slot >= MAX_TRACKS || bus >= FX_SLOT_COUNT {
+            return 0.0;
+        }
+        f32::from_bits(self.slot_fx_send[slot][bus].load(Ordering::Relaxed))
+    }
+
+    /// [286] Is `slot` an active effect bus (an effect kind on an effect slot)?
+    pub fn is_effect_bus(&self, slot: usize) -> bool {
+        is_fx_slot(slot) && self.kind_for_slot(slot).is_some_and(|k| k.is_effect())
     }
 
     pub fn routing_for_slot(&self, slot: usize) -> TrackRouting {
@@ -982,7 +1080,10 @@ impl AtomicTrackLayout {
     pub fn slots_listening_to(&self, note: u8) -> u16 {
         let mut mask = 0u16;
         for slot in 0..MAX_TRACKS {
-            if self.is_active(slot) && self.midi_note_for_slot(slot) == note {
+            if self.is_active(slot)
+                && !self.kind_for_slot(slot).is_some_and(|k| k.is_effect())
+                && self.midi_note_for_slot(slot) == note
+            {
                 mask |= 1 << slot;
             }
         }
@@ -1014,6 +1115,7 @@ impl Default for AtomicTrackLayout {
             slot_routing: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_midi_notes: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
+            slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
             global_channel: AtomicU8::new(10),
             global_base_note: AtomicU8::new(36),
             version: std::sync::atomic::AtomicU64::new(0),
@@ -1109,6 +1211,7 @@ impl<'a> nih_plug::params::persist::PersistentField<'a, TrackLayoutState>
                 routing: self.state.routing_for_slot(i),
                 midi_note: self.state.slot_midi_notes[i].load(Ordering::Relaxed),
                 linked_up: self.state.slot_linked[i].load(Ordering::Relaxed),
+                fx_send: std::array::from_fn(|bus| self.state.fx_send(i, bus)),
             }
         });
         let state = TrackLayoutState {
@@ -1613,5 +1716,89 @@ mod tests {
 
         assert_eq!(layout.slots[2].routing.out_select, TrackAudioOut::Out(2));
         assert_eq!(layout.slots[3].routing.out_select, TrackAudioOut::Main);
+    }
+
+    /// [286] Effects live on the last two slots only, instruments elsewhere; an
+    /// instrument that was already there (older sessions) may stay.
+    #[test]
+    fn effects_and_instruments_keep_to_their_own_slots() {
+        let rv = TrackInstrumentKind::Reverb;
+        let kick = TrackInstrumentKind::Kick;
+        assert!(kind_allowed_on_slot(rv, 12, None));
+        assert!(kind_allowed_on_slot(rv, 13, None));
+        assert!(!kind_allowed_on_slot(rv, 11, None));
+        assert!(!kind_allowed_on_slot(kick, 12, None));
+        assert!(kind_allowed_on_slot(kick, 12, Some(TrackInstrumentKind::Snare)));
+        assert!(!kind_allowed_on_slot(kick, 13, Some(rv)));
+        assert!(kind_allowed_on_slot(kick, 0, None));
+        assert!(is_fx_slot(12) && is_fx_slot(13) && !is_fx_slot(11));
+    }
+
+    /// [286] A saved layout from before the buses has no `fx_send`: it loads with
+    /// no send, and the kind index of the effect is stable.
+    #[test]
+    fn old_layouts_load_with_no_send_and_the_reverb_index_is_stable() {
+        let json = r#"{"active":true,"name":"Kick","kind":"Kick",
+            "routing":{"main_on":true,"out_select":"Main"},"midi_note":36}"#;
+        let slot: TrackSlot = serde_json::from_str(json).expect("old slot loads");
+        assert_eq!(slot.fx_send, [0.0; FX_SLOT_COUNT]);
+        assert_eq!(TrackInstrumentKind::Reverb.index(), 25);
+        assert_eq!(TrackInstrumentKind::from_index(25), Some(TrackInstrumentKind::Reverb));
+        assert_eq!(TrackInstrumentKind::Reverb.drum_voice_index(), 27);
+    }
+
+    /// [286] The delay is the second effect: its indices are frozen and it, like the
+    /// reverb, lives on the effect slots only.
+    #[test]
+    fn the_delay_is_an_effect_with_a_stable_index() {
+        let dl = TrackInstrumentKind::Delay;
+        assert_eq!(dl.index(), 26);
+        assert_eq!(TrackInstrumentKind::from_index(26), Some(dl));
+        assert_eq!(dl.drum_voice_index(), 28);
+        assert_eq!(TrackInstrumentKind::from_drum_voice_index(28), Some(dl));
+        assert!(dl.is_effect() && TrackInstrumentKind::Reverb.is_effect());
+        assert!(kind_allowed_on_slot(dl, 12, None) && !kind_allowed_on_slot(dl, 3, None));
+        let in_menu: Vec<_> = TrackInstrumentKind::kinds_in(InstrumentCategory::Effect).collect();
+        assert_eq!(in_menu, vec![TrackInstrumentKind::Reverb, dl]);
+    }
+
+    /// [286] Sends survive the atomic round trip.
+    #[test]
+    fn sends_roundtrip_through_the_atomic_layout() {
+        let mut layout = TrackLayoutState::empty_layout();
+        layout.slots[2] = TrackSlot::active_with_kind(TrackInstrumentKind::HiHat);
+        layout.slots[2].fx_send = [0.25, 0.75];
+        layout.slots[12] = TrackSlot::active_with_kind(TrackInstrumentKind::Reverb);
+        let atomic = AtomicTrackLayout::from_state(&layout);
+        assert_eq!(atomic.fx_send(2, 0), 0.25);
+        assert_eq!(atomic.fx_send(2, 1), 0.75);
+        assert!(atomic.is_effect_bus(12));
+        assert!(!atomic.is_effect_bus(13));
+        assert!(!atomic.is_effect_bus(2));
+    }
+
+    /// [286] A bus listens to no MIDI note and never links to the lane above.
+    #[test]
+    fn an_effect_bus_neither_listens_nor_links() {
+        let mut layout = TrackLayoutState::empty_layout();
+        layout.slots[11] = TrackSlot::active_with_kind(TrackInstrumentKind::Kick);
+        layout.slots[12] = TrackSlot::active_with_kind(TrackInstrumentKind::Reverb);
+        layout.slots[12].midi_note = 36; // same note as the kick, on purpose
+        assert!(!layout.can_link_up(12));
+        let atomic = AtomicTrackLayout::from_state(&layout);
+        assert_eq!(atomic.slots_listening_to(36), 1 << 11);
+    }
+
+    /// [286] A lane preset that has no bus of its own leaves the current buses.
+    #[test]
+    fn a_lane_preset_keeps_the_current_effect_buses() {
+        let mut current = TrackLayoutState::modular_default_layout();
+        current.slots[12] = TrackSlot::active_with_kind(TrackInstrumentKind::Reverb);
+        current.slots[12].name = "Fx1".to_string();
+        let mut incoming = TrackLayoutState::preset_12_layout();
+        incoming.keep_globals_of(&current);
+        assert_eq!(incoming.slots[12].kind, TrackInstrumentKind::Reverb);
+        assert_eq!(incoming.slots[12].name, "Fx1");
+        assert!(!incoming.slots[13].active);
     }
 }
