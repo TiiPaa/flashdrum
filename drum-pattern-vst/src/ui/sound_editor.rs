@@ -11,7 +11,7 @@ use crate::ui::editor_state::{
     schema_voice_idx, select_legacy_track, EditorUIState, SoundEditorTab,
 };
 use crate::ui::envelope_viz::{
-    draw_amp_envelope, draw_buzz_filter_envelope, draw_buzz_gate_graph, draw_filter_envelope,
+    draw_amp_envelope, draw_buzz_filter_envelope, draw_buzz_gate_graph, draw_duck_graph, draw_filter_envelope,
     draw_oneshot_amp_graph, draw_oneshot_filter_graph, draw_oneshot_graph,
     draw_oneshot_pitch_graph, draw_pitch_envelope, draw_sample_amp_graph, draw_sample_filter_graph,
     draw_texture_graph,
@@ -1807,7 +1807,12 @@ pub fn draw_sound_panel(
                 if !fam_has_std && !fam_has_special {
                     continue;
                 }
-                let section_title = match family {
+                let section_title = if let Some(title) =
+                    crate::instrument_registry::rumble_section_title(voice_idx, family)
+                {
+                    title
+                } else {
+                    match family {
                     crate::instrument_registry::ParamFamily::Osc => {
                         crate::instrument_registry::source_section_title(voice_idx)
                     }
@@ -1818,6 +1823,7 @@ pub fn draw_sound_panel(
                     crate::instrument_registry::ParamFamily::Modulation => "Modulation",
                     crate::instrument_registry::ParamFamily::Saturation => "Distortion",
                     crate::instrument_registry::ParamFamily::Output => "Output",
+                    }
                 };
                 // [282] Each section is a module with its title strip.
                 let section_module = module_begin(ui, Some(section_title));
@@ -1840,7 +1846,10 @@ pub fn draw_sound_panel(
                 // to point at (Rift's texture, One-Shot's lane file).
                 || (family == crate::instrument_registry::ParamFamily::Osc
                     && texture_param.is_some()
-                    && special_defs.iter().any(|d| d.name.ends_with("_offset")));
+                    && special_defs.iter().any(|d| d.name.ends_with("_offset")))
+                // [286] The Rumble's duck curve.
+                || (family == crate::instrument_registry::ParamFamily::Saturation
+                    && special_defs.iter().any(|d| d.name == "rumble_duck"));
             // [225] EVERY section keeps the same params column, graph or not.
             // Graph-less sections used to spread their sliders across the whole
             // panel, so the same instrument showed two slider lengths depending
@@ -1962,6 +1971,38 @@ pub fn draw_sound_panel(
                         let volume = lane.standard(StandardField::Volume);
                         let (rows, own, glide_on): (Vec<(&str, &str)>, Vec<f32>, bool) =
                             if layout_snapshot.slots[slot].kind
+                                == crate::track::TrackInstrumentKind::Rumble
+                            {
+                                use crate::synthesis::rumble_sp as sp;
+                                (
+                                    vec![
+                                        ("Decay", " s"),
+                                        ("High Pass", " Hz"),
+                                        ("Low Pass", " Hz"),
+                                        ("Duck", ""),
+                                        ("Duck Length", " ms"),
+                                        ("Drive", ""),
+                                        ("Width", ""),
+                                        ("Echo", ""),
+                                        ("Volume", ""),
+                                        // 1 = untouched; it drops at every kick the duck hears.
+                                        ("Duck now", ""),
+                                    ],
+                                    vec![
+                                        lane.special_value(sp::DECAY),
+                                        lane.special_value(sp::HIGH_PASS),
+                                        lane.special_value(sp::LOW_PASS),
+                                        lane.special_value(sp::DUCK),
+                                        lane.special_value(sp::RELEASE),
+                                        lane.special_value(sp::DRIVE),
+                                        lane.special_value(sp::WIDTH),
+                                        lane.special_value(sp::ECHO_MIX),
+                                        volume,
+                                        1.0,
+                                    ],
+                                    lane.special_value(sp::GLIDE) >= 0.5,
+                                )
+                            } else if layout_snapshot.slots[slot].kind
                                 == crate::track::TrackInstrumentKind::Delay
                             {
                                 use crate::synthesis::delay_sp as sp;
@@ -2000,6 +2041,8 @@ pub fn draw_sound_panel(
                                         ("High Cut", " Hz"),
                                         ("Width", ""),
                                         ("Volume", ""),
+                                        ("Gate Time", " ms"),
+                                        ("Gate Release", " ms"),
                                     ],
                                     vec![
                                         lane.special_value(sp::SIZE),
@@ -2010,6 +2053,8 @@ pub fn draw_sound_panel(
                                         lane.special_value(sp::HIGH_CUT),
                                         lane.special_value(sp::WIDTH),
                                         volume,
+                                        lane.special_value(sp::GATE),
+                                        lane.special_value(sp::GATE_RELEASE),
                                     ],
                                     lane.special_value(sp::GLIDE) >= 0.5,
                                 )
@@ -3405,9 +3450,16 @@ fn draw_special_rows(
                 .find(|d| d.name.ends_with("_saturation_type"))
                 .map(|d| src.get(ParamId::Special(d.special_index)) < 0.5)
                 .unwrap_or(false);
+        // [286] The reverb's Gate Time and Gate Release step in under the Gate switch and
+        // grey out while it is off (the same sub-parameter look as the saturation's).
+        let gate_sub = def.name == "reverb_gate" || def.name == "reverb_gate_release";
+        let gate_off = gate_sub
+            && src.get(ParamId::Special(crate::synthesis::reverb_sp::GATE_ON)) < 0.5;
         // [286] The delay's Time knob is the sync menu's business once a note value is chosen.
-        let sync_disabled = def.name == "delay_time"
-            && src.get(ParamId::Special(crate::synthesis::delay_sp::SYNC)) >= 0.5;
+        let sync_disabled = (def.name == "delay_time"
+            && src.get(ParamId::Special(crate::synthesis::delay_sp::SYNC)) >= 0.5)
+            || (def.name == "rumble_echo_time"
+                && src.get(ParamId::Special(crate::synthesis::rumble_sp::ECHO_SYNC)) >= 0.5);
         let special_id = ParamId::Special(def.special_index);
         // [184] A parameter with no per-step slot of its own is
         // greyed WITH its reason rather than hidden: the special
@@ -3437,7 +3489,7 @@ fn draw_special_rows(
             }
         }
         let advance_disabled = advance_row && !advance_on;
-        if saturation_sub {
+        if saturation_sub || gate_sub {
             set_sub_indent(SUB_INDENT_PX);
         }
         let row_area = ui.add_enabled_ui(
@@ -3447,6 +3499,7 @@ fn draw_special_rows(
                 || sync_disabled
                 || advance_disabled
                 || saturation_off
+                || gate_off
                 || unsupported.is_some()),
             |ui| {
                 ui.horizontal(|ui| {
@@ -3947,6 +4000,21 @@ fn draw_section_graphs(
         .and_then(|(bank, _, _)| bank.as_ref().map(|b| &b.peaks[..]))
         .unwrap_or(&[]);
 
+    // [286] The Rumble's Duck section: its depth, its curve and how long the return takes.
+    if family == crate::instrument_registry::ParamFamily::Saturation
+        && instrument.special_params.iter().any(|d| d.name == "rumble_duck")
+    {
+        let pick = |name: &str| {
+            instrument
+                .special_params
+                .iter()
+                .find(|d| d.name == name)
+                .map(|d| src.get(ParamId::Special(d.special_index)))
+                .unwrap_or(0.0)
+        };
+        draw_duck_graph(ui, pick("rumble_duck"), pick("rumble_duck_curve"), pick("rumble_release"));
+    }
+
     match family {
         crate::instrument_registry::ParamFamily::Osc => {
             // The texture, the read position, the band Wander can
@@ -4019,7 +4087,9 @@ fn draw_section_graphs(
                 }
             }
         }
-        crate::instrument_registry::ParamFamily::Pitch => {
+        // (Only a section that HAS a pitch envelope draws its graph: the Rumble borrows this
+        // family for its Reverb section and must not get a pitch envelope there.)
+        crate::instrument_registry::ParamFamily::Pitch if has_graph => {
             let pick = |suffix: &str| {
                 instrument
                     .special_params

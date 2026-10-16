@@ -18,6 +18,7 @@ mod perc1;
 #[cfg(test)]
 mod retrig_tests;
 mod reverb;
+mod rumble;
 mod ride;
 mod rift;
 pub mod sample_bank;
@@ -53,6 +54,17 @@ pub use delay::{DelayCore, DelayParams, DelayVoice};
 #[allow(unused_imports)]
 pub use reverb::sp as reverb_sp;
 pub use reverb::{ReverbCore, ReverbParams, ReverbVoice};
+#[allow(unused_imports)]
+pub use rumble::sp as rumble_sp;
+#[allow(unused_imports)]
+pub use rumble::{duck_depth, duck_exponent, duck_ratio};
+
+/// `Duck Trigger` value that listens to the kick instead of the transport.
+#[allow(dead_code)]
+pub const fn rumble_duck_source_kick() -> u8 {
+    rumble::DUCK_SOURCE_KICK
+}
+pub use rumble::{RumbleCore, RumbleParams, RumbleVoice};
 pub use open_hihat::OpenHiHatVoice;
 pub use perc1::Perc1Voice;
 pub use ride::RideVoice;
@@ -125,14 +137,18 @@ pub enum DrumVoice {
     Reverb = 27,
     /// [286] Delay - the second send effect.
     Delay = 28,
+    /// [286] Rumble - the third send effect: the kick rumble.
+    Rumble = 29,
 }
 
 impl DrumVoice {
-    pub const COUNT: usize = 29;
+    pub const COUNT: usize = 30;
 
     /// [286] An effect (Reverb, Delay), not a sound source: no steps, no note.
     pub const fn is_effect_index(index: usize) -> bool {
-        index == Self::Reverb as usize || index == Self::Delay as usize
+        index == Self::Reverb as usize
+            || index == Self::Delay as usize
+            || index == Self::Rumble as usize
     }
 
     pub fn from_index(index: usize) -> Option<Self> {
@@ -166,6 +182,7 @@ impl DrumVoice {
             26 => Some(Self::OneShot),
             27 => Some(Self::Reverb),
             28 => Some(Self::Delay),
+            29 => Some(Self::Rumble),
             _ => None,
         }
     }
@@ -720,6 +737,32 @@ impl VoiceSettings {
     /// saturation.
     /// [286] The delay's settings: Volume is the return level; the knobs live in
     /// `special[]` (see `delay::sp`; 4 and 31 are reserved by the p-lock layout).
+    pub fn rumble() -> Self {
+        Self {
+            frequency: 1000.0,
+            decay: 1.0,
+            volume: 1.0,
+            filter_freq: 20000.0,
+            attack: 0.0,
+            release: 0.0,
+            decay_curve: 0.0,
+            release_curve: 0.0,
+            hold: 0.0,
+            filter_env_amount: 0.0,
+            filter_env_decay: 0.05,
+            analog: 0.5,
+            stereo: 0.0,
+            algo: 0,
+            // decay s, low pass Hz, duck, release ms, (4 reserved), drive, (6 retired), glide,
+            // (8 restart), high pass Hz, width, echo mix, echo ms, echo sync, echo feedback, duck curve, duck trigger, reverb size, pre-delay, motion, blur
+            special: [
+                3.0, 120.0, 0.8, 250.0, 0.0, 0.25, 0.0, 0.0, 0.0, 30.0, 0.0, 0.0, 250.0, 0.0, 0.3, 0.5,
+                0.0, 2.0, 0.0, 0.7, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        }
+    }
+
+    /// [286] The delay's settings (see `delay::sp`).
     pub fn delay() -> Self {
         Self {
             frequency: 1000.0,
@@ -1152,6 +1195,8 @@ drum_voice_kinds! {
     Reverb(ReverbVoice),
     /// [286] Carried by an effect slot; the DSP is `DrumSynthesizer::fx_delay`.
     Delay(DelayVoice),
+    /// [286] Carried by an effect slot; the DSP is `DrumSynthesizer::fx_rumble`.
+    Rumble(RumbleVoice),
     Buzz(BuzzVoice),
     Sdrex(SdrexVoice),
     Bd6Ac(AcVoice),
@@ -1239,6 +1284,7 @@ fn create_voice_for_kind(
         )),
         K::Reverb => DrumVoiceKind::Reverb(ReverbVoice),
         K::Delay => DrumVoiceKind::Delay(DelayVoice),
+        K::Rumble => DrumVoiceKind::Rumble(RumbleVoice),
         K::Buzz => DrumVoiceKind::Buzz(BuzzVoice::new(
             sample_rate,
             BuzzSettings::from(VoiceSettings::buzz()),
@@ -1281,13 +1327,14 @@ fn create_voice_for_kind(
 }
 
 /// [286] Values the Lane Editor shows for an effect bus ("Playing now").
-pub const FX_LIVE_FIELDS: usize = 8;
+pub const FX_LIVE_FIELDS: usize = 10;
 
 /// [286] What an effect bus is using for this moment, whichever effect it hosts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FxParams {
     Reverb(ReverbParams),
     Delay(DelayParams),
+    Rumble(RumbleParams),
 }
 
 impl FxParams {
@@ -1304,6 +1351,8 @@ impl FxParams {
                 p.high_cut_hz,
                 p.width,
                 p.level,
+                p.gate_ms,
+                p.gate_release_ms,
             ],
             FxParams::Delay(p) => [
                 p.time_ms,
@@ -1314,6 +1363,20 @@ impl FxParams {
                 p.pingpong,
                 p.width,
                 p.level,
+                0.0,
+                0.0,
+            ],
+            FxParams::Rumble(p) => [
+                p.decay_s,
+                p.high_pass_hz,
+                p.low_pass_hz,
+                p.duck,
+                p.release_ms,
+                p.drive,
+                p.width,
+                p.echo_mix,
+                p.level,
+                0.0,
             ],
         }
     }
@@ -1322,7 +1385,7 @@ impl FxParams {
     pub fn reverb(self) -> Option<ReverbParams> {
         match self {
             FxParams::Reverb(p) => Some(p),
-            FxParams::Delay(_) => None,
+            FxParams::Delay(_) | FxParams::Rumble(_) => None,
         }
     }
 }
@@ -1346,6 +1409,7 @@ pub struct DrumSynthesizer {
     /// `initialize_with_layout` (non-RT).
     fx_reverb: [ReverbCore; crate::track::FX_SLOT_COUNT],
     fx_delay: [DelayCore; crate::track::FX_SLOT_COUNT],
+    fx_rumble: [RumbleCore; crate::track::FX_SLOT_COUNT],
     /// A bus that was muted: its tail was flushed once, not every sample.
     fx_bypassed: [bool; crate::track::FX_SLOT_COUNT],
     /// Smoothed send level of every lane to every bus.
@@ -1365,6 +1429,7 @@ impl DrumSynthesizer {
             texture_pool: None,
             fx_reverb: std::array::from_fn(|_| ReverbCore::new(44100.0)),
             fx_delay: std::array::from_fn(|_| DelayCore::new(44100.0)),
+            fx_rumble: std::array::from_fn(|_| RumbleCore::new(44100.0)),
             fx_bypassed: [false; crate::track::FX_SLOT_COUNT],
             send_state: [[0.0; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
             send_override: [[None; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
@@ -1396,6 +1461,7 @@ impl DrumSynthesizer {
         // [286] The effects' buffers: allocated here (non-RT), never in `process`.
         self.fx_reverb = std::array::from_fn(|_| ReverbCore::new(sample_rate));
         self.fx_delay = std::array::from_fn(|_| DelayCore::new(sample_rate));
+        self.fx_rumble = std::array::from_fn(|_| RumbleCore::new(sample_rate));
         self.send_coef = 1.0 - (-1.0 / (sample_rate * SEND_SMOOTH_MS * 0.001)).exp();
         for smoother in self.velocity_smoothers.iter_mut() {
             *smoother = dsp::OnePoleSmoother::new(sample_rate, VELOCITY_SMOOTH_MS, 1.0);
@@ -1524,6 +1590,32 @@ impl DrumSynthesizer {
         match params {
             FxParams::Reverb(p) => self.fx_reverb[bus].set_params(p),
             FxParams::Delay(p) => self.fx_delay[bus].set_params(p),
+            FxParams::Rumble(p) => self.fx_rumble[bus].set_params(p),
+        }
+    }
+
+    /// [286] The Rumble's duck gain on bus `bus` (1 = untouched), `None` when the bus is not a
+    /// Rumble. For the Lane Editor's "Playing now".
+    pub fn rumble_duck_gain(&self, bus: usize) -> Option<f32> {
+        let slot = crate::track::FX_FIRST_SLOT + *Some(&bus).filter(|b| **b < crate::track::FX_SLOT_COUNT)?;
+        match self.voices[slot].as_deref() {
+            Some(DrumVoiceKind::Rumble(_)) if self.active[slot] => Some(self.fx_rumble[bus].duck_gain()),
+            _ => None,
+        }
+    }
+
+    /// [286] Start the Rumble's duck on bus `bus` (the transport's beat), when its Duck Trigger
+    /// is a beat division. A no-op for any other bus.
+    pub fn rumble_trigger_duck(&mut self, bus: usize) {
+        if bus >= crate::track::FX_SLOT_COUNT {
+            return;
+        }
+        let slot = crate::track::FX_FIRST_SLOT + bus;
+        if self.active[slot]
+            && matches!(self.voices[slot].as_deref(), Some(DrumVoiceKind::Rumble(_)))
+            && self.fx_rumble[bus].duck_source() != rumble::DUCK_SOURCE_KICK
+        {
+            self.fx_rumble[bus].trigger_duck();
         }
     }
 
@@ -1543,11 +1635,12 @@ impl DrumSynthesizer {
         for bus in 0..crate::track::FX_SLOT_COUNT {
             let slot = crate::track::FX_FIRST_SLOT + bus;
             // 0 = not an effect (empty, or a grandfathered instrument), 1 = reverb,
-            // 2 = delay.
+            // 2 = delay, 3 = rumble.
             let which = if self.active[slot] {
                 match self.voices[slot].as_deref() {
                     Some(DrumVoiceKind::Reverb(_)) => 1,
                     Some(DrumVoiceKind::Delay(_)) => 2,
+                    Some(DrumVoiceKind::Rumble(_)) => 3,
                     _ => 0,
                 }
             } else {
@@ -1560,6 +1653,7 @@ impl DrumSynthesizer {
                 if !self.fx_bypassed[bus] {
                     self.fx_reverb[bus].reset();
                     self.fx_delay[bus].reset();
+                    self.fx_rumble[bus].reset();
                     self.fx_bypassed[bus] = true;
                 }
                 outputs[slot] = [0.0, 0.0];
@@ -1574,10 +1668,10 @@ impl DrumSynthesizer {
                 in_l += outputs[lane][0] * *level;
                 in_r += outputs[lane][1] * *level;
             }
-            let (l, r) = if which == 1 {
-                self.fx_reverb[bus].process(in_l, in_r)
-            } else {
-                self.fx_delay[bus].process(in_l, in_r)
+            let (l, r) = match which {
+                1 => self.fx_reverb[bus].process(in_l, in_r),
+                2 => self.fx_delay[bus].process(in_l, in_r),
+                _ => self.fx_rumble[bus].process(in_l, in_r),
             };
             outputs[slot] = [l, r];
         }
@@ -1591,6 +1685,9 @@ impl DrumSynthesizer {
             fx.reset();
         }
         for fx in self.fx_delay.iter_mut() {
+            fx.reset();
+        }
+        for fx in self.fx_rumble.iter_mut() {
             fx.reset();
         }
         self.send_state = [[0.0; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
@@ -1608,6 +1705,7 @@ impl DrumSynthesizer {
                 match &**voice {
                     DrumVoiceKind::Reverb(_) => self.fx_reverb[bus].set_params(ReverbParams::from(&settings)),
                     DrumVoiceKind::Delay(_) => self.fx_delay[bus].set_params(DelayParams::from(&settings)),
+                    DrumVoiceKind::Rumble(_) => self.fx_rumble[bus].set_params(RumbleParams::from(&settings)),
                     _ => {}
                 }
             }
@@ -1666,6 +1764,7 @@ impl DrumSynthesizer {
             let bus = slot_idx - crate::track::FX_FIRST_SLOT;
             self.fx_reverb[bus].reset();
             self.fx_delay[bus].reset();
+            self.fx_rumble[bus].reset();
         }
     }
 }
@@ -1715,6 +1814,49 @@ mod tests {
         let full = fx_return_energy(1.0, false);
         assert!(half > 0.01, "a send must produce a tail: {half}");
         assert!(full > half * 2.0, "more send, more return: {half} -> {full}");
+    }
+
+    /// [286] The real kick through the real bus: at any send level the Rumble's duck hears the
+    /// hit (its gain drops), then it swells back to full.
+    #[test]
+    fn a_real_kick_ducks_the_rumble_bus_at_any_send_level() {
+        use crate::track::{TrackInstrumentKind as K, TrackLayoutState, TrackSlot, FX_FIRST_SLOT};
+        for send in [1.0f32, 0.3, 0.05] {
+            let mut layout = TrackLayoutState::empty_layout();
+            layout.slots[0] = TrackSlot::active_with_kind(K::Kick);
+            layout.slots[FX_FIRST_SLOT + 1] = TrackSlot::active_with_kind(K::Rumble);
+            let mut synth = DrumSynthesizer::new();
+            synth.initialize_with_layout(44100.0, &layout);
+            synth.set_voice_settings(0, VoiceSettings::kick());
+            let mut rumble = VoiceSettings::rumble();
+            rumble.special[rumble_sp::DUCK_SOURCE] = rumble::DUCK_SOURCE_KICK as f32; // listen to the kick
+            synth.set_voice_settings(FX_FIRST_SLOT + 1, rumble);
+            let mut sends = [[0.0f32; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
+            sends[0][1] = send;
+            let mut outputs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
+            // Half a second of silence, then the kick.
+            for _ in 0..22_050 {
+                synth.process_voice_samples_stereo(&mut outputs);
+                synth.process_fx(&mut outputs, &sends, [false, false]);
+            }
+            assert_eq!(synth.rumble_duck_gain(1), Some(1.0), "nothing ducks before the kick");
+            synth.trigger(0, 1.0);
+            let (mut lowest, mut peak_in) = (1.0f32, 0.0f32);
+            let mut back = 0.0f32;
+            for i in 0..22_050 {
+                synth.process_voice_samples_stereo(&mut outputs);
+                peak_in = peak_in.max(outputs[0][0].abs() * send);
+                synth.process_fx(&mut outputs, &sends, [false, false]);
+                let g = synth.rumble_duck_gain(1).unwrap();
+                lowest = lowest.min(g);
+                if i == 21_000 {
+                    back = g;
+                }
+            }
+            println!("send {send}: bus input peak {peak_in:.3}, duck gain down to {lowest:.3}, {back:.3} at 475 ms");
+            assert!(lowest < 0.4, "the kick at send {send} did not duck the rumble ({lowest})");
+            assert!(back > 0.9, "the rumble must be back after the Release ({back})");
+        }
     }
 
     /// [286] A p-locked send replaces the lane's own for the hit, and `None` goes back.
@@ -2301,6 +2443,7 @@ mod tests {
                 K::OneShot => VoiceSettings::oneshot(),
                 K::Reverb => VoiceSettings::reverb(),
                 K::Delay => VoiceSettings::delay(),
+                K::Rumble => VoiceSettings::rumble(),
             }
         }
 

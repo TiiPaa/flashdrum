@@ -72,6 +72,8 @@ pub enum TrackInstrumentKind {
     Reverb = 25,
     /// [286] Delay - the second send effect (an effect-bus slot, 12 / 13).
     Delay = 26,
+    /// [286] Rumble - the third send effect: the kick rumble (an effect-bus slot, 12 / 13).
+    Rumble = 27,
 }
 
 /// Instrument category used to group the kind pickers/menus
@@ -113,7 +115,7 @@ impl InstrumentCategory {
 }
 
 impl TrackInstrumentKind {
-    pub const COUNT: usize = 27;
+    pub const COUNT: usize = 28;
 
     /// Every kind, in stable declaration order.
     pub const ALL: [Self; Self::COUNT] = [
@@ -144,6 +146,7 @@ impl TrackInstrumentKind {
         Self::OneShot,
         Self::Reverb,
         Self::Delay,
+        Self::Rumble,
     ];
 
     /// Musical family of this kind (grouping for pickers/menus).
@@ -168,7 +171,7 @@ impl TrackInstrumentKind {
             Self::Tom | Self::Perc1 | Self::Tm6Ac | Self::OneShot => InstrumentCategory::Perc,
             Self::Buzz | Self::Rift => InstrumentCategory::Fx,
             Self::Ride | Self::Cymbal => InstrumentCategory::Other,
-            Self::Reverb | Self::Delay => InstrumentCategory::Effect,
+            Self::Reverb | Self::Delay | Self::Rumble => InstrumentCategory::Effect,
         }
     }
 
@@ -233,6 +236,7 @@ impl TrackInstrumentKind {
             24 => Some(Self::OneShot),
             25 => Some(Self::Reverb),
             26 => Some(Self::Delay),
+            27 => Some(Self::Rumble),
             _ => None,
         }
     }
@@ -270,6 +274,7 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::OneShot => "OS",
             TrackInstrumentKind::Reverb => "RV",
             TrackInstrumentKind::Delay => "DL",
+            TrackInstrumentKind::Rumble => "RU",
         }
     }
 
@@ -302,6 +307,7 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::OneShot => "One-Shot",
             TrackInstrumentKind::Reverb => "Reverb",
             TrackInstrumentKind::Delay => "Delay",
+            TrackInstrumentKind::Rumble => "Rumble",
         }
     }
 
@@ -338,7 +344,7 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::OneShot => 59,
             // An effect bus plays no note and listens to none; 0 is never matched
             // (`slots_listening_to` skips effect kinds).
-            TrackInstrumentKind::Reverb | TrackInstrumentKind::Delay => 0,
+            TrackInstrumentKind::Reverb | TrackInstrumentKind::Delay | TrackInstrumentKind::Rumble => 0,
         }
     }
 
@@ -375,6 +381,7 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::OneShot => 26,
             TrackInstrumentKind::Reverb => 27,
             TrackInstrumentKind::Delay => 28,
+            TrackInstrumentKind::Rumble => 29,
         }
     }
 
@@ -408,6 +415,7 @@ impl TrackInstrumentKind {
             26 => Some(Self::OneShot),
             27 => Some(Self::Reverb),
             28 => Some(Self::Delay),
+            29 => Some(Self::Rumble),
             _ => None,
         }
     }
@@ -415,7 +423,7 @@ impl TrackInstrumentKind {
     /// [286] A send effect rather than an instrument: it has no steps, no note
     /// and no trigger, and only lives on the effect-bus slots.
     pub fn is_effect(self) -> bool {
-        matches!(self, Self::Reverb | Self::Delay)
+        matches!(self, Self::Reverb | Self::Delay | Self::Rumble)
     }
 
     pub fn algo_count(self) -> usize {
@@ -1759,7 +1767,19 @@ mod tests {
         assert!(dl.is_effect() && TrackInstrumentKind::Reverb.is_effect());
         assert!(kind_allowed_on_slot(dl, 12, None) && !kind_allowed_on_slot(dl, 3, None));
         let in_menu: Vec<_> = TrackInstrumentKind::kinds_in(InstrumentCategory::Effect).collect();
-        assert_eq!(in_menu, vec![TrackInstrumentKind::Reverb, dl]);
+        assert_eq!(in_menu, vec![TrackInstrumentKind::Reverb, dl, TrackInstrumentKind::Rumble]);
+    }
+
+    /// [286] The rumble is the third effect: frozen indices, effect slots only.
+    #[test]
+    fn the_rumble_is_an_effect_with_a_stable_index() {
+        let ru = TrackInstrumentKind::Rumble;
+        assert_eq!(ru.index(), 27);
+        assert_eq!(TrackInstrumentKind::from_index(27), Some(ru));
+        assert_eq!(ru.drum_voice_index(), 29);
+        assert_eq!(TrackInstrumentKind::from_drum_voice_index(29), Some(ru));
+        assert!(ru.is_effect());
+        assert!(kind_allowed_on_slot(ru, 13, None) && !kind_allowed_on_slot(ru, 0, None));
     }
 
     /// [286] Sends survive the atomic round trip.

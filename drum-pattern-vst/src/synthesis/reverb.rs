@@ -1,16 +1,27 @@
 //! [286] Reverb - the send effect that lives on an effect-bus slot (Fx1 / Fx2).
 //!
-//! A stereo feedback delay network: pre-delay, low cut, two Schroeder all-pass
-//! diffusers per channel, then eight delay lines mixed by a Hadamard matrix.
-//! Each line has its own feedback gain (set from the decay time, so every line
-//! rings down at the same rate) and a one-pole damping filter; a slow LFO
-//! wobbles the line lengths so the tail does not sound metallic.
+//! Built after Signalsmith's "Let's Write A Reverb" and the FDN literature (Jot; Schlecht):
+//! pre-delay, low cut, then a **multi-channel diffuser** (8 channels, 5 steps, each a
+//! per-channel delay, a shuffle with polarity flips and a Hadamard mix, every step
+//! about twice as long as the one before) that turns one hit into thousands of echoes
+//! a second, then eight LONG delay lines mixed by a **Householder** matrix (a gentle
+//! mix: a full Hadamard in the loop clusters the eigentones and colours the tail).
+//! Each line has its own feedback gain (set from the decay time, so every line rings
+//! down at the same rate) and a one-pole damping filter; a slow LFO wobbles the line
+//! lengths. The metallic sound of a small reverb is a lack of echo density (diffuser)
+//! and of modal density (long lines), not of filtering.
 //!
 //! Real-time contract: every buffer is allocated in [`ReverbCore::new`], called
 //! from `DrumSynthesizer::initialize_with_layout` (non-RT). `process` allocates
 //! and locks nothing. Parameters are smoothed at control rate (every
 //! `CONTROL_PERIOD` samples) and the delay lengths are slewed per sample, so a
 //! knob or a p-lock never clicks.
+//!
+//! **Types** (the lane's Type menu): Hall, Room and Plate are the SAME engine with
+//! three characters (`Character`): the length of the lines, how much the input is
+//! diffused, how bright the tail stays, how much the lines wobble, and whether the
+//! first reflections of a room are heard. **Gate** cuts the tail a fixed time after
+//! each hit, the gated-snare sound, on any type.
 //!
 //! The effect is NOT a `Voice`: a voice makes sound on a trigger from nothing,
 //! a reverb makes it from a bus input. [`ReverbVoice`] is the do-nothing voice
@@ -24,11 +35,47 @@ use std::f32::consts::TAU;
 const LINES: usize = 8;
 /// Line lengths in ms at Size = 1: mutually "incommensurable" so the echoes of
 /// the lines do not pile up on the same samples.
-const BASE_MS: [f32; LINES] = [29.7, 37.1, 41.1, 43.7, 53.3, 59.9, 67.7, 73.1];
-const AP_MS: [f32; 4] = [5.1, 7.7, 6.3, 9.1];
-const AP_GAIN: f32 = 0.6;
+const BASE_MS: [f32; LINES] = [53.1, 66.7, 79.3, 91.9, 103.7, 117.1, 130.3, 143.9];
+/// Diffuser: steps, and the longest delay of each at `diff_scale` 1 (each step twice the
+/// one before, so the onset is smooth and the tail has no bump in the middle).
+const DIFF_STEPS: usize = 5;
+const DIFF_MAX_MS: [f32; DIFF_STEPS] = [5.0, 10.0, 20.0, 40.0, 80.0];
+/// Where in its eighth of the range each channel's delay falls (irregular on purpose:
+/// regular delays would make the diffuser itself comb-like).
+const DIFF_FRAC: [[f32; LINES]; DIFF_STEPS] = [
+    [0.31, 0.77, 0.12, 0.58, 0.93, 0.24, 0.66, 0.45],
+    [0.83, 0.19, 0.52, 0.07, 0.71, 0.38, 0.96, 0.27],
+    [0.14, 0.63, 0.88, 0.35, 0.49, 0.81, 0.22, 0.74],
+    [0.57, 0.09, 0.41, 0.92, 0.18, 0.69, 0.33, 0.85],
+    [0.26, 0.74, 0.05, 0.62, 0.89, 0.15, 0.47, 0.98],
+];
+/// A different shuffle for each step, and a polarity flip on some channels.
+const DIFF_SHUFFLE: [[usize; LINES]; DIFF_STEPS] = [
+    [3, 6, 0, 5, 7, 2, 4, 1],
+    [5, 2, 7, 0, 3, 6, 1, 4],
+    [1, 4, 6, 3, 0, 7, 5, 2],
+    [6, 0, 3, 7, 2, 5, 1, 4],
+    [4, 7, 1, 2, 6, 0, 5, 3],
+];
+const DIFF_SIGN: [[f32; LINES]; DIFF_STEPS] = [
+    [1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0],
+    [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0],
+    [1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0],
+    [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0],
+    [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0],
+];
 const MAX_PREDELAY_MS: f32 = 250.0;
-const MOD_DEPTH_MS: f32 = 0.30;
+/// Longest early-reflection tap, in ms: the pre-delay line keeps that much more.
+const MAX_EARLY_MS: f32 = 45.0;
+/// Gate: the longest hold, the input level that opens it, and how fast it opens and closes.
+pub const MAX_GATE_MS: f32 = 1500.0;
+const GATE_THRESHOLD: f32 = 0.01;
+const GATE_OPEN_MS: f32 = 1.0;
+/// Gate release range, in ms.
+pub const MIN_GATE_RELEASE_MS: f32 = 2.0;
+pub const MAX_GATE_RELEASE_MS: f32 = 500.0;
+/// The longest wobble any type asks for (sizes the line buffers).
+const MOD_DEPTH_MS: f32 = 3.0;
 /// Samples between two control-rate updates.
 const CONTROL_PERIOD: usize = 32;
 /// Gain on the wet signal: tuned so a bus fed at unity returns about unity.
@@ -51,7 +98,106 @@ pub mod sp {
     /// form a circle). Stored inverted so that every older lane, which holds 0 here,
     /// keeps restarting.
     pub const NO_RESTART: usize = 8;
+    /// The lane's type: 0 = Hall (the original sound), 1 = Room, 2 = Plate.
+    pub const TYPE: usize = 10;
+    /// Gate hold time in ms (used when the gate is on).
+    pub const GATE: usize = 11;
+    /// 1 = the gate is on (a lane setting, never locked).
+    pub const GATE_ON: usize = 12;
+    /// How fast the gate closes, in ms.
+    pub const GATE_RELEASE: usize = 13;
 }
+
+/// The three characters of the reverb.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReverbKind {
+    /// The original sound: a medium-large space.
+    Hall,
+    /// A small room: short lines, the first reflections up front.
+    Room,
+    /// A plate: dense from the first instant, bright, no room.
+    Plate,
+    /// Not in the Type menu: what the Rumble runs on. A hall with NO direct diffuser output,
+    /// so nothing of the input comes back for the first ~100 ms: the tail blooms after the
+    /// hit instead of sitting on it.
+    Rumble,
+}
+
+impl ReverbKind {
+    pub fn from_value(v: f32) -> Self {
+        match v.round() as i32 {
+            1 => Self::Room,
+            2 => Self::Plate,
+            3 => Self::Rumble,
+            _ => Self::Hall,
+        }
+    }
+
+    fn character(self) -> Character {
+        match self {
+            Self::Hall => Character {
+                len_scale: 1.0,
+                diff_scale: 1.0,
+                bright: 1.0,
+                mod_ms: 0.7,
+                early_level: 0.0,
+                diffuse_out: 0.7,
+            },
+            Self::Room => Character {
+                len_scale: 0.45,
+                diff_scale: 0.35,
+                bright: 0.85,
+                mod_ms: 0.3,
+                early_level: 0.55,
+                diffuse_out: 0.5,
+            },
+            Self::Rumble => Character {
+                len_scale: 1.0,
+                diff_scale: 1.0,
+                bright: 1.0,
+                mod_ms: 0.7,
+                early_level: 0.0,
+                diffuse_out: 0.0,
+            },
+            Self::Plate => Character {
+                len_scale: 0.8,
+                diff_scale: 0.5,
+                bright: 3.0,
+                mod_ms: 1.0,
+                early_level: 0.0,
+                diffuse_out: 0.6,
+            },
+        }
+    }
+}
+
+/// What makes a type sound like itself. Everything is smoothed, so switching the
+/// type while it plays slides from one character to the other.
+#[derive(Clone, Copy, Debug)]
+struct Character {
+    /// Scales every delay line (a room is small, a hall is big).
+    len_scale: f32,
+    /// Scales the diffuser's delays (how long the echoes take to thicken).
+    diff_scale: f32,
+    /// Multiplies the damping cut-off: above 1, the tail stays brighter.
+    bright: f32,
+    /// Depth of the slow wobble of the lines, in ms.
+    mod_ms: f32,
+    /// Level of the early reflections (0 = none).
+    early_level: f32,
+    /// Level of the diffuser's own output in the return: it fills the gap before the
+    /// first lines come back with a dense, smooth early field.
+    diffuse_out: f32,
+}
+
+/// Early reflections of the Room: `(left ms, right ms, gain)`, read from the dry input.
+const EARLY_TAPS: [(f32, f32, f32); 5] = [
+    (6.3, 8.1, 0.70),
+    (13.9, 16.7, 0.55),
+    (21.7, 25.3, 0.42),
+    (33.1, 37.9, 0.30),
+    (41.0, 44.0, 0.22),
+];
 
 /// The knobs of the reverb.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,6 +216,19 @@ pub struct ReverbParams {
     pub width: f32,
     /// Return level (the lane's Volume).
     pub level: f32,
+    /// The character of the reverb.
+    pub kind: ReverbKind,
+    /// The gate cuts the tail `gate_ms` after each hit, when `gate_on`.
+    pub gate_on: bool,
+    pub gate_ms: f32,
+    /// How fast the gate closes, in ms.
+    pub gate_release_ms: f32,
+    /// Depth of the slow wobble of the lines, in ms. Negative = the type's own (the Type
+    /// menu); the Rumble sets it.
+    pub mod_override: f32,
+    /// Scale of the diffuser's delays (1 = the type's own at its widest, small = the input is
+    /// barely smeared, so the first repeats stay distinct). Negative = the type's own.
+    pub diff_override: f32,
 }
 
 impl Default for ReverbParams {
@@ -83,6 +242,12 @@ impl Default for ReverbParams {
             high_cut_hz: 20_000.0,
             width: 1.0,
             level: 1.0,
+            kind: ReverbKind::Hall,
+            gate_on: false,
+            gate_ms: 250.0,
+            gate_release_ms: 30.0,
+            mod_override: -1.0,
+            diff_override: -1.0,
         }
     }
 }
@@ -100,6 +265,13 @@ impl ReverbParams {
             high_cut_hz: fin(self.high_cut_hz, d.high_cut_hz).clamp(1000.0, 20_000.0),
             width: fin(self.width, d.width).clamp(0.0, 1.0),
             level: fin(self.level, d.level).clamp(0.0, 2.0),
+            kind: self.kind,
+            gate_on: self.gate_on,
+            gate_ms: fin(self.gate_ms, d.gate_ms).clamp(10.0, MAX_GATE_MS),
+            gate_release_ms: fin(self.gate_release_ms, d.gate_release_ms)
+                .clamp(MIN_GATE_RELEASE_MS, MAX_GATE_RELEASE_MS),
+            mod_override: fin(self.mod_override, -1.0).clamp(-1.0, MOD_DEPTH_MS),
+            diff_override: fin(self.diff_override, -1.0).clamp(-1.0, 1.0),
         }
     }
 }
@@ -115,40 +287,14 @@ impl From<&VoiceSettings> for ReverbParams {
             high_cut_hz: v.special[sp::HIGH_CUT],
             width: v.special[sp::WIDTH],
             level: v.volume,
+            kind: ReverbKind::from_value(v.special[sp::TYPE]),
+            gate_on: v.special[sp::GATE_ON] >= 0.5,
+            gate_ms: v.special[sp::GATE],
+            gate_release_ms: v.special[sp::GATE_RELEASE],
+            mod_override: -1.0,
+            diff_override: -1.0,
         }
         .sanitized()
-    }
-}
-
-/// Schroeder all-pass diffuser.
-struct AllPass {
-    buf: Box<[f32]>,
-    pos: usize,
-}
-
-impl AllPass {
-    fn new(len: usize) -> Self {
-        Self {
-            buf: vec![0.0; len.max(2)].into_boxed_slice(),
-            pos: 0,
-        }
-    }
-
-    #[inline]
-    fn process(&mut self, x: f32) -> f32 {
-        let delayed = self.buf[self.pos];
-        let v = x - AP_GAIN * delayed;
-        self.buf[self.pos] = v;
-        self.pos += 1;
-        if self.pos == self.buf.len() {
-            self.pos = 0;
-        }
-        delayed + AP_GAIN * v
-    }
-
-    fn reset(&mut self) {
-        self.buf.fill(0.0);
-        self.pos = 0;
     }
 }
 
@@ -197,6 +343,17 @@ fn hadamard8(v: &mut [f32; LINES]) {
     }
 }
 
+/// In-place Householder reflection: `v - (2/N) * sum(v)`. Orthogonal (lossless) but it
+/// mixes the channels less than a Hadamard, which keeps the loop's modes spread.
+#[inline]
+fn householder8(v: &mut [f32; LINES]) {
+    let sum: f32 = v.iter().sum();
+    let k = sum * (2.0 / LINES as f32);
+    for x in v.iter_mut() {
+        *x -= k;
+    }
+}
+
 /// The reverb engine: one stereo-in / stereo-out instance per effect bus.
 pub struct ReverbCore {
     sample_rate: f32,
@@ -215,7 +372,11 @@ pub struct ReverbCore {
     /// High cut: a 12 dB/oct low-pass on what comes out.
     lp_out: [Biquad; 2],
 
-    allpass: [AllPass; 4],
+    /// The multi-channel diffuser: per step, 8 delay lines with a slewed length.
+    diff: [[Box<[f32]>; LINES]; DIFF_STEPS],
+    diff_pos: [[usize; LINES]; DIFF_STEPS],
+    diff_len: [[f32; LINES]; DIFF_STEPS],
+    diff_len_target: [[f32; LINES]; DIFF_STEPS],
 
     lines: [Box<[f32]>; LINES],
     write: [usize; LINES],
@@ -224,6 +385,11 @@ pub struct ReverbCore {
     lfo_phase: [f32; LINES],
     lfo_inc: [f32; LINES],
     mod_samples: f32,
+    /// The character in use, slid towards the one the type asks for.
+    character: Character,
+    gate_timer: f32,
+    gate_gain: f32,
+    gate_mix: f32,
     damp_state: [f32; LINES],
     damp_coef: f32,
     gain: [f32; LINES],
@@ -243,7 +409,7 @@ impl ReverbCore {
         };
         let ms = |m: f32| (m * 0.001 * sr).ceil() as usize;
         let line_cap = ms(BASE_MS[LINES - 1] * 2.0 + MOD_DEPTH_MS + 2.0) + 8;
-        let pre_cap = ms(MAX_PREDELAY_MS) + 8;
+        let pre_cap = ms(MAX_PREDELAY_MS + MAX_EARLY_MS) + 8;
         let params = ReverbParams::default();
         let mut core = Self {
             sample_rate: sr,
@@ -258,7 +424,12 @@ impl ReverbCore {
             hp_in: [Biquad::new(); 2],
             hp_out: [Biquad::new(); 2],
             lp_out: [Biquad::new(); 2],
-            allpass: std::array::from_fn(|i| AllPass::new(ms(AP_MS[i]))),
+            diff: std::array::from_fn(|st| {
+                std::array::from_fn(|_| vec![0.0; ms(DIFF_MAX_MS[st]) + 8].into_boxed_slice())
+            }),
+            diff_pos: [[0; LINES]; DIFF_STEPS],
+            diff_len: [[1.0; LINES]; DIFF_STEPS],
+            diff_len_target: [[1.0; LINES]; DIFF_STEPS],
             lines: std::array::from_fn(|_| vec![0.0; line_cap].into_boxed_slice()),
             write: [0; LINES],
             length: [0.0; LINES],
@@ -267,6 +438,10 @@ impl ReverbCore {
             // Slow, distinct rates (0.11 .. 0.31 Hz).
             lfo_inc: std::array::from_fn(|i| TAU * (0.11 + 0.028 * i as f32) / sr),
             mod_samples: MOD_DEPTH_MS * 0.001 * sr,
+            character: ReverbKind::Hall.character(),
+            gate_timer: 0.0,
+            gate_gain: 1.0,
+            gate_mix: 0.0,
             damp_state: [0.0; LINES],
             damp_coef: 1.0,
             gain: [0.0; LINES],
@@ -287,9 +462,12 @@ impl ReverbCore {
         for b in self.pre.iter_mut() {
             b.fill(0.0);
         }
-        for a in self.allpass.iter_mut() {
-            a.reset();
+        for step in self.diff.iter_mut() {
+            for b in step.iter_mut() {
+                b.fill(0.0);
+            }
         }
+        self.diff_pos = [[0; LINES]; DIFF_STEPS];
         for l in self.lines.iter_mut() {
             l.fill(0.0);
         }
@@ -306,6 +484,8 @@ impl ReverbCore {
         self.dc_x1 = [0.0; 2];
         self.dc_y1 = [0.0; 2];
         self.write = [0; LINES];
+        self.gate_timer = 0.0;
+        self.gate_gain = 1.0;
     }
 
     /// Control-rate update: smooth the knobs towards their targets and derive
@@ -326,10 +506,36 @@ impl ReverbCore {
         c.high_cut_hz += (t.high_cut_hz - c.high_cut_hz) * k;
         c.width += (t.width - c.width) * k;
         c.level += (t.level - c.level) * k;
+        c.kind = t.kind;
+        c.gate_on = t.gate_on;
+        c.gate_ms = t.gate_ms;
+        c.gate_release_ms = t.gate_release_ms;
+
+        // Slide the character towards the type's (a type change glides, it never jumps).
+        let want = t.kind.character();
+        let ch = &mut self.character;
+        ch.len_scale += (want.len_scale - ch.len_scale) * k;
+        let want_diff = if t.diff_override >= 0.0 { t.diff_override } else { want.diff_scale };
+        ch.diff_scale += (want_diff - ch.diff_scale) * k;
+        ch.bright += (want.bright - ch.bright) * k;
+        let want_mod = if t.mod_override >= 0.0 { t.mod_override } else { want.mod_ms };
+        ch.mod_ms += (want_mod - ch.mod_ms) * k;
+        ch.early_level += (want.early_level - ch.early_level) * k;
+        ch.diffuse_out += (want.diffuse_out - ch.diffuse_out) * k;
+        if snap {
+            *ch = want;
+        }
+        self.mod_samples = ch.mod_ms * 0.001 * self.sample_rate;
+        // The gate is mixed in and out, never switched.
+        let gate_target = if c.gate_on { 1.0 } else { 0.0 };
+        self.gate_mix += (gate_target - self.gate_mix) * k.max(0.05);
+        if snap {
+            self.gate_mix = gate_target;
+        }
 
         let sr = self.sample_rate;
         for i in 0..LINES {
-            let seconds = BASE_MS[i] * 0.001 * c.size;
+            let seconds = BASE_MS[i] * 0.001 * c.size * ch.len_scale;
             self.length_target[i] = seconds * sr;
             if snap {
                 self.length[i] = self.length_target[i];
@@ -337,8 +543,18 @@ impl ReverbCore {
             // 60 dB of loss over `decay_s`: every line loses the same per second.
             self.gain[i] = 10.0f32.powf(-3.0 * seconds / c.decay_s);
         }
+        // Diffuser delays: each channel in its own eighth of the step's range.
+        for st in 0..DIFF_STEPS {
+            for i in 0..LINES {
+                let ms = DIFF_MAX_MS[st] * (i as f32 + DIFF_FRAC[st][i]) / LINES as f32 * ch.diff_scale;
+                self.diff_len_target[st][i] = (ms * 0.001 * sr).max(2.0);
+                if snap {
+                    self.diff_len[st][i] = self.diff_len_target[st][i];
+                }
+            }
+        }
         // Damping: 18 kHz (none) down to ~1.3 kHz (dark).
-        let cutoff = 18_000.0 * 0.07f32.powf(c.damping);
+        let cutoff = 18_000.0 * ch.bright * 0.07f32.powf(c.damping);
         self.damp_coef = 1.0 - (-TAU * cutoff.min(sr * 0.45) / sr).exp();
         let mut hp = Biquad::new();
         hp.set_highpass(c.low_cut_hz, std::f32::consts::FRAC_1_SQRT_2, sr);
@@ -383,11 +599,29 @@ impl ReverbCore {
         xl = self.hp_in[0].process(xl);
         xr = self.hp_in[1].process(xr);
 
-        // Diffusion.
-        xl = self.allpass[0].process(xl);
-        xl = self.allpass[1].process(xl);
-        xr = self.allpass[2].process(xr);
-        xr = self.allpass[3].process(xr);
+        // Diffusion: 8 channels (even ones hear left, odd ones right) through the 4 steps.
+        let mut v = [0.0f32; LINES];
+        for (i, x) in v.iter_mut().enumerate() {
+            *x = if i % 2 == 0 { xl } else { xr };
+        }
+        for st in 0..DIFF_STEPS {
+            let mut w = [0.0f32; LINES];
+            for i in 0..LINES {
+                let buf = &mut self.diff[st][i];
+                let pos = self.diff_pos[st][i];
+                buf[pos] = v[i];
+                let next = if pos + 1 == buf.len() { 0 } else { pos + 1 };
+                self.diff_pos[st][i] = next;
+                self.diff_len[st][i] += (self.diff_len_target[st][i] - self.diff_len[st][i]) * 0.002;
+                w[i] = read_delay(buf, next, self.diff_len[st][i]);
+            }
+            let mut shuffled = [0.0f32; LINES];
+            for i in 0..LINES {
+                shuffled[i] = DIFF_SIGN[st][i] * w[DIFF_SHUFFLE[st][i]];
+            }
+            hadamard8(&mut shuffled);
+            v = shuffled;
+        }
 
         // Read the lines (slewed length + slow modulation) and damp them.
         let mut taps = [0.0f32; LINES];
@@ -404,12 +638,11 @@ impl ReverbCore {
             self.damp_state[i] += self.damp_coef * (tap - self.damp_state[i]);
             mixed[i] = self.damp_state[i];
         }
-        hadamard8(&mut mixed);
+        householder8(&mut mixed);
 
         // Feed back, and inject the input: even lines hear left, odd lines right.
         for i in 0..LINES {
-            let input = if i % 2 == 0 { xl } else { xr };
-            let x = input * 0.5 + mixed[i] * self.gain[i];
+            let x = v[i] * 0.5 + mixed[i] * self.gain[i];
             let n = self.lines[i].len();
             self.lines[i][self.write[i]] = flush(x);
             self.write[i] += 1;
@@ -420,12 +653,27 @@ impl ReverbCore {
 
         // Output: even taps left, odd taps right, then width.
         let (mut l, mut r) = (0.0f32, 0.0f32);
+        // (Alternating signs: the two channels are different mixes of the lines.)
         for i in 0..LINES {
+            let sign = if (i / 2) % 2 == 0 { 1.0 } else { -1.0 };
+            let diffuse = 0.5 * self.character.diffuse_out * v[i];
             if i % 2 == 0 {
-                l += taps[i];
+                l += sign * (taps[i] + diffuse);
             } else {
-                r += taps[i];
+                r += sign * (taps[i] + diffuse);
             }
+        }
+        // The first reflections of a room, taken from the dry input after the pre-delay.
+        let early_level = self.character.early_level;
+        if early_level > 1.0e-4 {
+            let sr = self.sample_rate;
+            let (mut el, mut er) = (0.0f32, 0.0f32);
+            for (tl, tr, gain) in EARLY_TAPS {
+                el += gain * read_delay(&self.pre[0], self.pre_pos, self.pre_delay + tl * 0.001 * sr);
+                er += gain * read_delay(&self.pre[1], self.pre_pos, self.pre_delay + tr * 0.001 * sr);
+            }
+            l += el * early_level;
+            r += er * early_level;
         }
         // Low cut again, on the way out: the tail has no lows either.
         l = self.lp_out[0].process(self.hp_out[0].process(l * WET_TRIM));
@@ -438,6 +686,23 @@ impl ReverbCore {
             self.dc_x1[ch] = *o;
             self.dc_y1[ch] = flush(y);
             *o = y * self.current.level;
+        }
+        // Gate: after each hit the return is held for `gate_ms`, then closed over `gate_release_ms`.
+        if self.gate_mix > 1.0e-3 {
+            let sr = self.sample_rate;
+            if in_l.abs().max(in_r.abs()) > GATE_THRESHOLD {
+                self.gate_timer = self.current.gate_ms * 0.001 * sr;
+            }
+            let open = self.gate_timer > 0.0;
+            if open {
+                self.gate_timer -= 1.0;
+            }
+            let time_ms = if open { GATE_OPEN_MS } else { self.current.gate_release_ms };
+            let coef = 1.0 - (-1.0 / (time_ms * 0.001 * sr)).exp();
+            self.gate_gain += (if open { 1.0 } else { 0.0 } - self.gate_gain) * coef;
+            let g = (1.0 - self.gate_mix) + self.gate_mix * self.gate_gain;
+            out[0] *= g;
+            out[1] *= g;
         }
         (out[0], out[1])
     }
@@ -546,6 +811,12 @@ mod tests {
                 high_cut_hz: 20_000.0,
                 width: 1.0,
                 level: 2.0,
+                kind: ReverbKind::Plate,
+                gate_on: true,
+                gate_ms: 1500.0,
+                gate_release_ms: 500.0,
+                mod_override: -1.0,
+                diff_override: -1.0,
             },
             ReverbParams {
                 size: 0.5,
@@ -556,6 +827,12 @@ mod tests {
                 high_cut_hz: 1000.0,
                 width: 0.0,
                 level: 0.0,
+                kind: ReverbKind::Room,
+                gate_on: false,
+                gate_ms: 10.0,
+                gate_release_ms: 2.0,
+                mod_override: 3.0,
+                diff_override: 0.0,
             },
         ] {
             let mut core = ReverbCore::new(SR);
@@ -579,6 +856,12 @@ mod tests {
             high_cut_hz: f32::NAN,
             width: f32::NAN,
             level: f32::NAN,
+            kind: ReverbKind::Hall,
+            gate_on: false,
+            gate_ms: f32::NAN,
+            gate_release_ms: f32::NAN,
+            mod_override: f32::NAN,
+            diff_override: f32::NAN,
         };
         assert_eq!(bad.sanitized(), ReverbParams::default());
     }
@@ -756,5 +1039,204 @@ mod tests {
         println!("high cut 2 kHz: 10 kHz -{high_drop:.1} dB, 500 Hz {low_drop:.1} dB");
         assert!(high_drop > 20.0, "10 kHz only dropped {high_drop} dB");
         assert!(low_drop.abs() < 1.5, "500 Hz moved by {low_drop} dB");
+    }
+
+    fn params_of(kind: ReverbKind) -> ReverbParams {
+        ReverbParams {
+            kind,
+            ..ReverbParams::default()
+        }
+    }
+
+    /// The three types are three different sounds: the room has early reflections the
+    /// others lack, and the plate is brighter than the hall at the same settings.
+    #[test]
+    fn the_types_sound_different() {
+        let early = |kind: ReverbKind| {
+            let ir = impulse_response(
+                ReverbParams {
+                    predelay_ms: 0.0,
+                    ..params_of(kind)
+                },
+                0.2,
+            );
+            // Energy between 4 and 50 ms: where the early reflections of a room sit.
+            energy(&ir[(0.004 * SR) as usize..(0.050 * SR) as usize])
+        };
+        let (hall, room, plate) = (early(ReverbKind::Hall), early(ReverbKind::Room), early(ReverbKind::Plate));
+        println!("early energy: hall {hall:.4} room {room:.4} plate {plate:.4}");
+        assert!(room > hall * 2.0 && room > plate * 2.0, "the room must have its reflections");
+
+        // Brightness: share of the late tail's energy above the one-pole's corner.
+        let brightness = |kind: ReverbKind| {
+            let ir = impulse_response(
+                ReverbParams {
+                    low_cut_hz: 20.0,
+                    ..params_of(kind)
+                },
+                2.5,
+            );
+            let (mut total, mut high, mut lp) = (0.0f32, 0.0f32, 0.0f32);
+            for (i, (l, _)) in ir.iter().enumerate() {
+                lp += 0.45 * (l - lp);
+                if i > (0.5 * SR) as usize {
+                    total += l * l;
+                    high += (l - lp) * (l - lp);
+                }
+            }
+            high / total.max(1e-12)
+        };
+        let (b_hall, b_plate) = (brightness(ReverbKind::Hall), brightness(ReverbKind::Plate));
+        println!("brightness: hall {b_hall:.4} plate {b_plate:.4}");
+        assert!(b_plate > b_hall * 1.3, "the plate must be brighter than the hall");
+    }
+
+    #[test]
+    fn every_type_is_stable_and_audible() {
+        for kind in [ReverbKind::Hall, ReverbKind::Room, ReverbKind::Plate] {
+            let ir = impulse_response(params_of(kind), 2.0);
+            assert!(ir.iter().all(|(l, r)| l.is_finite() && r.is_finite()), "{kind:?}");
+            assert!(energy(&ir) > 1.0e-3, "{kind:?} is silent");
+        }
+    }
+
+    /// Hall is the plain character: full-size lines, no early reflections, the damping
+    /// cut-off as set; the others are defined against it.
+    #[test]
+    fn hall_is_the_plain_character() {
+        let c = ReverbKind::Hall.character();
+        assert_eq!((c.len_scale, c.bright, c.early_level), (1.0, 1.0, 0.0));
+        assert_eq!(ReverbKind::from_value(0.0), ReverbKind::Hall);
+        assert_eq!(ReverbKind::from_value(1.0), ReverbKind::Room);
+        assert_eq!(ReverbKind::from_value(2.0), ReverbKind::Plate);
+    }
+
+    /// The gate cuts the tail a fixed time after a hit, however long the decay.
+    #[test]
+    fn the_gate_cuts_the_tail() {
+        let tail_after = |gate_ms: f32| {
+            let mut core = ReverbCore::new(SR);
+            core.set_params(ReverbParams {
+                decay_s: 6.0,
+                gate_on: gate_ms > 0.0,
+                gate_ms,
+                ..ReverbParams::default()
+            });
+            let mut energy_late = 0.0f32;
+            for i in 0..(SR as usize * 2) {
+                let x = if i < 400 { 0.8 } else { 0.0 };
+                let (l, r) = core.process(x, x);
+                // 600 ms to 1 s after the hit
+                if i > (SR * 0.6) as usize && i < SR as usize {
+                    energy_late += l * l + r * r;
+                }
+            }
+            energy_late
+        };
+        let open = tail_after(0.0);
+        let gated = tail_after(250.0);
+        println!("tail energy 0.6-1 s after the hit: open {open:.4}, gated at 250 ms {gated:.6}");
+        assert!(open > 1.0e-3, "the open reverb rings on");
+        assert!(gated < open * 0.001, "the gated tail must be gone");
+    }
+
+    /// The gate leaves the start of the tail alone.
+    #[test]
+    fn the_gate_keeps_the_start_of_the_tail() {
+        let early = |gate_ms: f32| {
+            let mut core = ReverbCore::new(SR);
+            core.set_params(ReverbParams {
+                gate_on: gate_ms > 0.0,
+                gate_ms,
+                ..ReverbParams::default()
+            });
+            let mut e = 0.0f32;
+            for i in 0..(SR as usize / 4) {
+                let x = if i < 400 { 0.8 } else { 0.0 };
+                let (l, r) = core.process(x, x);
+                if i > 200 {
+                    e += l * l + r * r;
+                }
+            }
+            e
+        };
+        let open = early(0.0);
+        let gated = early(250.0);
+        assert!(gated > open * 0.5, "the first 250 ms must survive: {open} -> {gated}");
+    }
+
+    /// The metallic sound is a tail whose spectrum has peaks (modes standing out): the
+    /// magnitude of a diffuse tail is Rayleigh-like (spread / mean = 0.52); a ringing
+    /// one is far above. Measured on 4096 samples of the late tail, 200 Hz - 8 kHz.
+    #[test]
+    fn the_tail_spectrum_has_no_ringing_peaks() {
+        const N: usize = 4096;
+        for kind in [ReverbKind::Hall, ReverbKind::Room, ReverbKind::Plate] {
+            let ir = impulse_response(
+                ReverbParams {
+                    low_cut_hz: 20.0,
+                    ..params_of(kind)
+                },
+                1.6,
+            );
+            let start = (0.4 * SR) as usize;
+            let seg: Vec<f32> = (0..N)
+                .map(|i| {
+                    let w = 0.5 - 0.5 * (TAU * i as f32 / N as f32).cos();
+                    ir[start + i].0 * w
+                })
+                .collect();
+            let (lo, hi) = ((200.0 * N as f32 / SR) as usize, (8000.0 * N as f32 / SR) as usize);
+            let mags: Vec<f32> = (lo..hi)
+                .map(|k| {
+                    let (mut re, mut im) = (0.0f64, 0.0f64);
+                    for (n, x) in seg.iter().enumerate() {
+                        let a = std::f64::consts::TAU * (k * n % N) as f64 / N as f64;
+                        re += *x as f64 * a.cos();
+                        im -= *x as f64 * a.sin();
+                    }
+                    (re * re + im * im).sqrt() as f32
+                })
+                .collect();
+            // Divide each bin by the local mean (+-16 bins) so the damping's slope is not
+            // counted as a peak: what is left is how much the bins stand out of their neighbours.
+            let rel: Vec<f32> = (0..mags.len())
+                .map(|i| {
+                    let (a, b) = (i.saturating_sub(16), (i + 17).min(mags.len()));
+                    mags[i] / (mags[a..b].iter().sum::<f32>() / (b - a) as f32)
+                })
+                .collect();
+            let mean = rel.iter().sum::<f32>() / rel.len() as f32;
+            let var = rel.iter().map(|m| (m - mean) * (m - mean)).sum::<f32>() / rel.len() as f32;
+            let spread = var.sqrt() / mean;
+            println!("{kind:?}: spectrum spread/mean = {spread:.3} (~0.5 = ideal noise)");
+            assert!(spread < 0.7, "{kind:?} rings: {spread}");
+        }
+    }
+
+    /// Normalised echo density (Abel & Huang): 1.0 = as dense as Gaussian noise. A sparse early
+    /// field (a few distinct echoes) reads far below 1 and sounds like flutter / metal.
+    fn ned(ir: &[(f32, f32)], center_ms: f32) -> f32 {
+        let half = (0.010 * SR) as usize;
+        let c = (center_ms * 0.001 * SR) as usize;
+        let seg: Vec<f32> = ir[c - half..c + half].iter().map(|(l, _)| *l).collect();
+        let sd = (seg.iter().map(|x| x * x).sum::<f32>() / seg.len() as f32).sqrt();
+        let over = seg.iter().filter(|x| x.abs() > sd).count() as f32 / seg.len() as f32;
+        over / 0.3173
+    }
+
+    #[test]
+    fn the_echo_density_is_high_from_the_first_100_ms() {
+        for kind in [ReverbKind::Hall, ReverbKind::Room, ReverbKind::Plate] {
+            let ir = impulse_response(params_of(kind), 0.5);
+            let dens: Vec<String> = [30.0, 60.0, 100.0, 200.0, 400.0]
+                .iter()
+                .map(|t| format!("{t} ms: {:.2}", ned(&ir, *t)))
+                .collect();
+            println!("NED {kind:?}: {}", dens.join("  "));
+            // The previous engine read 0.43 at 100 ms and 0.96 at 200 ms: a sparse early
+            // field, the flutter that sounds metallic.
+            assert!(ned(&ir, 100.0) > 0.8 && ned(&ir, 200.0) > 0.9, "{kind:?} is sparse: {}", dens.join(" "));
+        }
     }
 }

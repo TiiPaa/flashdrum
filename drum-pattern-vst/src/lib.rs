@@ -385,6 +385,9 @@ pub struct DrumFlashVst {
     /// Last active track layout kinds, so the audio thread can reinitialize
     /// synthesizer voices when a slot is added, removed or reassigned.
     last_slot_kinds: [Option<crate::track::TrackInstrumentKind>; crate::track::MAX_TRACKS],
+    /// [286] The transport beat (in the Rumble's Duck Trigger division) each effect bus last
+    /// started its duck on; `i64::MIN` = none yet (the next beat starts it).
+    rumble_beat_tick: [i64; crate::track::FX_SLOT_COUNT],
     /// Last algo pushed to each slot's voice ([184]). The global algo must only
     /// be re-pushed when it actually changes: pushing it every buffer overwrote
     /// the per-step p-locked algo a few milliseconds into the hit, so a plocked
@@ -2340,6 +2343,7 @@ impl Default for DrumFlashVst {
             last_song_position: 0,
             last_master_length: 16,
             last_slot_kinds: [None; crate::track::MAX_TRACKS],
+            rumble_beat_tick: [i64::MIN; crate::track::FX_SLOT_COUNT],
             last_algos: [u8::MAX; crate::track::MAX_TRACKS],
             advance_hits: [0; crate::track::MAX_TRACKS],
             advance_last_loop: 0,
@@ -2915,7 +2919,7 @@ impl DrumFlashVst {
         bpm: f32,
     ) -> Option<synthesis::FxParams> {
         use crate::param_id::ParamId;
-        use synthesis::{DelayParams, FxParams, ReverbParams};
+        use synthesis::{DelayParams, FxParams, ReverbParams, RumbleParams};
         let slot = crate::track::FX_FIRST_SLOT + bus;
         let kind = self.params.track_layout.state.kind_for_slot(slot)?;
         if !kind.is_effect() {
@@ -2935,6 +2939,10 @@ impl DrumFlashVst {
                 FxParams::Delay(DelayParams::from(&global)),
                 global.special[synthesis::delay_sp::GLIDE] >= 0.5,
             ),
+            crate::track::TrackInstrumentKind::Rumble => (
+                FxParams::Rumble(RumbleParams::from(&global)),
+                global.special[synthesis::rumble_sp::GLIDE] >= 0.5,
+            ),
             _ => (
                 FxParams::Reverb(ReverbParams::from(&global)),
                 global.special[synthesis::reverb_sp::GLIDE] >= 0.5,
@@ -2942,10 +2950,16 @@ impl DrumFlashVst {
         };
         // The delay's Sync menu locks its time to a note value at the host tempo.
         let sync_entry = global.special[synthesis::delay_sp::SYNC].round().max(0.0) as usize;
+        let echo_sync_entry = global.special[synthesis::rumble_sp::ECHO_SYNC].round().max(0.0) as usize;
         let with_sync = |mut p: FxParams| {
             if let FxParams::Delay(d) = &mut p {
                 if let Some(ms) = synthesis::delay_synced_time_ms(sync_entry, bpm) {
                     d.time_ms = ms;
+                }
+            }
+            if let FxParams::Rumble(r) = &mut p {
+                if let Some(ms) = synthesis::delay_synced_time_ms(echo_sync_entry, bpm) {
+                    r.echo_ms = ms;
                 }
             }
             p
@@ -2976,6 +2990,27 @@ impl DrumFlashVst {
                 p.low_cut_hz = locked(ParamId::Special(sp::LOW_CUT), p.low_cut_hz);
                 p.high_cut_hz = locked(ParamId::Special(sp::HIGH_CUT), p.high_cut_hz);
                 p.width = locked(ParamId::Special(sp::WIDTH), p.width);
+                p.level = locked(volume, p.level);
+                p.gate_ms = locked(ParamId::Special(sp::GATE), p.gate_ms);
+                p.gate_release_ms = locked(ParamId::Special(sp::GATE_RELEASE), p.gate_release_ms);
+            }
+            FxParams::Rumble(p) => {
+                use synthesis::rumble_sp as sp;
+                p.decay_s = locked(ParamId::Special(sp::DECAY), p.decay_s);
+                p.reverb_size = locked(ParamId::Special(sp::REVERB_SIZE), p.reverb_size);
+                p.reverb_predelay_ms = locked(ParamId::Special(sp::REVERB_PREDELAY), p.reverb_predelay_ms);
+                p.reverb_motion_ms = locked(ParamId::Special(sp::REVERB_MOTION), p.reverb_motion_ms);
+                p.reverb_blur = locked(ParamId::Special(sp::REVERB_BLUR), p.reverb_blur);
+                p.high_pass_hz = locked(ParamId::Special(sp::HIGH_PASS), p.high_pass_hz);
+                p.low_pass_hz = locked(ParamId::Special(sp::LOW_PASS), p.low_pass_hz);
+                p.duck = locked(ParamId::Special(sp::DUCK), p.duck);
+                p.duck_curve = locked(ParamId::Special(sp::DUCK_CURVE), p.duck_curve);
+                p.release_ms = locked(ParamId::Special(sp::RELEASE), p.release_ms);
+                p.drive = locked(ParamId::Special(sp::DRIVE), p.drive);
+                p.width = locked(ParamId::Special(sp::WIDTH), p.width);
+                p.echo_mix = locked(ParamId::Special(sp::ECHO_MIX), p.echo_mix);
+                p.echo_ms = locked(ParamId::Special(sp::ECHO_TIME), p.echo_ms);
+                p.echo_feedback = locked(ParamId::Special(sp::ECHO_FEEDBACK), p.echo_feedback);
                 p.level = locked(volume, p.level);
             }
             FxParams::Delay(p) => {
@@ -4086,8 +4121,26 @@ impl Plugin for DrumFlashVst {
                 for bus in 0..crate::track::FX_SLOT_COUNT {
                     let playing = self.sequencer.is_playing();
                     if let Some(params) = self.fx_params_now(bus, playing, clock, bpm) {
-                        self.sound_settings_state
-                            .publish_fx_live(bus, params.live_values(), playing);
+                        // [286] The Rumble's duck on the transport: a new beat (or eighth, or
+                        // sixteenth) starts it, the first beat after Play included.
+                        if let synthesis::FxParams::Rumble(r) = &params {
+                            if playing && r.duck_source < synthesis::rumble_duck_source_kick() {
+                                let per_beat = [1.0f64, 2.0, 4.0][r.duck_source as usize];
+                                let tick = (self.sequencer.beat_position() * per_beat).floor() as i64;
+                                if tick != self.rumble_beat_tick[bus] {
+                                    self.rumble_beat_tick[bus] = tick;
+                                    self.synthesizer.rumble_trigger_duck(bus);
+                                }
+                            } else if !playing {
+                                self.rumble_beat_tick[bus] = i64::MIN;
+                            }
+                        }
+                        let mut live = params.live_values();
+                        // The Rumble's duck, as it is RIGHT NOW (the last value is not a knob).
+                        if let Some(gain) = self.synthesizer.rumble_duck_gain(bus) {
+                            live[synthesis::FX_LIVE_FIELDS - 1] = gain;
+                        }
+                        self.sound_settings_state.publish_fx_live(bus, live, playing);
                         self.synthesizer.set_fx_params(bus, params);
                     }
                 }
@@ -5146,6 +5199,78 @@ mod tests {
             Some(synthesis::FxParams::Delay(d)) => assert!((d.width - 0.6).abs() < 1e-6),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// [286] The whole audio path of a Rumble lane, as the plugin runs it: the Duck and Duck
+    /// Curve sliders of the LANE change what is heard, and the duck gain dips at each kick.
+    #[test]
+    fn the_rumble_lane_ducks_and_its_sliders_change_the_sound() {
+        use nih_plug::params::persist::PersistentField;
+        let run = |duck: f32, curve: f32| -> (f32, f32) {
+            let mut vst = DrumFlashVst::default();
+            let mut layout = crate::track::TrackLayoutState::modular_default_layout();
+            layout.slots[0].fx_send = [0.0, 0.3];
+            layout.slots[13] = crate::track::TrackSlot::active_with_kind(
+                crate::track::TrackInstrumentKind::Rumble,
+            );
+            PersistentField::<crate::track::TrackLayoutState>::set(&vst.params.track_layout, layout.clone());
+            vst.synthesizer.initialize_with_layout(44100.0, &layout);
+            vst.sound_settings_state.reset_slot_to_defaults(13, crate::track::TrackInstrumentKind::Rumble, 0.5);
+            let inst = &vst.sound_settings_state.instruments[13];
+            inst.set_special(synthesis::rumble_sp::DUCK, duck);
+            inst.set_special(synthesis::rumble_sp::DUCK_CURVE, curve);
+            inst.set_special(synthesis::rumble_sp::RELEASE, 400.0);
+            // Duck Trigger = Beat (the default): the transport starts the duck, as `process` does.
+            assert_eq!(inst.special_value(synthesis::rumble_sp::DUCK_SOURCE), 0.0);
+            vst.synthesizer.set_voice_settings(0, synthesis::VoiceSettings::kick());
+            let now = vst.voice_settings_at_step(13, synthesis::DrumVoice::Rumble as usize, 0);
+            vst.synthesizer.set_voice_settings(13, now);
+            vst.sequencer.set_track_params([16; 14], [0.0; 14], [0.0; 14], 16);
+            vst.sequencer.play();
+            let clock = fx_locks::StepClock { steps: 16, swing: 0.0, groove: groove::GrooveType::Straight };
+            let (sends, bypass) = vst.fx_block_state();
+            let (mut lowest, mut energy) = (1.0f32, 0.0f32);
+            let mut last_step = usize::MAX;
+            for n in 0..(44_100 * 8) {
+                vst.sequencer.process_sample(120.0, 44_100.0, 0.0, groove::GrooveType::Straight);
+                let step = vst.sequencer.current_step();
+                if step != last_step {
+                    last_step = step;
+                    if step % 4 == 0 {
+                        vst.synthesizer.trigger(0, 1.0);
+                    }
+                }
+                if n % 32 == 0 {
+                    if let Some(p) = vst.fx_params_now(1, true, clock, 120.0) {
+                        if let synthesis::FxParams::Rumble(r) = &p {
+                            let tick = vst.sequencer.beat_position().floor() as i64;
+                            if r.duck_source == 0 && tick != vst.rumble_beat_tick[1] {
+                                vst.rumble_beat_tick[1] = tick;
+                                vst.synthesizer.rumble_trigger_duck(1);
+                            }
+                        }
+                        vst.synthesizer.set_fx_params(1, p);
+                    }
+                }
+                let mut outs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
+                vst.synthesizer.process_voice_samples_stereo(&mut outs);
+                vst.synthesizer.process_fx(&mut outs, &sends, bypass);
+                if n > 44_100 * 4 {
+                    lowest = lowest.min(vst.synthesizer.rumble_duck_gain(1).unwrap_or(1.0));
+                    energy += outs[13][0].powi(2) + outs[13][1].powi(2);
+                }
+            }
+            (lowest, energy)
+        };
+        let (g_on, e_on) = run(1.0, 0.5);
+        let (g_off, e_off) = run(0.0, 0.5);
+        let (_, e_late) = run(1.0, 1.0);
+        let (_, e_early) = run(1.0, 0.0);
+        println!("duck 1: lowest gain {g_on:.3}, energy {e_on:.4}; duck 0: lowest {g_off:.3}, energy {e_off:.4}; curve 1: {e_late:.4}, curve 0: {e_early:.4}");
+        assert!(g_on < 0.3, "the duck never dips in the plugin path ({g_on})");
+        assert!(g_off > 0.99, "no duck, no dip ({g_off})");
+        assert!((e_on - e_off).abs() > 0.05 * e_off, "Duck must change the sound ({e_on} vs {e_off})");
+        assert!((e_late - e_early).abs() > 0.03 * e_early, "Duck Curve must change the sound ({e_late} vs {e_early})");
     }
 
     #[test]

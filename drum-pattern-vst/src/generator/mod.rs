@@ -178,7 +178,7 @@ fn remap_roles_to_slots(
             TrackInstrumentKind::BassDrum808 => 11,
             TrackInstrumentKind::Perc1 => 12,
             // Skipped above (`is_effect`); kept for exhaustiveness.
-            TrackInstrumentKind::Reverb | TrackInstrumentKind::Delay => 12,
+            TrackInstrumentKind::Reverb | TrackInstrumentKind::Delay | TrackInstrumentKind::Rumble => 12,
         };
         let duplicate_index = assigned_per_voice[base_voice];
         assigned_per_voice[base_voice] += 1;

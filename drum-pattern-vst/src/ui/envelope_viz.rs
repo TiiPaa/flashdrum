@@ -812,6 +812,67 @@ pub fn draw_buzz_gate_graph(
     response
 }
 
+/// [286] The Rumble's duck: what a hit (the beat, or a kick) does to the rumble. At the left edge it arrives
+/// and the rumble drops AT ONCE to the floor (`1 - Duck`); it then swells back to full level
+/// over the Release (the right edge), along the Duck Curve. The height is the level of the
+/// rumble (the top line = untouched). Same maths as the DSP (`duck_ratio`).
+pub fn draw_duck_graph(
+    ui: &mut nih_plug_egui::egui::Ui,
+    depth: f32,
+    curve: f32,
+    release_ms: f32,
+) -> nih_plug_egui::egui::Response {
+    use crate::synthesis::{duck_depth, duck_exponent, duck_ratio};
+    let (graph, painter, response) = prep_graph(ui, GRAPH_H);
+    let depth = duck_depth(depth);
+    let exponent = duck_exponent(curve);
+    let top_y = graph.min.y;
+    let base_y = graph.max.y;
+    draw_grid_lines(&painter, &graph);
+    let y_of = |gain: f32| base_y - (base_y - top_y) * gain.clamp(0.0, 1.0);
+    // The untouched level, for reference.
+    painter.line_segment(
+        [Pos2::new(graph.min.x, y_of(1.0)), Pos2::new(graph.max.x, y_of(1.0))],
+        Stroke::new(1.0, white_a(40)),
+    );
+    const POINTS: usize = 160;
+    let mut points: Vec<Pos2> = Vec::with_capacity(POINTS + 2);
+    points.push(Pos2::new(graph.min.x, y_of(1.0)));
+    for i in 0..=POINTS {
+        let u = i as f32 / POINTS as f32;
+        let gain = 1.0 - depth * duck_ratio(u, exponent);
+        points.push(Pos2::new(graph.min.x + graph.width() * u, y_of(gain)));
+    }
+    painter.add(Shape::line(points, Stroke::new(CURVE_W, stage_decay())));
+    // The kick, at the left edge.
+    painter.line_segment(
+        [Pos2::new(graph.min.x, graph.min.y), Pos2::new(graph.min.x, graph.max.y)],
+        Stroke::new(1.5, stage_attack()),
+    );
+    painter.text(
+        Pos2::new(graph.min.x + 4.0, graph.min.y + 1.0),
+        Align2::LEFT_TOP,
+        "HIT",
+        f_sans_sb(9.0),
+        white_a(110),
+    );
+    painter.text(
+        Pos2::new(graph.max.x - 2.0, graph.min.y + 1.0),
+        Align2::RIGHT_TOP,
+        format!("rumble -{:.0}% at the hit", depth * 100.0),
+        f_sans_sb(9.0),
+        white_a(110),
+    );
+    painter.text(
+        Pos2::new(graph.max.x - 2.0, graph.max.y - 1.0),
+        Align2::RIGHT_BOTTOM,
+        format!("the dip lasts {release_ms:.0} ms"),
+        f_sans_sb(9.0),
+        white_a(110),
+    );
+    response
+}
+
 // -- Multisample graphs (BD6smp / SD6smp) -------------------------------------
 
 /// Depth of the additive filter envelope, mirrors the voices' constant.

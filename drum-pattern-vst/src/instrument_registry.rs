@@ -175,12 +175,25 @@ pub struct SpecialParamDef {
 
 /// [287] Specials added after sessions existed: an older lane stores 0 for
 /// them, below their minimum. `DrumFlashVst::seed_late_specials` reseeds those.
-pub const LATE_SPECIALS: [&str; 5] = [
+pub const LATE_SPECIALS: [&str; 11] = [
     "tom_resonance",
     "sdrex_resonance",
     "buzz_resonance",
     "reverb_highcut",
     "delay_highcut",
+    "reverb_gate",
+    "reverb_gate_release",
+    // The Rumble's, added after its first lanes existed: an older lane holds 0 below the minimum.
+    "rumble_highpass",
+    "rumble_reverb_size",
+    "rumble_reverb_motion",
+    "rumble_reverb_blur",
+];
+
+/// [286] The Rumble's Echo note values: the same menu as the delay's Sync.
+const RUMBLE_ECHO_SYNC: &[&str] = &[
+    "Free", "1/32", "1/16T", "1/16", "1/8T", "1/16.", "1/8", "1/4T", "1/8.", "1/4", "1/2T", "1/4.", "1/2",
+    "1 bar",
 ];
 
 /// [292] TM6(AC) Model: 0 was "Auto" (the model followed the pitch), now retired;
@@ -347,6 +360,25 @@ const fn sp_discrete(
     }
 }
 
+/// [286] The Rumble's sections, titled in the order of the audio flow (the families only
+/// give the rows their module): `None` for any other voice or family.
+pub fn rumble_section_title(voice_idx: usize, family: ParamFamily) -> Option<&'static str> {
+    let is_rumble = INSTRUMENTS
+        .get(voice_idx)
+        .is_some_and(|d| d.special_params.iter().any(|p| p.name == "rumble_duck"));
+    if !is_rumble {
+        return None;
+    }
+    Some(match family {
+        ParamFamily::Osc => "1 · Echo",
+        ParamFamily::Pitch => "2 · Reverb",
+        ParamFamily::Filter => "3 · Filter",
+        ParamFamily::Modulation => "4 · Width & Drive",
+        ParamFamily::Saturation => "5 · Duck",
+        _ => "Output",
+    })
+}
+
 /// Title of the source section (`ParamFamily::Osc`) for a voice: a sampler
 /// shows a **Sample**, Rift a **Texture**, everything else an **Oscillator**.
 /// Decided from the parameters the voice declares, not from its index.
@@ -361,6 +393,9 @@ pub fn source_section_title(voice_idx: usize) -> &'static str {
     }
     if def.is_some_and(|d| d.special_params.iter().any(|p| p.name.starts_with("delay_"))) {
         return "Delay";
+    }
+    if def.is_some_and(|d| d.special_params.iter().any(|p| p.name.starts_with("rumble_"))) {
+        return "Rumble";
     }
     let has = |suffix: &str| {
         def.map(|d| d.special_params.iter().any(|p| p.name.ends_with(suffix)))
@@ -450,7 +485,8 @@ pub fn param_is_lane_global(voice_idx: usize, id: crate::param_id::ParamId) -> b
             .iter()
             .any(|def| def.special_index == index && matches!(
                 def.name,
-                "reverb_glide" | "delay_glide" | "reverb_norestart" | "delay_norestart" | "delay_sync"
+                "reverb_glide" | "reverb_type" | "reverb_gate_on" | "delay_glide" | "reverb_norestart" | "delay_norestart" | "delay_sync"
+                    | "rumble_glide" | "rumble_norestart" | "rumble_echo_sync" | "rumble_duck_source"
             ))
     })
 }
@@ -4946,6 +4982,19 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
             // Loop restart (shown as an ON switch; stored inverted so older lanes, which
             // hold 0 here, keep restarting).
             sp_discrete("reverb_norestart", "Loop Restart", 0.0, 0.0, 1.0, 8, ParamFamily::Osc),
+            // The lane's character (a lane setting, never locked): Hall is the original sound.
+            sp_options(
+                "reverb_type",
+                "Type",
+                0.0,
+                10,
+                ParamFamily::Osc,
+                &["Hall", "Room", "Plate"],
+            ),
+            // Gate: with the switch on, the tail is cut this long after each hit.
+            sp_discrete("reverb_gate_on", "Gate", 0.0, 0.0, 1.0, 12, ParamFamily::Osc),
+            sp_unit("reverb_gate", "Gate Time", 250.0, 10.0, 1500.0, 11, ParamFamily::Osc, " ms"),
+            sp_unit("reverb_gate_release", "Gate Release", 30.0, 2.0, 500.0, 13, ParamFamily::Osc, " ms"),
         ],
         // [freq, decay, vol, filter_freq, attack, release, decay_curve,
         //  release_curve, hold, filter_env_amount, filter_env_decay, analog, stereo]
@@ -4998,6 +5047,74 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
         ],
         // [freq, decay, vol, filter_freq, attack, release, decay_curve,
         //  release_curve, hold, filter_env_amount, filter_env_decay, analog, stereo]
+        // Only Volume (the return level) is exposed; the rest is inert.
+        sound_settings_default: [
+            1000.0, 1.0, 1.0, 20000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.5, 0.0,
+        ],
+        freq_display_ratio: 1.0,
+        filter_type_label: "",
+        is_sampler: false,
+        freq_as_notes: false,
+        analog_fixed: true,
+    },
+    // [286] Rumble: the third send effect of an effect-bus slot: the kick rumble (a long,
+    // dark reverb of what is sent, kept under a low-pass and ducked by the input).
+    // Its knobs are specials 0-3, 5, 6 (4 and 31 are reserved by the p-lock layout);
+    // special 7 is the lane's p-lock mode (Glide), 8 its loop restart.
+    InstrumentDef {
+        index: 29,
+        name: "Rumble",
+        label: "RU",
+        full_name: "Rumble",
+        midi_note: 0,
+        algo_count: 1,
+        standard_params: REVERB_STD,
+        special_params: &[
+            // The Rumble's sections follow the AUDIO FLOW, top to bottom; the Sound tab
+            // titles them (see `rumble_section_title`): Echo (Osc) -> Reverb (Pitch) ->
+            // Filter -> Width & Drive (Modulation) -> Duck (Saturation) -> Output.
+            //
+            // 1. Echo: a mono echo in front of the reverb, it makes the rumble gallop.
+            sp("rumble_echo", "Echo", 0.0, 0.0, 1.0, 11, ParamFamily::Osc),
+            // (Min 0, not 10: a range of more than 20x would make the slider exponential, which is
+            // no use for a time set by feel; the engine keeps it at 1 ms or more.)
+            sp_unit("rumble_echo_time", "Echo Time", 250.0, 0.0, 1000.0, 12, ParamFamily::Osc, " ms"),
+            sp_options("rumble_echo_sync", "Echo Sync", 0.0, 13, ParamFamily::Osc, RUMBLE_ECHO_SYNC),
+            sp("rumble_echo_feedback", "Echo Feedback", 0.3, 0.0, 0.9, 14, ParamFamily::Osc),
+            // 2. The reverb underneath. The defaults are the sound the Rumble always had (the
+            // biggest room, no pre-delay, a gentle 0.7 ms wobble); zeros are what older lanes
+            // hold and are reseeded to these.
+            sp_unit("rumble_decay", "Decay", 3.0, 0.5, 8.0, 0, ParamFamily::Pitch, " s"),
+            sp("rumble_reverb_size", "Reverb Size", 2.0, 0.5, 2.0, 17, ParamFamily::Pitch),
+            sp_unit("rumble_reverb_predelay", "Reverb Pre-delay", 0.0, 0.0, 250.0, 18, ParamFamily::Pitch, " ms"),
+            sp_unit("rumble_reverb_motion", "Reverb Motion", 0.7, 0.1, 3.0, 19, ParamFamily::Pitch, " ms"),
+            // The "blur" of the rumble: 1 = fully smeared (the original sound), low = the kick's
+            // repeats stay distinct.
+            sp("rumble_reverb_blur", "Reverb Blur", 1.0, 0.05, 1.0, 20, ParamFamily::Pitch),
+            // 3. What the rumble keeps.
+            sp_unit("rumble_highpass", "High Pass", 30.0, 20.0, 200.0, 9, ParamFamily::Filter, " Hz"),
+            sp_unit("rumble_lowpass", "Low Pass", 120.0, 40.0, 300.0, 1, ParamFamily::Filter, " Hz"),
+            // 4. Stereo, then the saturation.
+            sp("rumble_width", "Width", 0.0, 0.0, 1.0, 10, ParamFamily::Modulation),
+            sp("rumble_drive", "Drive", 0.25, 0.0, 1.0, 5, ParamFamily::Modulation),
+            // 5. The duck, last: its graph (to the right of the rows) faces these four. What
+            // starts it: Beat (0, the default and what a lane saved before this setting reads)
+            // follows the transport, so it pumps whatever is sent; Audio listens to the input.
+            sp_options(
+                "rumble_duck_source",
+                "Duck Trigger",
+                0.0,
+                16,
+                ParamFamily::Saturation,
+                &["Beat", "1/8", "1/16", "Audio"],
+            ),
+            sp("rumble_duck", "Duck", 0.8, 0.0, 1.0, 2, ParamFamily::Saturation),
+            sp("rumble_duck_curve", "Duck Curve", 0.5, 0.0, 1.0, 15, ParamFamily::Saturation),
+            sp_unit("rumble_release", "Duck Length", 250.0, 20.0, 1000.0, 3, ParamFamily::Saturation, " ms"),
+            // 6. Output: the lane Volume, and how the lane's p-locks behave.
+            sp_discrete("rumble_glide", "Glide", 0.0, 0.0, 1.0, 7, ParamFamily::Output),
+            sp_discrete("rumble_norestart", "Loop Restart", 0.0, 0.0, 1.0, 8, ParamFamily::Output),
+        ],
         // Only Volume (the return level) is exposed; the rest is inert.
         sound_settings_default: [
             1000.0, 1.0, 1.0, 20000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.5, 0.0,
@@ -5366,9 +5483,18 @@ mod tests {
                 ("reverb_predelay", " ms"),
                 ("reverb_lowcut", " Hz"),
                 ("reverb_highcut", " Hz"),
+                ("reverb_gate", " ms"),
+                ("reverb_gate_release", " ms"),
                 ("delay_time", " ms"),
                 ("delay_lowcut", " Hz"),
                 ("delay_highcut", " Hz"),
+                ("rumble_echo_time", " ms"),
+                ("rumble_decay", " s"),
+                ("rumble_reverb_predelay", " ms"),
+                ("rumble_reverb_motion", " ms"),
+                ("rumble_highpass", " Hz"),
+                ("rumble_lowpass", " Hz"),
+                ("rumble_release", " ms"),
             ]
         );
 
