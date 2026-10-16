@@ -262,7 +262,7 @@ impl ReverbParams {
             damping: fin(self.damping, d.damping).clamp(0.0, 1.0),
             predelay_ms: fin(self.predelay_ms, d.predelay_ms).clamp(0.0, MAX_PREDELAY_MS),
             low_cut_hz: fin(self.low_cut_hz, d.low_cut_hz).clamp(20.0, 1000.0),
-            high_cut_hz: fin(self.high_cut_hz, d.high_cut_hz).clamp(1000.0, 20_000.0),
+            high_cut_hz: fin(self.high_cut_hz, d.high_cut_hz).clamp(20.0, 20_000.0),
             width: fin(self.width, d.width).clamp(0.0, 1.0),
             level: fin(self.level, d.level).clamp(0.0, 2.0),
             kind: self.kind,
@@ -1238,5 +1238,22 @@ mod tests {
             // field, the flutter that sounds metallic.
             assert!(ned(&ir, 100.0) > 0.8 && ned(&ir, 200.0) > 0.9, "{kind:?} is sparse: {}", dens.join(" "));
         }
+    }
+
+    /// [295] The High Cut goes down to 20 Hz: the return is then a slow, soft swell with almost
+    /// nothing above it, and stays finite and bounded.
+    #[test]
+    fn the_high_cut_can_go_down_to_20_hz() {
+        let ir = impulse_response(
+            ReverbParams {
+                high_cut_hz: 20.0,
+                ..ReverbParams::default()
+            },
+            2.0,
+        );
+        assert!(ir.iter().all(|(l, r)| l.is_finite() && r.is_finite() && l.abs() < 4.0 && r.abs() < 4.0));
+        let open = impulse_response(ReverbParams::default(), 2.0);
+        assert!(energy(&ir) < 0.2 * energy(&open), "a 20 Hz high cut must take nearly everything out");
+        assert_eq!(ReverbParams { high_cut_hz: 5.0, ..ReverbParams::default() }.sanitized().high_cut_hz, 20.0);
     }
 }

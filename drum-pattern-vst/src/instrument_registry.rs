@@ -4974,7 +4974,7 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
             sp("reverb_damping", "Damping", 0.5, 0.0, 1.0, 2, ParamFamily::Osc),
             sp_unit("reverb_predelay", "Pre-delay", 20.0, 0.0, 250.0, 3, ParamFamily::Osc, " ms"),
             sp_unit("reverb_lowcut", "Low Cut", 120.0, 20.0, 1000.0, 5, ParamFamily::Osc, " Hz"),
-            sp_unit("reverb_highcut", "High Cut", 20000.0, 1000.0, 20000.0, 9, ParamFamily::Osc, " Hz"),
+            sp_unit("reverb_highcut", "High Cut", 20000.0, 20.0, 20000.0, 9, ParamFamily::Osc, " Hz"),
             sp("reverb_width", "Width", 1.0, 0.0, 1.0, 6, ParamFamily::Osc),
             // p-lock mode of this lane: 0 = a lock holds until the next, 1 = the value
             // glides from one lock to the next (see `fx_locks.rs`).
@@ -5020,11 +5020,13 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
         algo_count: 1,
         standard_params: REVERB_STD,
         special_params: &[
-            sp_unit("delay_time", "Time", 375.0, 1.0, 2000.0, 0, ParamFamily::Osc, " ms"),
+            // (Min 0, not 1: the panel draws any range of more than 20x on an exponential slider, no use
+            // for a time set by feel; the engine keeps it at 1 ms or more.)
+            sp_unit("delay_time", "Time", 375.0, 0.0, 2000.0, 0, ParamFamily::Osc, " ms"),
             sp("delay_feedback", "Feedback", 0.4, 0.0, 0.95, 1, ParamFamily::Osc),
             sp("delay_damping", "Damping", 0.4, 0.0, 1.0, 2, ParamFamily::Osc),
             sp_unit("delay_lowcut", "Low Cut", 100.0, 20.0, 1000.0, 3, ParamFamily::Osc, " Hz"),
-            sp_unit("delay_highcut", "High Cut", 20000.0, 1000.0, 20000.0, 9, ParamFamily::Osc, " Hz"),
+            sp_unit("delay_highcut", "High Cut", 20000.0, 20.0, 20000.0, 9, ParamFamily::Osc, " Hz"),
             sp("delay_pingpong", "Ping-pong", 0.5, 0.0, 1.0, 5, ParamFamily::Osc),
             sp("delay_width", "Width", 0.0, 0.0, 1.0, 10, ParamFamily::Osc),
             // Free = the Time knob; the others lock the time to a note value at the

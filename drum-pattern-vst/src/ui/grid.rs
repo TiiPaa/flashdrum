@@ -1686,11 +1686,8 @@ pub fn activate_slot(
         return;
     }
     new_state.slots[slot_idx] = TrackSlot::active_with_kind(kind);
-    // [286] An effect bus is named after its place: Fx1 (lane 13), Fx2 (lane 14).
-    if kind.is_effect() {
-        new_state.slots[slot_idx].name =
-            format!("Fx{}", slot_idx.saturating_sub(crate::track::FX_FIRST_SLOT) + 1);
-    }
+    // [298] An effect lane is named after its effect (Reverb, Delay, Rumble), like any lane
+    // is named after its instrument: `active_with_kind` already did it.
     PersistentField::<TrackLayoutState>::set(&params.track_layout, new_state);
     // The slot's settings still hold whatever they were initialized with
     // (legacy defaults of the same index) — align them with the new kind.

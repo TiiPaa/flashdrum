@@ -120,7 +120,7 @@ impl DelayParams {
             feedback: fin(self.feedback, d.feedback).clamp(0.0, 0.95),
             damping: fin(self.damping, d.damping).clamp(0.0, 1.0),
             low_cut_hz: fin(self.low_cut_hz, d.low_cut_hz).clamp(20.0, 1000.0),
-            high_cut_hz: fin(self.high_cut_hz, d.high_cut_hz).clamp(1000.0, 20_000.0),
+            high_cut_hz: fin(self.high_cut_hz, d.high_cut_hz).clamp(20.0, 20_000.0),
             pingpong: fin(self.pingpong, d.pingpong).clamp(0.0, 1.0),
             width: fin(self.width, d.width).clamp(0.0, 1.0),
             level: fin(self.level, d.level).clamp(0.0, 2.0),
@@ -669,5 +669,24 @@ mod tests {
         // Slow tempo: a bar would be longer than the delay line: it is capped.
         assert_eq!(synced_time_ms(13, 40.0), Some(MAX_TIME_MS));
         assert_eq!(synced_time_ms(99, 120.0), None);
+    }
+
+    /// [295] The High Cut goes down to 20 Hz: the repeats stay finite and bounded, and are
+    /// much quieter than with it open.
+    #[test]
+    fn the_high_cut_can_go_down_to_20_hz() {
+        let low = impulse_response(
+            DelayParams {
+                high_cut_hz: 20.0,
+                feedback: 0.7,
+                ..DelayParams::default()
+            },
+            3.0,
+        );
+        assert!(low.iter().all(|(l, r)| l.is_finite() && r.is_finite() && l.abs() < 4.0 && r.abs() < 4.0));
+        let open = impulse_response(DelayParams { feedback: 0.7, ..DelayParams::default() }, 3.0);
+        let e = |v: &[(f32, f32)]| v.iter().map(|(l, r)| l * l + r * r).sum::<f32>();
+        assert!(e(&low) < 0.3 * e(&open));
+        assert_eq!(DelayParams { high_cut_hz: 5.0, ..DelayParams::default() }.sanitized().high_cut_hz, 20.0);
     }
 }

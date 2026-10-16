@@ -805,6 +805,23 @@ impl TrackLayoutState {
     /// The sound settings are left untouched. They were stored against the old
     /// voice's parameter shape, so a migrated lane does not sound exactly like
     /// the retired voice did - that is the point of retiring it.
+    /// [298] An effect lane used to be named after its place, "Fx1" / "Fx2": it is now named
+    /// after its effect. Only those two exact automatic names are replaced, so a name the user
+    /// typed is kept. Returns whether anything changed.
+    pub fn migrate_fx_names(&mut self) -> bool {
+        let mut changed = false;
+        for (i, slot) in self.slots.iter_mut().enumerate() {
+            if is_fx_slot(i)
+                && slot.kind.is_effect()
+                && slot.name == format!("Fx{}", i - FX_FIRST_SLOT + 1)
+            {
+                slot.name = slot.kind.default_name().to_string();
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn migrate_retired_kinds(&mut self) -> bool {
         let mut changed = false;
         for slot in self.slots.iter_mut() {
@@ -1181,6 +1198,7 @@ impl<'a> nih_plug::params::persist::PersistentField<'a, TrackLayoutState>
         // the atomic layout from anywhere ([203] [204]).
         let mut new_value = new_value;
         new_value.migrate_retired_kinds();
+        new_value.migrate_fx_names();
         self.state.update_from_state(&new_value);
         if let Ok(mut names) = self.slot_names.lock() {
             for (i, slot) in new_value.slots.iter().enumerate() {
@@ -1814,11 +1832,38 @@ mod tests {
     fn a_lane_preset_keeps_the_current_effect_buses() {
         let mut current = TrackLayoutState::modular_default_layout();
         current.slots[12] = TrackSlot::active_with_kind(TrackInstrumentKind::Reverb);
-        current.slots[12].name = "Fx1".to_string();
+        current.slots[12].name = "Ma reverb".to_string();
         let mut incoming = TrackLayoutState::preset_12_layout();
         incoming.keep_globals_of(&current);
         assert_eq!(incoming.slots[12].kind, TrackInstrumentKind::Reverb);
-        assert_eq!(incoming.slots[12].name, "Fx1");
+        assert_eq!(incoming.slots[12].name, "Ma reverb");
         assert!(!incoming.slots[13].active);
+    }
+
+    /// [298] A new effect lane is named after its effect, and a lane saved as "Fx1" / "Fx2"
+    /// takes the effect's name too, while a name the user typed stays.
+    #[test]
+    fn an_effect_lane_is_named_after_its_effect() {
+        for kind in [
+            TrackInstrumentKind::Reverb,
+            TrackInstrumentKind::Delay,
+            TrackInstrumentKind::Rumble,
+        ] {
+            assert_eq!(TrackSlot::active_with_kind(kind).name, kind.default_name());
+        }
+        let mut layout = TrackLayoutState::empty_layout();
+        layout.slots[12] = TrackSlot::active_with_kind(TrackInstrumentKind::Reverb);
+        layout.slots[12].name = "Fx1".to_string();
+        layout.slots[13] = TrackSlot::active_with_kind(TrackInstrumentKind::Rumble);
+        layout.slots[13].name = "Fx2".to_string();
+        layout.slots[0] = TrackSlot::active_with_kind(TrackInstrumentKind::Kick);
+        layout.slots[0].name = "Fx1".to_string(); // an instrument lane keeps whatever it was called
+        assert!(layout.migrate_fx_names());
+        assert_eq!(layout.slots[12].name, "Reverb");
+        assert_eq!(layout.slots[13].name, "Rumble");
+        assert_eq!(layout.slots[0].name, "Fx1");
+        layout.slots[12].name = "Ma reverb".to_string();
+        assert!(!layout.migrate_fx_names(), "a typed name is kept");
+        assert_eq!(layout.slots[12].name, "Ma reverb");
     }
 }
