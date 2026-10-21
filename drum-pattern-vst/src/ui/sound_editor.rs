@@ -2041,11 +2041,28 @@ pub fn draw_sound_panel(
             // [286] Sends to the effect buses. On the lane they are its own send levels;
             // on a selected cell they are that step's locks (the hit keeps them).
             if !layout_snapshot.slots[slot].kind.is_effect() {
-                let sends_module = module_begin(ui, Some("Sends"));
+                // [303] With a cell selected the sliders are THAT STEP's sends (a lock), not
+                // the lane's: the title says so, or a lane send seems to do nothing.
+                let step_scope = src.salt().0 != 0;
+                let sends_module = module_begin(
+                    ui,
+                    Some(if step_scope { "Sends - this step only" } else { "Sends" }),
+                );
                 for bus in 0..crate::track::FX_SLOT_COUNT {
                     let id = ParamId::FxSend(bus);
                     let bus_slot = &layout_snapshot.slots[crate::track::FX_FIRST_SLOT + bus];
                     let bus_on = bus_slot.active && bus_slot.kind.is_effect();
+                    // [298] The bus is named after its effect: the row says where it sends.
+                    let send_label = if bus_on {
+                        let name = if bus_slot.name.is_empty() {
+                            bus_slot.kind.default_name().to_string()
+                        } else {
+                            bus_slot.name.clone()
+                        };
+                        format!("> {}", name.chars().take(10).collect::<String>())
+                    } else {
+                        format!("Fx{}", bus + 1)
+                    };
                     let send_help = row_help(&*src, id, help::TRACK_FX_SEND.to_string());
                     let current = src.get(id) * 100.0;
                     let default = src.inherited(id) * 100.0;
@@ -2060,7 +2077,7 @@ pub fn draw_sound_panel(
                                         let mut pct = current;
                                         let row = draw_editor_slider_row(
                                             ui,
-                                            if bus == 0 { "Fx1" } else { "Fx2" },
+                                            &send_label,
                                             &mut pct,
                                             0.0,
                                             100.0,

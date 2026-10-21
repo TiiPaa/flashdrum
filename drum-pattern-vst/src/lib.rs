@@ -5273,6 +5273,48 @@ mod tests {
         assert!((e_late - e_early).abs() > 0.03 * e_early, "Duck Curve must change the sound ({e_late} vs {e_early})");
     }
 
+    /// The send slider of the Effects tab, end to end: the editor's source writes the
+    /// lane's send, the audio thread reads it and the bus returns a tail.
+    #[test]
+    fn the_send_slider_reaches_the_effect_bus() {
+        use nih_plug::params::persist::PersistentField;
+        use crate::ui::param_source::ParamSource;
+        let mut vst = DrumFlashVst::default();
+        let mut layout = crate::track::TrackLayoutState::modular_default_layout();
+        layout.slots[12] = crate::track::TrackSlot::active_with_kind(crate::track::TrackInstrumentKind::Reverb);
+        PersistentField::<crate::track::TrackLayoutState>::set(&vst.params.track_layout, layout.clone());
+        vst.synthesizer.initialize_with_layout(44100.0, &layout);
+        vst.sound_settings_state.reset_slot_to_defaults(12, crate::track::TrackInstrumentKind::Reverb, 0.5);
+        let now = vst.voice_settings_at_step(12, synthesis::DrumVoice::Reverb as usize, 0);
+        vst.synthesizer.set_voice_settings(12, now);
+        vst.synthesizer.set_voice_settings(0, synthesis::VoiceSettings::kick());
+        // The slider, through the same source the Effects tab uses.
+        struct Algo;
+        impl crate::ui::param_source::AlgoSink for Algo {
+            fn get(&self) -> u8 {
+                0
+            }
+            fn set(&self, _: u8) {}
+        }
+        let algo = Algo;
+        let mut src = crate::ui::param_source::GlobalSource::new(&vst.sound_settings_state, 0, 0, &algo)
+            .with_layout(&vst.params.track_layout);
+        src.set(crate::param_id::ParamId::FxSend(0), 0.8);
+        src.commit();
+        assert!((vst.params.track_layout.state.fx_send(0, 0) - 0.8).abs() < 1e-6, "the slider wrote the lane");
+        let (sends, bypass) = vst.fx_block_state();
+        assert!((sends[0][0] - 0.8).abs() < 1e-6, "the audio thread reads it");
+        vst.synthesizer.trigger(0, 1.0);
+        let mut energy = 0.0f32;
+        for _ in 0..44_100 {
+            let mut outs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
+            vst.synthesizer.process_voice_samples_stereo(&mut outs);
+            vst.synthesizer.process_fx(&mut outs, &sends, bypass);
+            energy += outs[12][0].powi(2) + outs[12][1].powi(2);
+        }
+        assert!(energy > 0.01, "the bus must return the kick ({energy})");
+    }
+
     #[test]
     fn the_locked_decay_is_not_heard_after_the_loop_wraps() {
         use nih_plug::params::persist::PersistentField;
