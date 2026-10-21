@@ -41,6 +41,18 @@ const MIN_GRAIN_FADE_SECS: f32 = 0.001;
 /// Top of the filter sweep, as in `buzz.rs` — the envelope opens the cutoff
 /// toward it and the cutoff falls back to its own setting afterwards.
 const FILTER_OPEN_HZ: f32 = 20000.0;
+
+/// The cutoff the Filter LFO gives: `lfo` (-1..1) swings the cutoff by +-`depth` octaves around
+/// `base`. When the base is so low (or so high) that half of that swing would fall outside the
+/// filter's range and be eaten by the clamp (the 20 Hz floor with a full depth: only the upward
+/// half was heard, i.e. half the amplitude), the CENTRE of the swing moves just far enough that
+/// the whole +-`depth` fits. Anywhere with room the base stays the centre, so nothing else changes.
+fn lfo_cutoff(base: f32, lfo: f32, depth: f32) -> f32 {
+    let (lo, hi) = (20.0f32.log2(), FILTER_OPEN_HZ.log2());
+    let depth = depth.min(0.5 * (hi - lo));
+    let centre = base.clamp(20.0, FILTER_OPEN_HZ).log2().clamp(lo + depth, hi - depth);
+    2f32.powf(centre + lfo.clamp(-1.0, 1.0) * depth).clamp(20.0, FILTER_OPEN_HZ)
+}
 /// Anti-click floor for the filter-envelope attack, as in `buzz.rs`.
 const MIN_FILTER_ATTACK_S: f32 = 0.0005;
 /// Steepness of the pitch sweep, fixed as on the other voices. Public so the
@@ -373,8 +385,7 @@ impl RiftVoice {
         let cutoff = if depth > 0.0 {
             // The LFO rides the swept cutoff in OCTAVES, so its depth means the
             // same thing wherever the envelope has taken the filter.
-            (self.filter_cutoff(env) * 2f32.powf(self.filter_lfo_value * depth))
-                .clamp(20.0, FILTER_OPEN_HZ)
+            lfo_cutoff(self.filter_cutoff(env), self.filter_lfo_value, depth)
         } else {
             self.filter_cutoff(env)
         };
@@ -1737,5 +1748,29 @@ mod tests {
             at_end <= 1.5 * before.max(1e-5),
             "step at the end of the hit: {at_end} against {before} just before (was 0.00097 before the declicked cut)"
         );
+    }
+
+    /// [297] The Filter LFO keeps its whole amplitude at the bottom (and the top) of the Filter
+    /// range, where half of the old swing fell outside it.
+    #[test]
+    fn the_filter_lfo_keeps_its_full_swing_at_the_edges() {
+        // At the 20 Hz floor with two octaves: from 20 Hz to 20 * 2^4 = 320 Hz (it was 20 -> 80).
+        assert!((lfo_cutoff(20.0, -1.0, 2.0) - 20.0).abs() < 0.01);
+        assert!((lfo_cutoff(20.0, 1.0, 2.0) - 320.0).abs() < 0.5);
+        // With room, nothing changes: two octaves around 1 kHz.
+        assert!((lfo_cutoff(1000.0, -1.0, 2.0) - 250.0).abs() < 0.1);
+        assert!((lfo_cutoff(1000.0, 1.0, 2.0) - 4000.0).abs() < 0.5);
+        // At the top the swing goes DOWN as far as it needs.
+        assert!((lfo_cutoff(FILTER_OPEN_HZ, 1.0, 2.0) - FILTER_OPEN_HZ).abs() < 1.0);
+        assert!((lfo_cutoff(FILTER_OPEN_HZ, -1.0, 2.0) - FILTER_OPEN_HZ / 16.0).abs() < 1.0);
+        // The widest swing at the floor: 20 Hz up to 1280 Hz.
+        assert!((lfo_cutoff(20.0, 1.0, 3.0) - 1280.0).abs() < 2.0);
+        // No LFO movement, no change of the centre's reach: the value stays inside the range.
+        for base in [20.0, 200.0, 2000.0, FILTER_OPEN_HZ] {
+            for lfo in [-1.0, -0.3, 0.0, 0.7, 1.0] {
+                let c = lfo_cutoff(base, lfo, 3.0);
+                assert!((20.0..=FILTER_OPEN_HZ).contains(&c));
+            }
+        }
     }
 }
