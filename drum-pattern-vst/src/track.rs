@@ -516,6 +516,11 @@ impl Default for TrackRouting {
     }
 }
 
+/// [303] The insert chain order packed 4 bits per position (for one atomic).
+fn pack_insert_order(order: [u8; crate::synthesis::inserts::INSERT_COUNT]) -> u32 {
+    order.iter().enumerate().fold(0u32, |bits, (pos, n)| bits | (u32::from(*n & 0xF) << (4 * pos)))
+}
+
 /// One internal track slot.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TrackSlot {
@@ -988,6 +993,8 @@ pub struct AtomicTrackLayout {
     pub slot_fx_send: [[AtomicU32; FX_SLOT_COUNT]; MAX_TRACKS],
     /// [303] The lane inserts: a bit per insert that is on, and every knob (f32 bits).
     pub slot_insert_on: [AtomicU8; MAX_TRACKS],
+    /// [303] The chain order, 4 bits per position.
+    pub slot_insert_order: [AtomicU32; MAX_TRACKS],
     pub slot_insert_values: [[[AtomicU32; crate::synthesis::inserts::INSERT_PARAMS];
         crate::synthesis::inserts::INSERT_COUNT]; MAX_TRACKS],
     pub global_channel: AtomicU8,
@@ -1004,6 +1011,7 @@ impl AtomicTrackLayout {
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
+            slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
             slot_insert_values: std::array::from_fn(|_| {
                 std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0)))
             }),
@@ -1063,6 +1071,7 @@ impl AtomicTrackLayout {
                 .enumerate()
                 .fold(0u8, |bits, (n, on)| if *on { bits | (1 << n) } else { bits });
             self.slot_insert_on[i].store(on_bits, Ordering::Relaxed);
+            self.slot_insert_order[i].store(pack_insert_order(inserts.order), Ordering::Relaxed);
             for (n, values) in inserts.values.iter().enumerate() {
                 for (k, v) in values.iter().enumerate() {
                     self.slot_insert_values[i][n][k].store(v.to_bits(), Ordering::Relaxed);
@@ -1100,8 +1109,10 @@ impl AtomicTrackLayout {
             return InsertSettings::default();
         }
         let bits = self.slot_insert_on[slot].load(Ordering::Relaxed);
+        let order_bits = self.slot_insert_order[slot].load(Ordering::Relaxed);
         InsertSettings {
             on: std::array::from_fn(|n| bits & (1 << n) != 0),
+            order: std::array::from_fn(|pos| ((order_bits >> (4 * pos)) & 0xF) as u8),
             values: std::array::from_fn(|n| {
                 std::array::from_fn(|k| {
                     f32::from_bits(self.slot_insert_values[slot][n][k].load(Ordering::Relaxed))
@@ -1188,6 +1199,7 @@ impl Default for AtomicTrackLayout {
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
+            slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
             slot_insert_values: std::array::from_fn(|_| {
                 std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0)))
             }),
@@ -1930,6 +1942,7 @@ mod tests {
         ins.on[DRIVE] = true;
         ins.values[FILTER][1] = 440.0;
         ins.values[DRIVE][1] = 20.0;
+        ins.order = [5, 0, 1, 2, 3, 4];
         layout.slots[3].inserts = ins;
         let atomic = AtomicTrackLayout::new();
         atomic.update_from_state(&layout);

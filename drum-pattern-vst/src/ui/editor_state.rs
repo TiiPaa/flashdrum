@@ -141,6 +141,9 @@ pub struct EditorUIState {
     pub track_preset_cache_key: Option<(usize, usize)>,
     #[serde(default)]
     pub sound_editor_tab: SoundEditorTab,
+    /// [303] Which inserts show their knobs in the Effects tab (folded by default).
+    #[serde(default)]
+    pub insert_unfolded: [bool; crate::synthesis::inserts::INSERT_COUNT],
     #[serde(default)]
     pub bottom_panel_tab: usize,
     pub selected_pattern_slot: usize,

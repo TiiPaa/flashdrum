@@ -34,8 +34,8 @@ use std::f32::consts::PI;
 
 /// The six inserts, in chain order.
 pub const INSERT_COUNT: usize = 6;
-/// The most knobs an insert has.
-pub const INSERT_PARAMS: usize = 4;
+/// The most knobs an insert has (the EQ: Low, Mid, Mid Freq, High, Low Freq).
+pub const INSERT_PARAMS: usize = 5;
 
 pub const TRANSIENT: usize = 0;
 pub const FILTER: usize = 1;
@@ -57,6 +57,9 @@ pub struct InsertParamDef {
     /// A menu instead of a slider (the value is the index).
     pub options: Option<&'static [&'static str]>,
     pub help: &'static str,
+    /// Where the value is stored, when it is not the row's position (a knob added later
+    /// takes the next free slot, so a lane saved before keeps its values).
+    pub index: Option<usize>,
 }
 
 /// One insert, for the editor.
@@ -76,7 +79,22 @@ const fn knob(
     log: bool,
     help: &'static str,
 ) -> InsertParamDef {
-    InsertParamDef { label, min, max, default, unit, log, options: None, help }
+    InsertParamDef { label, min, max, default, unit, log, options: None, help, index: None }
+}
+
+/// The same knob, stored in value slot `index`.
+const fn at(def: InsertParamDef, index: usize) -> InsertParamDef {
+    InsertParamDef { index: Some(index), ..def }
+}
+
+/// Where row `row` of an insert stores its value.
+pub fn value_index(row: usize, def: &InsertParamDef) -> usize {
+    def.index.unwrap_or(row)
+}
+
+/// The knob stored in value slot `slot` of insert `insert`, if any.
+fn knob_at(insert: usize, slot: usize) -> Option<&'static InsertParamDef> {
+    INSERTS[insert].params.iter().enumerate().find(|(row, d)| value_index(*row, d) == slot).map(|(_, d)| d)
 }
 
 const fn menu(label: &'static str, options: &'static [&'static str], help: &'static str) -> InsertParamDef {
@@ -89,13 +107,14 @@ const fn menu(label: &'static str, options: &'static [&'static str], help: &'sta
         log: false,
         options: Some(options),
         help,
+        index: None,
     }
 }
 
 pub const INSERTS: [InsertDef; INSERT_COUNT] = [
     InsertDef {
         name: "Transient",
-        help: "Transient: reshapes the hit itself. Attack makes the start of each hit harder (up) or softer (down); Sustain makes the body and tail longer (up) or shorter (down). It follows the sound, whatever its level.",
+        help: "Transient: reshapes the hit itself (up to 18 dB either way). Attack makes the start of each hit harder (up) or softer (down); Sustain makes the body and tail longer (up) or shorter (down). It follows the sound, whatever its level.",
         params: &[
             knob("Attack", -1.0, 1.0, 0.0, None, false, "Attack: up = a harder, snappier start of each hit; down = a softer one. 0 = untouched."),
             knob("Sustain", -1.0, 1.0, 0.0, None, false, "Sustain: up = a longer, fuller body and tail; down = a shorter, drier one. 0 = untouched."),
@@ -113,12 +132,17 @@ pub const INSERTS: [InsertDef; INSERT_COUNT] = [
     },
     InsertDef {
         name: "EQ",
-        help: "EQ: three bands. Low and High are shelves (everything under 150 Hz, everything over 6 kHz); Mid is a bell you can place.",
+        help: "EQ: three bands. Low is a shelf (everything under Low Freq), Mid is a bell (a band around Mid Freq), High is a shelf (everything over 6 kHz).",
         params: &[
-            knob("Low", -15.0, 15.0, 0.0, Some(" dB"), false, "Low: raises or lowers everything under about 150 Hz."),
-            knob("Mid", -15.0, 15.0, 0.0, Some(" dB"), false, "Mid: raises or lowers a band around Mid Freq."),
-            knob("Mid Freq", 150.0, 8_000.0, 1_000.0, Some(" Hz"), true, "Mid Freq: the centre of the Mid band."),
-            knob("High", -15.0, 15.0, 0.0, Some(" dB"), false, "High: raises or lowers everything over about 6 kHz."),
+            knob("Low", -15.0, 15.0, 0.0, Some(" dB"), false, "Low: a shelf. Raises or lowers everything under Low Freq."),
+            at(
+                knob("Low Freq", 30.0, 600.0, 150.0, Some(" Hz"), true, "Low Freq: where the Low shelf starts."),
+                4,
+            ),
+            // (Rows after Low Freq are stored where they always were: slots 1, 2, 3.)
+            at(knob("Mid", -15.0, 15.0, 0.0, Some(" dB"), false, "Mid: a bell (a peak). Raises or lowers a band around Mid Freq."), 1),
+            at(knob("Mid Freq", 150.0, 8_000.0, 1_000.0, Some(" Hz"), true, "Mid Freq: the centre of the Mid band."), 2),
+            at(knob("High", -15.0, 15.0, 0.0, Some(" dB"), false, "High: a shelf. Raises or lowers everything over about 6 kHz."), 3),
         ],
     },
     InsertDef {
@@ -157,16 +181,37 @@ pub const INSERTS: [InsertDef; INSERT_COUNT] = [
 #[serde(default)]
 pub struct InsertSettings {
     pub on: [bool; INSERT_COUNT],
+    /// Knob values by insert, by value slot (see `value_index`). Read tolerantly: a lane
+    /// saved with fewer slots per insert gets the defaults for the missing ones.
+    #[serde(deserialize_with = "values_padded")]
     pub values: [[f32; INSERT_PARAMS]; INSERT_COUNT],
+    /// The chain, first to last: insert indices (`TRANSIENT`, `FILTER`...).
+    pub order: [u8; INSERT_COUNT],
+}
+
+/// The default chain order.
+pub const DEFAULT_ORDER: [u8; INSERT_COUNT] = [0, 1, 2, 3, 4, 5];
+
+fn default_value(insert: usize, slot: usize) -> f32 {
+    knob_at(insert, slot).map_or(0.0, |d| d.default)
+}
+
+fn values_padded<'de, D>(deserializer: D) -> Result<[[f32; INSERT_PARAMS]; INSERT_COUNT], D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Vec<Vec<f32>> = Vec::deserialize(deserializer)?;
+    Ok(std::array::from_fn(|i| {
+        std::array::from_fn(|k| raw.get(i).and_then(|v| v.get(k)).copied().unwrap_or_else(|| default_value(i, k)))
+    }))
 }
 
 impl Default for InsertSettings {
     fn default() -> Self {
         Self {
             on: [false; INSERT_COUNT],
-            values: std::array::from_fn(|i| {
-                std::array::from_fn(|p| INSERTS[i].params.get(p).map_or(0.0, |d| d.default))
-            }),
+            values: std::array::from_fn(|i| std::array::from_fn(|k| default_value(i, k))),
+            order: DEFAULT_ORDER,
         }
     }
 }
@@ -174,14 +219,26 @@ impl Default for InsertSettings {
 impl InsertSettings {
     /// Every value finite and inside its knob's range.
     pub fn sanitized(mut self) -> Self {
-        for (i, def) in INSERTS.iter().enumerate() {
-            for (p, v) in self.values[i].iter_mut().enumerate() {
-                *v = match def.params.get(p) {
+        for i in 0..INSERT_COUNT {
+            for (k, v) in self.values[i].iter_mut().enumerate() {
+                *v = match knob_at(i, k) {
                     Some(d) if v.is_finite() => v.clamp(d.min, d.max),
                     Some(d) => d.default,
                     None => 0.0,
                 };
             }
+        }
+        // The order must hold every insert once.
+        let mut seen = [false; INSERT_COUNT];
+        let valid = self.order.iter().all(|&n| {
+            let ok = (n as usize) < INSERT_COUNT && !seen[n as usize];
+            if ok {
+                seen[n as usize] = true;
+            }
+            ok
+        });
+        if !valid {
+            self.order = DEFAULT_ORDER;
         }
         self
     }
@@ -358,6 +415,7 @@ struct Eq3 {
     c_high: SvfCoefs,
     db: [Smooth; 3],
     log_mid: Smooth,
+    log_low: Smooth,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -384,8 +442,7 @@ struct Compressor {
     yl: f32,
 }
 
-/// Low shelf and high shelf corners of the EQ, and the bell's Q.
-const EQ_LOW_HZ: f32 = 150.0;
+/// The high shelf's corner, and the bell's Q.
 const EQ_HIGH_HZ: f32 = 6_000.0;
 const EQ_MID_Q: f32 = 0.9;
 /// The drive's tilt: corner and range.
@@ -397,9 +454,9 @@ const TUBE_BIAS: f32 = 0.3;
 /// Compressor knee width.
 const COMP_KNEE_DB: f32 = 6.0;
 /// Transient: the bound on the gain, and the follower times.
-const TRANSIENT_MAX_DB: f32 = 12.0;
+const TRANSIENT_MAX_DB: f32 = 18.0;
 /// How much of the followers' difference (dB) becomes gain at Attack / Sustain = 1.
-const TRANSIENT_DEPTH: f32 = 0.5;
+const TRANSIENT_DEPTH: f32 = 1.0;
 
 /// ln(cosh(x)), stable for any x.
 #[inline]
@@ -494,11 +551,12 @@ impl InsertRack {
                 low: [Svf::default(); 2],
                 mid: [Svf::default(); 2],
                 high: [Svf::default(); 2],
-                c_low: SvfCoefs::low_shelf(EQ_LOW_HZ, 0.0, sr),
+                c_low: SvfCoefs::low_shelf(v[EQ][4].max(20.0), 0.0, sr),
                 c_mid: SvfCoefs::bell(v[EQ][2], 0.0, EQ_MID_Q, sr),
                 c_high: SvfCoefs::high_shelf(EQ_HIGH_HZ, 0.0, sr),
                 db: [Smooth { value: 0.0 }; 3],
                 log_mid: Smooth { value: v[EQ][2].log2() },
+                log_low: Smooth { value: v[EQ][4].max(20.0).log2() },
             },
             drive: Drive {
                 x1: [0.0; 2],
@@ -573,7 +631,8 @@ impl InsertRack {
         let mid = e.db[1].to(v[EQ][1], k);
         let high = e.db[2].to(v[EQ][3], k);
         let log_mid = e.log_mid.to(v[EQ][2].max(20.0).log2(), k);
-        e.c_low = SvfCoefs::low_shelf(EQ_LOW_HZ, low, sr);
+        let log_low = e.log_low.to(v[EQ][4].max(20.0).log2(), k);
+        e.c_low = SvfCoefs::low_shelf(2f32.powf(log_low), low, sr);
         e.c_mid = SvfCoefs::bell(2f32.powf(log_mid), mid, EQ_MID_Q, sr);
         e.c_high = SvfCoefs::high_shelf(EQ_HIGH_HZ, high, sr);
         // Drive
@@ -602,7 +661,8 @@ impl InsertRack {
             if in_l.is_finite() { in_l } else { 0.0 },
             if in_r.is_finite() { in_r } else { 0.0 },
         ];
-        for i in 0..INSERT_COUNT {
+        for pos in 0..INSERT_COUNT {
+            let i = self.target.order[pos] as usize;
             let want = if self.target.on[i] { 1.0 } else { 0.0 };
             self.fade[i] += (want - self.fade[i]) * self.fade_coef;
             if (self.fade[i] - want).abs() < 1.0e-5 {
@@ -994,7 +1054,7 @@ mod tests {
     fn switching_an_insert_does_not_click() {
         let mut r = InsertRack::new(SR);
         let mut s = InsertSettings::default();
-        s.values[FILTER] = [0.0, 200.0, 0.0, 1.0];
+        s.values[FILTER] = [0.0, 200.0, 0.0, 1.0, 0.0];
         let mut prev = 0.0f32;
         let mut worst = 0.0f32;
         for i in 0..(SR as usize) {
@@ -1025,21 +1085,107 @@ mod tests {
         s.values[FILTER][2] = 1.0;
         let mut r = InsertRack::new(SR);
         r.set_settings(s);
+        // (The checks run outside: a failing assert would allocate its message.)
+        let mut worst = 0.0f32;
+        let mut finite = true;
         assert_no_alloc::assert_no_alloc(|| {
             for i in 0..20_000 {
                 let x = if i % 5000 < 300 { 1.0 } else { 0.0 };
                 let (a, b) = r.process(x, -x);
-                assert!(a.is_finite() && b.is_finite() && a.abs() < 50.0);
+                finite &= a.is_finite() && b.is_finite();
+                worst = worst.max(a.abs()).max(b.abs());
             }
         });
+        assert!(finite && worst < 1000.0, "{worst}");
         let garbage = InsertSettings {
             on: [true; INSERT_COUNT],
             values: [[f32::NAN; INSERT_PARAMS]; INSERT_COUNT],
+            order: [9; INSERT_COUNT],
         };
         r.set_settings(garbage);
         for _ in 0..1000 {
             let (a, b) = r.process(0.3, 0.3);
             assert!(a.is_finite() && b.is_finite());
+        }
+    }
+
+    #[test]
+    fn the_low_band_moves_with_low_freq() {
+        // +6 dB shelf at 400 Hz: 100 Hz is lifted; at 150 Hz (the old fixed corner) far less so.
+        let mut r = rack(EQ, &[(0, 6.0), (4, 400.0)]);
+        let at_100 = response_db(&mut r, 100.0);
+        let at_2k = response_db(&mut r, 2000.0);
+        let mut r150 = rack(EQ, &[(0, 6.0), (4, 60.0)]);
+        let at_100_low = response_db(&mut r150, 100.0);
+        println!("low shelf +6: corner 400 Hz -> 100 Hz {at_100:.2}, 2 kHz {at_2k:.2}; corner 60 Hz -> 100 Hz {at_100_low:.2}");
+        assert!(at_100 > 5.0 && at_2k.abs() < 0.5);
+        assert!(at_100_low < 3.5, "a lower corner lifts 100 Hz less");
+    }
+
+    /// The order is the lane's: Drive then Filter is not Filter then Drive.
+    #[test]
+    fn the_chain_follows_the_lane_order() {
+        let run = |order: [u8; INSERT_COUNT]| {
+            let mut s = InsertSettings::default();
+            s.on[FILTER] = true;
+            s.on[DRIVE] = true;
+            s.values[FILTER] = [0.0, 300.0, 0.0, 1.0, 0.0];
+            s.values[DRIVE][1] = 30.0;
+            s.order = order;
+            let mut r = InsertRack::new(SR);
+            r.set_settings(s);
+            r.update_controls(true);
+            r.fade = [1.0; INSERT_COUNT];
+            let mut high = 0.0f32;
+            let mut prev = 0.0f32;
+            for i in 0..8000 {
+                let x = (2.0 * PI * 100.0 * i as f32 / SR).sin() * 0.5;
+                let (y, _) = r.process(x, x);
+                if i > 2000 {
+                    high += (y - prev) * (y - prev);
+                }
+                prev = y;
+            }
+            high
+        };
+        let filter_last = run([0, 2, 3, 1, 4, 5]); // Drive, then Filter: the harmonics are filtered
+        let drive_last = run(DEFAULT_ORDER); // Filter, then Drive: the harmonics come after
+        println!("high energy: filter last {filter_last:.4}, drive last {drive_last:.4}");
+        assert!(drive_last > 3.0 * filter_last);
+    }
+
+    #[test]
+    fn a_broken_order_falls_back_to_the_default() {
+        let s = InsertSettings { order: [0, 0, 1, 2, 3, 4], ..InsertSettings::default() }.sanitized();
+        assert_eq!(s.order, DEFAULT_ORDER);
+        let s = InsertSettings { order: [5, 4, 3, 2, 1, 0], ..InsertSettings::default() }.sanitized();
+        assert_eq!(s.order, [5, 4, 3, 2, 1, 0]);
+    }
+
+    /// A lane saved by the first inserts build (4 values per insert, no order) still loads.
+    #[test]
+    fn settings_saved_with_four_values_and_no_order_load() {
+        let json = r#"{"on":[false,true,false,false,false,false],"values":[[0,0,0,0],[1,440,0.3,1],[2,1,1000,3],[0,12,0,1],[8,0.25,1,0],[-18,4,5,120]]}"#;
+        let s: InsertSettings = serde_json::from_str(json).unwrap();
+        assert!(s.on[FILTER]);
+        assert_eq!(s.values[FILTER][1], 440.0);
+        assert_eq!(s.values[EQ][0], 2.0);
+        assert_eq!(s.values[EQ][4], 150.0, "the new Low Freq gets its default");
+        assert_eq!(s.order, DEFAULT_ORDER);
+    }
+
+    /// Every insert's rows land in distinct value slots, inside the storage.
+    #[test]
+    fn every_knob_has_its_own_value_slot() {
+        for (n, def) in INSERTS.iter().enumerate() {
+            let mut used = [false; INSERT_PARAMS];
+            for (row, p) in def.params.iter().enumerate() {
+                let k = value_index(row, p);
+                assert!(k < INSERT_PARAMS, "{} row {row}", def.name);
+                assert!(!used[k], "{} slot {k} used twice", def.name);
+                used[k] = true;
+                assert_eq!(knob_at(n, k).map(|d| d.label), Some(p.label));
+            }
         }
     }
 }

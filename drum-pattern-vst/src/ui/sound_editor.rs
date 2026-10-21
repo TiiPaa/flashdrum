@@ -2137,7 +2137,7 @@ pub fn draw_sound_panel(
             }
             // [303] The lane's inserts, in chain order (instrument lanes only).
             if layout_snapshot.slots[slot].active && !layout_snapshot.slots[slot].kind.is_effect() {
-                draw_lane_inserts(ui, params, slot);
+                draw_lane_inserts(ui, params, slot, state);
             }
                         }
                         SoundEditorTab::Track => {
@@ -3362,15 +3362,72 @@ fn draw_standard_rows(
 /// [269] The special rows of one section, stored PER SLOT. Returns the
 /// edited Stereo switch (some specials draw it) and whether a row was edited.
 #[allow(clippy::too_many_arguments)]
-/// [303] The lane's inserts, in chain order (Transient, Filter, EQ, Drive, Bitcrush,
-/// Compressor): an On switch per insert, its knobs greyed while it is off. Lane settings
-/// (never locked per step, whatever cell is selected), written to the track layout.
-fn draw_lane_inserts(ui: &mut egui::Ui, params: &DrumFlashParams, slot: usize) {
-    use crate::synthesis::inserts::INSERTS;
+/// [303] The lane's inserts, in the lane's chain order. Each module's title strip carries
+/// its buttons: move up, move down, fold. Folded (the default), only its On switch shows.
+/// Lane settings (never locked per step, whatever cell is selected), written to the track
+/// layout.
+fn draw_lane_inserts(ui: &mut egui::Ui, params: &DrumFlashParams, slot: usize, state: &mut EditorUIState) {
+    use crate::synthesis::inserts::{value_index, INSERTS, INSERT_COUNT};
     let mut ins = params.track_layout.state.inserts(slot);
     let mut edited = false;
-    for (n, def) in INSERTS.iter().enumerate() {
+    // (position, -1 up / +1 down), applied after the loop so the frame draws one order.
+    let mut pending_move: Option<(usize, i32)> = None;
+    for pos in 0..INSERT_COUNT {
+        let n = ins.order[pos] as usize;
+        let def = &INSERTS[n];
         let module = module_begin(ui, Some(def.name));
+        // The strip's buttons, right-aligned: up, down, fold.
+        let content = ui.max_rect();
+        let strip = egui::Rect::from_min_max(
+            egui::pos2(content.left() - MODULE_INSET, module.top),
+            egui::pos2(content.right() + MODULE_INSET, module.top + crate::ui::skeuo::MODULE_STRIP_H),
+        );
+        let unfolded = state.insert_unfolded[n];
+        let size = 18.0;
+        let button = |k: f32| {
+            egui::Rect::from_center_size(
+                egui::pos2(strip.right() - 14.0 - k * (size + 4.0), strip.center().y),
+                Vec2::splat(size),
+            )
+        };
+        let (fold_rect, down_rect, up_rect) = (button(0.0), button(1.0), button(2.0));
+        let fold = ui.interact(fold_rect, ui.make_persistent_id(("insert_fold", n)), egui::Sense::click());
+        let down = ui.interact(down_rect, ui.make_persistent_id(("insert_down", n)), egui::Sense::click());
+        let up = ui.interact(up_rect, ui.make_persistent_id(("insert_up", n)), egui::Sense::click());
+        let painter = ui.painter();
+        let tri = |rect: egui::Rect, dir: u8, active: bool, hovered: bool| {
+            let c = rect.center();
+            let r = 4.5;
+            let pts = match dir {
+                0 => vec![egui::pos2(c.x - r, c.y + r * 0.6), egui::pos2(c.x + r, c.y + r * 0.6), egui::pos2(c.x, c.y - r * 0.7)],
+                1 => vec![egui::pos2(c.x - r, c.y - r * 0.6), egui::pos2(c.x + r, c.y - r * 0.6), egui::pos2(c.x, c.y + r * 0.7)],
+                _ => vec![egui::pos2(c.x - r * 0.6, c.y - r), egui::pos2(c.x - r * 0.6, c.y + r), egui::pos2(c.x + r * 0.7, c.y)],
+            };
+            let color = if !active {
+                INK3().gamma_multiply(0.35)
+            } else if hovered {
+                INK()
+            } else {
+                INK2()
+            };
+            painter.add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
+        };
+        tri(up_rect, 0, pos > 0, up.hovered());
+        tri(down_rect, 1, pos + 1 < INSERT_COUNT, down.hovered());
+        tri(fold_rect, if unfolded { 1 } else { 2 }, true, fold.hovered());
+        if up.on_hover_text("Move this insert earlier in the chain").clicked() && pos > 0 {
+            pending_move = Some((pos, -1));
+        }
+        if down.on_hover_text("Move this insert later in the chain").clicked() && pos + 1 < INSERT_COUNT {
+            pending_move = Some((pos, 1));
+        }
+        if fold
+            .on_hover_text(if unfolded { "Hide the settings" } else { "Show the settings" })
+            .clicked()
+        {
+            state.insert_unfolded[n] = !unfolded;
+        }
+
         let mut on = if ins.on[n] { 1.0 } else { 0.0 };
         let toggled = help::zone(ui, ("insert_on", slot, n), def.help, |ui| {
             ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
@@ -3380,40 +3437,52 @@ fn draw_lane_inserts(ui: &mut egui::Ui, params: &DrumFlashParams, slot: usize) {
         });
         if toggled {
             ins.on[n] = on >= 0.5;
+            // Switching an insert on opens it: its settings are what one wants next.
+            if ins.on[n] {
+                state.insert_unfolded[n] = true;
+            }
             edited = true;
         }
-        let enabled = ins.on[n];
-        ui.add_enabled_ui(enabled, |ui| {
-            for (k, p) in def.params.iter().enumerate() {
-                let value = &mut ins.values[n][k];
-                let changed = help::zone(ui, ("insert_param", slot, n, k), p.help, |ui| {
-                    ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
-                        if let Some(options) = p.options {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 8.0;
-                                editor_label(ui, p.label);
-                                let last = options.len().saturating_sub(1) as f32;
-                                let current = value.round().clamp(0.0, last) as usize;
-                                match right_aligned_select(ui, ("insert_menu", slot, n, k), current, options) {
-                                    Some(idx) if idx != current => {
-                                        *value = idx as f32;
-                                        true
+        if state.insert_unfolded[n] {
+            let enabled = ins.on[n];
+            ui.add_enabled_ui(enabled, |ui| {
+                for (row, p) in def.params.iter().enumerate() {
+                    let k = value_index(row, p);
+                    let value = &mut ins.values[n][k];
+                    let changed = help::zone(ui, ("insert_param", slot, n, k), p.help, |ui| {
+                        ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
+                            if let Some(options) = p.options {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    editor_label(ui, p.label);
+                                    let last = options.len().saturating_sub(1) as f32;
+                                    let current = value.round().clamp(0.0, last) as usize;
+                                    match right_aligned_select(ui, ("insert_menu", slot, n, k), current, options) {
+                                        Some(idx) if idx != current => {
+                                            *value = idx as f32;
+                                            true
+                                        }
+                                        _ => false,
                                     }
-                                    _ => false,
-                                }
-                            })
-                            .inner
-                        } else {
-                            draw_editor_slider_row(ui, p.label, value, p.min, p.max, p.default, p.log, p.unit)
-                                .changed()
-                        }
-                    })
-                    .inner
-                });
-                edited |= changed;
-            }
-        });
+                                })
+                                .inner
+                            } else {
+                                draw_editor_slider_row(ui, p.label, value, p.min, p.max, p.default, p.log, p.unit)
+                                    .changed()
+                            }
+                        })
+                        .inner
+                    });
+                    edited |= changed;
+                }
+            });
+        }
         module_end(ui, module);
+    }
+    if let Some((pos, dir)) = pending_move {
+        let other = (pos as i32 + dir) as usize;
+        ins.order.swap(pos, other);
+        edited = true;
     }
     if edited {
         let mut layout = PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());

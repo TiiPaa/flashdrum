@@ -1905,7 +1905,7 @@ mod tests {
             synth.set_voice_settings(2, VoiceSettings::hihat());
             let mut ins = inserts::InsertSettings::default();
             ins.on[inserts::FILTER] = filter_on;
-            ins.values[inserts::FILTER] = [0.0, 150.0, 0.0, 1.0];
+            ins.values[inserts::FILTER] = [0.0, 150.0, 0.0, 1.0, 0.0];
             synth.set_inserts(2, ins);
             synth.trigger(2, 1.0);
             let mut out = Vec::new();
