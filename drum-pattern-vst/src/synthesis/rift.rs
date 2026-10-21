@@ -41,6 +41,9 @@ const MIN_GRAIN_FADE_SECS: f32 = 0.001;
 /// Top of the filter sweep, as in `buzz.rs` — the envelope opens the cutoff
 /// toward it and the cutoff falls back to its own setting afterwards.
 const FILTER_OPEN_HZ: f32 = 20000.0;
+/// [297] Filter LFO Depth at its maximum, in octaves each way: enough for a full-depth sweep
+/// from the lowest Filter to cover the whole range (20 Hz to 20 kHz is ~10 octaves).
+const MAX_FILTER_LFO_OCTAVES: f32 = 5.0;
 
 /// The cutoff the Filter LFO gives: `lfo` (-1..1) swings the cutoff by +-`depth` octaves around
 /// `base`. When the base is so low (or so high) that half of that swing would fall outside the
@@ -381,7 +384,7 @@ impl RiftVoice {
 
     /// Re-tune the biquad for the current envelope value, LFO included.
     fn apply_filter(&mut self, env: f32) {
-        let depth = self.settings.filter_lfo_depth.clamp(0.0, 3.0);
+        let depth = self.settings.filter_lfo_depth.clamp(0.0, MAX_FILTER_LFO_OCTAVES);
         let cutoff = if depth > 0.0 {
             // The LFO rides the swept cutoff in OCTAVES, so its depth means the
             // same thing wherever the envelope has taken the filter.
@@ -1772,5 +1775,14 @@ mod tests {
                 assert!((20.0..=FILTER_OPEN_HZ).contains(&c));
             }
         }
+    }
+
+    /// [297] Full depth from the lowest Filter opens the low-pass all the way: 20 Hz to 20 kHz.
+    #[test]
+    fn a_full_depth_filter_lfo_sweeps_the_whole_range() {
+        let top = lfo_cutoff(20.0, 1.0, MAX_FILTER_LFO_OCTAVES);
+        let bottom = lfo_cutoff(20.0, -1.0, MAX_FILTER_LFO_OCTAVES);
+        assert!(top > 19_000.0, "full depth must open the filter ({top} Hz)");
+        assert!(bottom < 21.0, "and close it ({bottom} Hz)");
     }
 }

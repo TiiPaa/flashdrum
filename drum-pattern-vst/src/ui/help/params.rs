@@ -302,7 +302,7 @@ Off: every hit plays the Sample chosen below.";
         "rift_pitch_lfo_rate" => "Pitch LFO Rate: speed of the vibrato.",
         "rift_pitch_lfo_depth" => "Pitch LFO Depth: depth of the vibrato, in semitones.",
         "rift_filter_lfo_rate" => "Filter LFO Rate: speed of the filter sweep.",
-        "rift_filter_lfo_depth" => "Filter LFO Depth: depth of the filter sweep, in octaves.",
+        "rift_filter_lfo_depth" => "Filter LFO Depth: depth of the filter sweep, in octaves each way (up to 5). At full depth from the lowest Filter, the sweep covers the whole range, from closed (20 Hz) to fully open (20 kHz). Near the ends of the range the sweep is shifted so its whole amplitude is heard.",
         "tom_resonance" | "sdrex_resonance" | "buzz_resonance" => "Resonance: emphasis at the filter cutoff; high values ring.",
         "rift_resonance" | "oneshot_resonance" => "Resonance: emphasis at the filter cutoff; high values ring.",
         "rift_crush" => "Crush: fewer bits, for a gritty lo-fi sound.",

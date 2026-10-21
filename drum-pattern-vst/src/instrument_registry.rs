@@ -4624,7 +4624,9 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
                 "Filter LFO Depth",
                 0.0,
                 0.0,
-                3.0,
+                // [297] 5 octaves each way: at full depth from the lowest Filter the sweep
+                // covers the whole range, 20 Hz to 20 kHz (3 only reached 1.3 kHz).
+                5.0,
                 26,
                 ParamFamily::Modulation,
             ),
