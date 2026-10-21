@@ -1046,7 +1046,10 @@ fn draw_legacy_slot_lane_v2(
                             slot: slot_idx,
                             step: source_step,
                         });
-                        state.sound_editor_tab = crate::ui::editor_state::SoundEditorTab::Sound;
+                        // [303] A cell's locks are edited in Sound or Effects: only Track gives way.
+                if state.sound_editor_tab == crate::ui::editor_state::SoundEditorTab::Track {
+                    state.sound_editor_tab = crate::ui::editor_state::SoundEditorTab::Sound;
+                }
                         ui.ctx().request_repaint();
                     }
                 } else if !beyond_len && !suppress_click && response.clicked_by(egui::PointerButton::Primary) {

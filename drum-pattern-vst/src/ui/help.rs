@@ -206,7 +206,7 @@ pub const LANE_PUSH: &str = "Push = Push/Pull: moves the whole lane in time, -50
 pub const LANE_LEN: &str = "Len = this lane's own length (polymeter). Unlocked, it follows the pattern length.\n\
 Drag or type a value to lock it: the lane then loops on its own length, the other lanes keep theirs. Right-click > Follow pattern length to unlock.";
 
-pub const EMPTY_FX_SLOT: &str = "Effect bus (Fx1 = lane 13, Fx2 = lane 14). Click to add an effect here (Reverb, Delay or Rumble); the other lanes then send to it from their Sound tab. Right-click: Paste Lane.";
+pub const EMPTY_FX_SLOT: &str = "Effect bus (Fx1 = lane 13, Fx2 = lane 14). Click to add an effect here (Reverb, Delay or Rumble); the other lanes then send to it from their Effects tab. Right-click: Paste Lane.";
 
 pub const FX_LOOP_START: &str = "Loop restart ON (green arrow): every time the pattern loops, this effect goes back to the lane's own values (its sliders). Click to switch it off. To lock this step, right-click it.";
 

@@ -67,7 +67,10 @@ fn draw_plock_menu(
                     slot: instrument,
                     step,
                 });
-                state.sound_editor_tab = crate::ui::editor_state::SoundEditorTab::Sound;
+                // [303] A cell's locks are edited in Sound or Effects: only Track gives way.
+                if state.sound_editor_tab == crate::ui::editor_state::SoundEditorTab::Track {
+                    state.sound_editor_tab = crate::ui::editor_state::SoundEditorTab::Sound;
+                }
                 close_after_action = true;
             }
             if let Some(ref entry) = state.plock_clipboard {
@@ -206,7 +209,10 @@ fn draw_fusion_group_menu(
             state.sound_edit_target =
                 Some(crate::ui::editor_state::SelectedCell { slot: inst, step });
             state.fusion_tab = crate::ui::editor_state::FusionTab::End;
-            state.sound_editor_tab = crate::ui::editor_state::SoundEditorTab::Sound;
+            // [303] A cell's locks are edited in Sound or Effects: only Track gives way.
+                if state.sound_editor_tab == crate::ui::editor_state::SoundEditorTab::Track {
+                    state.sound_editor_tab = crate::ui::editor_state::SoundEditorTab::Sound;
+                }
             state.plock_popup = None;
         }
         if plock_menu_action_row(ui, "Edit Fusion Steps", PL_LINK())

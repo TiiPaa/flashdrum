@@ -110,6 +110,9 @@ pub struct SinglePlockClipboard {
 pub enum SoundEditorTab {
     #[default]
     Sound,
+    /// [303] Sends (instrument lanes) and the Sequencer switches (effect lanes); the
+    /// lane inserts come here next.
+    Effects,
     Track,
 }
 

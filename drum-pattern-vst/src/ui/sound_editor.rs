@@ -1900,56 +1900,6 @@ pub fn draw_sound_panel(
             module_end(ui, section_module);
             }
 
-            // [286] Sends to the effect buses. On the lane they are its own send levels;
-            // on a selected cell they are that step's locks (the hit keeps them).
-            if !layout_snapshot.slots[slot].kind.is_effect() {
-                let sends_module = module_begin(ui, Some("Sends"));
-                for bus in 0..crate::track::FX_SLOT_COUNT {
-                    let id = ParamId::FxSend(bus);
-                    let bus_slot = &layout_snapshot.slots[crate::track::FX_FIRST_SLOT + bus];
-                    let bus_on = bus_slot.active && bus_slot.kind.is_effect();
-                    let send_help = row_help(&*src, id, help::TRACK_FX_SEND.to_string());
-                    let current = src.get(id) * 100.0;
-                    let default = src.inherited(id) * 100.0;
-                    let (reverted, edited) = help::zone(ui, ("fx_send_row", bus), &send_help, |ui| {
-                        ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
-                            ui.add_enabled_ui(bus_on, |ui| {
-                                row_scoped(
-                                    ui,
-                                    src.is_overridden(id),
-                                    src.supports(id).reason(),
-                                    |ui| {
-                                        let mut pct = current;
-                                        let row = draw_editor_slider_row(
-                                            ui,
-                                            if bus == 0 { "Fx1" } else { "Fx2" },
-                                            &mut pct,
-                                            0.0,
-                                            100.0,
-                                            default,
-                                            false,
-                                            Some("%"),
-                                        );
-                                        (row.changed(), pct)
-                                    },
-                                )
-                            })
-                            .inner
-                        })
-                        .inner
-                    });
-                    let (row_changed, pct) = edited;
-                    if reverted {
-                        src.clear(id);
-                        changed = true;
-                    } else if row_changed {
-                        src.set(id, (pct / 100.0).clamp(0.0, 1.0));
-                        changed = true;
-                    }
-                }
-                module_end(ui, sends_module);
-            }
-
             // [286] On an effect lane: what the reverb is using RIGHT NOW. While the
             // transport plays, the p-locks of the lane move its knobs; this shows where
             // they actually are (a value that differs from the lane's own is lit).
@@ -2087,6 +2037,88 @@ pub fn draw_sound_panel(
                 module_end(ui, live_module);
             }
                     }
+                        SoundEditorTab::Effects => {
+            // [286] Sends to the effect buses. On the lane they are its own send levels;
+            // on a selected cell they are that step's locks (the hit keeps them).
+            if !layout_snapshot.slots[slot].kind.is_effect() {
+                let sends_module = module_begin(ui, Some("Sends"));
+                for bus in 0..crate::track::FX_SLOT_COUNT {
+                    let id = ParamId::FxSend(bus);
+                    let bus_slot = &layout_snapshot.slots[crate::track::FX_FIRST_SLOT + bus];
+                    let bus_on = bus_slot.active && bus_slot.kind.is_effect();
+                    let send_help = row_help(&*src, id, help::TRACK_FX_SEND.to_string());
+                    let current = src.get(id) * 100.0;
+                    let default = src.inherited(id) * 100.0;
+                    let (reverted, edited) = help::zone(ui, ("fx_send_row", bus), &send_help, |ui| {
+                        ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
+                            ui.add_enabled_ui(bus_on, |ui| {
+                                row_scoped(
+                                    ui,
+                                    src.is_overridden(id),
+                                    src.supports(id).reason(),
+                                    |ui| {
+                                        let mut pct = current;
+                                        let row = draw_editor_slider_row(
+                                            ui,
+                                            if bus == 0 { "Fx1" } else { "Fx2" },
+                                            &mut pct,
+                                            0.0,
+                                            100.0,
+                                            default,
+                                            false,
+                                            Some("%"),
+                                        );
+                                        (row.changed(), pct)
+                                    },
+                                )
+                            })
+                            .inner
+                        })
+                        .inner
+                    });
+                    let (row_changed, pct) = edited;
+                    if reverted {
+                        src.clear(id);
+                        changed = true;
+                    } else if row_changed {
+                        src.set(id, (pct / 100.0).clamp(0.0, 1.0));
+                        changed = true;
+                    }
+                }
+                module_end(ui, sends_module);
+            }
+
+            // [303] / [301] An effect lane's Sequencer: how its p-locks behave (Glide) and
+            // whether it goes back to its sliders when the pattern loops (Loop Restart,
+            // also the arrow on the lane's first cell). Lane settings, never locks.
+            if crate::track::is_fx_slot(slot) && layout_snapshot.slots[slot].kind.is_effect() {
+                let seq_module = module_begin(ui, Some("Sequencer"));
+                let instrument = &crate::instrument_registry::INSTRUMENTS[voice_idx];
+                for def in instrument
+                    .special_params
+                    .iter()
+                    .filter(|d| is_fx_sequencer_param(d.name))
+                {
+                    let id = ParamId::Special(def.special_index);
+                    // Loop Restart is stored inverted (older lanes hold 0 = restart).
+                    let inverted = def.name.ends_with("_norestart");
+                    let stored = src.get(id);
+                    let mut on = if inverted { 1.0 - stored } else { stored };
+                    let row_help_text = help::special_param(def.name).to_string();
+                    let toggled = help::zone(ui, ("fx_seq_row", def.name), &row_help_text, |ui| {
+                        ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
+                            draw_editor_switch_row(ui, def.label, &mut on).changed()
+                        })
+                        .inner
+                    });
+                    if toggled {
+                        src.set(id, if inverted { 1.0 - on } else { on });
+                        changed = true;
+                    }
+                }
+                module_end(ui, seq_module);
+            }
+                        }
                         SoundEditorTab::Track => {
                             draw_track_tab(ui, params, sound_settings, setter, state);
                         }
@@ -2271,7 +2303,7 @@ fn draw_panel_tabs(ui: &mut egui::Ui, state: &mut EditorUIState, scope_badge: Op
     painter.rect_filled(band, 0.0, PANEL_SKEUO_HEADER);
     // The plate's top edge, on a half pixel so the 1 px line stays crisp.
     let base = band.bottom() - 0.5;
-    let tab_w = ((band.width() - 2.0 * MARGIN - GAP) * 0.5).round();
+    let tab_w = ((band.width() - 2.0 * MARGIN - 2.0 * GAP) / 3.0).round();
     let edge = egui::Stroke::new(1.0, egui::Color32::from_rgb(20, 20, 24));
 
     let mut active_span = None;
@@ -2280,6 +2312,11 @@ fn draw_panel_tabs(ui: &mut egui::Ui, state: &mut EditorUIState, scope_badge: Op
             SoundEditorTab::Sound,
             "Sound",
             "Synthesis settings of the selected lane",
+        ),
+        (
+            SoundEditorTab::Effects,
+            "Effects",
+            "Sends to the effect lanes; on an effect lane, its Sequencer switches",
         ),
         (
             SoundEditorTab::Track,
@@ -3304,6 +3341,14 @@ fn draw_standard_rows(
 /// [269] The special rows of one section, stored PER SLOT. Returns the
 /// edited Stereo switch (some specials draw it) and whether a row was edited.
 #[allow(clippy::too_many_arguments)]
+/// [303] The effect lanes' Sequencer switches (shown in the Effects tab, not in Sound).
+fn is_fx_sequencer_param(name: &str) -> bool {
+    matches!(
+        name,
+        "reverb_glide" | "delay_glide" | "rumble_glide" | "reverb_norestart" | "delay_norestart" | "rumble_norestart"
+    )
+}
+
 fn draw_special_rows(
     ui: &mut egui::Ui,
     cx: &PanelCtx,
@@ -3337,8 +3382,8 @@ fn draw_special_rows(
             continue;
         }
         // [286] Loop Restart is switched with the arrow on the effect lane's first
-        // cell, not with a row.
-        if def.name.ends_with("_norestart") {
+        // cell; [303] it and Glide are rows of the Effects tab's Sequencer module.
+        if is_fx_sequencer_param(def.name) {
             continue;
         }
         // [286] A lane-wide switch (the effect lane's Glide) is not part of a step's
