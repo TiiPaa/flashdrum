@@ -4063,6 +4063,10 @@ impl Plugin for DrumFlashVst {
 
         let (track_routings, mix_gains) = self.update_mix_gating();
         let (fx_sends, fx_bypass) = self.fx_block_state();
+        // [300] Send mutes, once per block.
+        self.synthesizer.set_send_mutes(std::array::from_fn(|slot| {
+            std::array::from_fn(|bus| self.params.track_layout.state.fx_send_muted(slot, bus))
+        }));
         // [303] The lanes' inserts, read once per block from the layout's atomics.
         for slot in 0..crate::track::FX_FIRST_SLOT {
             self.synthesizer.set_inserts(slot, self.params.track_layout.state.inserts(slot));

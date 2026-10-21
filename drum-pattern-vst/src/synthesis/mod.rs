@@ -1419,6 +1419,8 @@ pub struct DrumSynthesizer {
     /// [286] The send levels p-locked on the step a lane last fired: they replace the
     /// lane's own sends until its next hit (`None` = follow the lane).
     send_override: [[Option<f32>; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
+    /// [300] Sends switched off (they win over a step's send lock).
+    send_muted: [[bool; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
     /// [303] Each instrument lane's inserts (no heap inside: rebuilt in
     /// `initialize_with_layout` for the sample rate, never in `process`).
     inserts: Box<[inserts::InsertRack; crate::track::MAX_TRACKS]>,
@@ -1435,6 +1437,7 @@ impl DrumSynthesizer {
             fx_delay: std::array::from_fn(|_| DelayCore::new(44100.0)),
             fx_rumble: std::array::from_fn(|_| RumbleCore::new(44100.0)),
             inserts: Box::new(std::array::from_fn(|_| inserts::InsertRack::new(44100.0))),
+            send_muted: [[false; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
             fx_bypassed: [false; crate::track::FX_SLOT_COUNT],
             send_state: [[0.0; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
             send_override: [[None; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
@@ -1600,6 +1603,11 @@ impl DrumSynthesizer {
         }
     }
 
+    /// [300] Which sends are switched off (once per block).
+    pub fn set_send_mutes(&mut self, muted: [[bool; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS]) {
+        self.send_muted = muted;
+    }
+
     /// [303] Hand a lane its inserts (once per block, from the layout's atomics).
     pub fn set_inserts(&mut self, slot: usize, settings: inserts::InsertSettings) {
         if let Some(rack) = self.inserts.get_mut(slot) {
@@ -1692,7 +1700,11 @@ impl DrumSynthesizer {
             let (mut in_l, mut in_r) = (0.0f32, 0.0f32);
             for lane in 0..crate::track::FX_FIRST_SLOT {
                 let level = &mut self.send_state[lane][bus];
-                let wanted = self.send_override[lane][bus].unwrap_or(sends[lane][bus]);
+                let wanted = if self.send_muted[lane][bus] {
+                    0.0
+                } else {
+                    self.send_override[lane][bus].unwrap_or(sends[lane][bus])
+                };
                 *level += (wanted - *level) * self.send_coef;
                 in_l += outputs[lane][0] * *level;
                 in_r += outputs[lane][1] * *level;
@@ -1933,6 +1945,41 @@ mod tests {
             raw.process_voice_samples_stereo(&mut outputs);
             assert_eq!(outputs[2][0], dry[i]);
         }
+    }
+
+    /// [300] A muted send feeds nothing, even with a step's send lock on the hit.
+    #[test]
+    fn a_muted_send_feeds_nothing_even_when_locked() {
+        use crate::track::{TrackInstrumentKind as K, TrackLayoutState, TrackSlot, FX_FIRST_SLOT};
+        let energy = |muted: bool, locked: bool| {
+            let mut layout = TrackLayoutState::empty_layout();
+            layout.slots[0] = TrackSlot::active_with_kind(K::Kick);
+            layout.slots[FX_FIRST_SLOT] = TrackSlot::active_with_kind(K::Reverb);
+            let mut synth = DrumSynthesizer::new();
+            synth.initialize_with_layout(44100.0, &layout);
+            synth.set_voice_settings(0, VoiceSettings::kick());
+            synth.set_voice_settings(FX_FIRST_SLOT, VoiceSettings::reverb());
+            let mut mutes = [[false; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
+            mutes[0][0] = muted;
+            synth.set_send_mutes(mutes);
+            if locked {
+                synth.set_send_override(0, 0, Some(1.0));
+            }
+            synth.trigger(0, 1.0);
+            let mut sends = [[0.0f32; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
+            sends[0][0] = 1.0;
+            let mut e = 0.0f32;
+            let mut outputs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
+            for _ in 0..22_050 {
+                synth.process_voice_samples_stereo(&mut outputs);
+                synth.process_fx(&mut outputs, &sends, [false, false]);
+                e += outputs[FX_FIRST_SLOT][0].powi(2);
+            }
+            e
+        };
+        assert!(energy(false, false) > 0.01);
+        assert_eq!(energy(true, false), 0.0);
+        assert_eq!(energy(true, true), 0.0, "the mute wins over a step lock");
     }
 
     /// [286] A p-locked send replaces the lane's own for the hit, and `None` goes back.

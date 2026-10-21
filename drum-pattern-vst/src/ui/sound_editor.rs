@@ -2066,7 +2066,11 @@ pub fn draw_sound_panel(
                     let send_help = row_help(&*src, id, help::TRACK_FX_SEND.to_string());
                     let current = src.get(id) * 100.0;
                     let default = src.inherited(id) * 100.0;
-                    let (reverted, edited) = help::zone(ui, ("fx_send_row", bus), &send_help, |ui| {
+                    let send_muted = params.track_layout.state.fx_send_muted(slot, bus);
+                    let mut mute_clicked = false;
+                    let mut edit_clicked = false;
+                    let (reverted, edited) = ui.horizontal(|ui| {
+                    let row = help::zone(ui, ("fx_send_row", bus), &send_help, |ui| {
                         ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
                             ui.add_enabled_ui(bus_on, |ui| {
                                 row_scoped(
@@ -2093,6 +2097,41 @@ pub fn draw_sound_panel(
                         })
                         .inner
                     });
+                    // [300] M: switch this send off without losing its level. [Edit]: go to
+                    // the effect lane it feeds.
+                    ui.add_space(6.0);
+                    let mute = egui::Button::new(
+                        RichText::new("M")
+                            .font(f_mono_sb(10.5))
+                            .color(if send_muted { Color32::from_rgb(20, 20, 24) } else { INK2() }),
+                    )
+                    .fill(if send_muted { AMBER() } else { P_ACTIVE() })
+                    .stroke(egui::Stroke::new(1.0, LINE2()))
+                    .min_size(Vec2::new(22.0, 20.0));
+                    mute_clicked = ui
+                        .add_enabled(bus_on, mute)
+                        .on_hover_text("Mute this send (its level is kept)")
+                        .clicked();
+                    let edit = egui::Button::new(RichText::new("Edit").font(f_sans_sb(10.5)).color(INK2()))
+                        .fill(P_ACTIVE())
+                        .stroke(egui::Stroke::new(1.0, LINE2()))
+                        .min_size(Vec2::new(34.0, 20.0));
+                    edit_clicked = ui
+                        .add_enabled(bus_on, edit)
+                        .on_hover_text("Open the effect this send feeds")
+                        .clicked();
+                    row
+                    })
+                    .inner;
+                    if mute_clicked {
+                        let mut layout = PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());
+                        layout.slots[slot].fx_send_mute[bus] = !send_muted;
+                        PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
+                    }
+                    if edit_clicked {
+                        crate::ui::editor_state::select_legacy_track(state, crate::track::FX_FIRST_SLOT + bus);
+                        state.sound_editor_tab = SoundEditorTab::Sound;
+                    }
                     let (row_changed, pct) = edited;
                     if reverted {
                         src.clear(id);
@@ -3370,13 +3409,13 @@ fn draw_lane_inserts(ui: &mut egui::Ui, params: &DrumFlashParams, slot: usize, s
     use crate::synthesis::inserts::{value_index, INSERTS, INSERT_COUNT};
     let mut ins = params.track_layout.state.inserts(slot);
     let mut edited = false;
-    // (position, -1 up / +1 down), applied after the loop so the frame draws one order.
-    let mut pending_move: Option<(usize, i32)> = None;
+    // Each module's span (insert, top, bottom), for the drag-and-drop below.
+    let mut spans: Vec<(usize, f32, f32)> = Vec::with_capacity(INSERT_COUNT);
     for pos in 0..INSERT_COUNT {
         let n = ins.order[pos] as usize;
         let def = &INSERTS[n];
         let module = module_begin(ui, Some(def.name));
-        // The strip's buttons, right-aligned: up, down, fold.
+        // The strip's controls, right-aligned: the drag handle, then the fold triangle.
         let content = ui.max_rect();
         let strip = egui::Rect::from_min_max(
             egui::pos2(content.left() - MODULE_INSET, module.top),
@@ -3386,41 +3425,47 @@ fn draw_lane_inserts(ui: &mut egui::Ui, params: &DrumFlashParams, slot: usize, s
         let size = 18.0;
         let button = |k: f32| {
             egui::Rect::from_center_size(
-                egui::pos2(strip.right() - 14.0 - k * (size + 4.0), strip.center().y),
+                egui::pos2(strip.right() - 14.0 - k * (size + 6.0), strip.center().y),
                 Vec2::splat(size),
             )
         };
-        let (fold_rect, down_rect, up_rect) = (button(0.0), button(1.0), button(2.0));
+        let (fold_rect, grip_rect) = (button(0.0), button(1.0));
         let fold = ui.interact(fold_rect, ui.make_persistent_id(("insert_fold", n)), egui::Sense::click());
-        let down = ui.interact(down_rect, ui.make_persistent_id(("insert_down", n)), egui::Sense::click());
-        let up = ui.interact(up_rect, ui.make_persistent_id(("insert_up", n)), egui::Sense::click());
+        let grip = ui.interact(grip_rect, ui.make_persistent_id(("insert_grip", n)), egui::Sense::drag());
         let painter = ui.painter();
-        let tri = |rect: egui::Rect, dir: u8, active: bool, hovered: bool| {
-            let c = rect.center();
+        // Fold triangle: pointing down when open, right when folded.
+        {
+            let c = fold_rect.center();
             let r = 4.5;
-            let pts = match dir {
-                0 => vec![egui::pos2(c.x - r, c.y + r * 0.6), egui::pos2(c.x + r, c.y + r * 0.6), egui::pos2(c.x, c.y - r * 0.7)],
-                1 => vec![egui::pos2(c.x - r, c.y - r * 0.6), egui::pos2(c.x + r, c.y - r * 0.6), egui::pos2(c.x, c.y + r * 0.7)],
-                _ => vec![egui::pos2(c.x - r * 0.6, c.y - r), egui::pos2(c.x - r * 0.6, c.y + r), egui::pos2(c.x + r * 0.7, c.y)],
-            };
-            let color = if !active {
-                INK3().gamma_multiply(0.35)
-            } else if hovered {
-                INK()
+            let pts = if unfolded {
+                vec![egui::pos2(c.x - r, c.y - r * 0.6), egui::pos2(c.x + r, c.y - r * 0.6), egui::pos2(c.x, c.y + r * 0.7)]
             } else {
-                INK2()
+                vec![egui::pos2(c.x - r * 0.6, c.y - r), egui::pos2(c.x - r * 0.6, c.y + r), egui::pos2(c.x + r * 0.7, c.y)]
             };
+            let color = if fold.hovered() { INK() } else { INK2() };
             painter.add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
-        };
-        tri(up_rect, 0, pos > 0, up.hovered());
-        tri(down_rect, 1, pos + 1 < INSERT_COUNT, down.hovered());
-        tri(fold_rect, if unfolded { 1 } else { 2 }, true, fold.hovered());
-        if up.on_hover_text("Move this insert earlier in the chain").clicked() && pos > 0 {
-            pending_move = Some((pos, -1));
         }
-        if down.on_hover_text("Move this insert later in the chain").clicked() && pos + 1 < INSERT_COUNT {
-            pending_move = Some((pos, 1));
+        // Drag handle: six dots.
+        {
+            let dragging = state.insert_drag == Some(n);
+            let color = if dragging || grip.hovered() { INK() } else { INK3() };
+            for row in 0..3 {
+                for col in 0..2 {
+                    let p = egui::pos2(
+                        grip_rect.center().x - 2.5 + col as f32 * 5.0,
+                        grip_rect.center().y - 5.0 + row as f32 * 5.0,
+                    );
+                    painter.circle_filled(p, 1.4, color);
+                }
+            }
         }
+        if grip.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+        if grip.drag_started() {
+            state.insert_drag = Some(n);
+        }
+        let _ = grip.on_hover_text("Drag to move this insert in the chain");
         if fold
             .on_hover_text(if unfolded { "Hide the settings" } else { "Show the settings" })
             .clicked()
@@ -3477,12 +3522,44 @@ fn draw_lane_inserts(ui: &mut egui::Ui, params: &DrumFlashParams, slot: usize, s
                 }
             });
         }
+        let module_top = module.top;
         module_end(ui, module);
+        spans.push((n, module_top, ui.cursor().top() - 12.0));
     }
-    if let Some((pos, dir)) = pending_move {
-        let other = (pos as i32 + dir) as usize;
-        ins.order.swap(pos, other);
-        edited = true;
+    // Drag-and-drop of an insert by its handle: a line shows where it will land; letting go
+    // moves it there.
+    if let Some(dragged) = state.insert_drag {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        let others: Vec<&(usize, f32, f32)> = spans.iter().filter(|s| s.0 != dragged).collect();
+        if let Some(pointer) = ui.ctx().pointer_latest_pos() {
+            let target = others.iter().filter(|s| 0.5 * (s.1 + s.2) < pointer.y).count();
+            let y = if target == 0 {
+                others.first().map(|s| s.1 - 6.0)
+            } else {
+                others.get(target - 1).map(|s| s.2 + 6.0)
+            };
+            if let Some(y) = y {
+                let content = ui.max_rect();
+                ui.painter().line_segment(
+                    [egui::pos2(content.left() - MODULE_INSET, y), egui::pos2(content.right() + MODULE_INSET, y)],
+                    egui::Stroke::new(2.0, AMBER()),
+                );
+            }
+            if ui.input(|i| i.pointer.any_released()) {
+                let mut order: Vec<u8> = ins.order.iter().copied().filter(|&x| x as usize != dragged).collect();
+                order.insert(target.min(order.len()), dragged as u8);
+                if let Ok(order) = <[u8; INSERT_COUNT]>::try_from(order) {
+                    if order != ins.order {
+                        ins.order = order;
+                        edited = true;
+                    }
+                }
+                state.insert_drag = None;
+            }
+        }
+        if !ui.input(|i| i.pointer.any_down()) {
+            state.insert_drag = None;
+        }
     }
     if edited {
         let mut layout = PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());

@@ -45,6 +45,8 @@ pub struct LaneClipboardData {
     pub texture_path: Option<std::path::PathBuf>,
     /// [286] The lane's sends to Fx1 / Fx2.
     pub fx_send: [f32; crate::track::FX_SLOT_COUNT],
+    /// [300] The lane's send mutes.
+    pub fx_send_mute: [bool; crate::track::FX_SLOT_COUNT],
     /// [303] The lane's inserts.
     pub inserts: crate::synthesis::inserts::InsertSettings,
 }
@@ -144,6 +146,9 @@ pub struct EditorUIState {
     /// [303] Which inserts show their knobs in the Effects tab (folded by default).
     #[serde(default)]
     pub insert_unfolded: [bool; crate::synthesis::inserts::INSERT_COUNT],
+    /// [303] The insert being dragged by its handle (to change the chain order).
+    #[serde(skip)]
+    pub insert_drag: Option<usize>,
     #[serde(default)]
     pub bottom_panel_tab: usize,
     pub selected_pattern_slot: usize,
@@ -662,6 +667,7 @@ impl EditorUIState {
         let texture_path = params.user_textures.path(slot);
         let fx_send = std::array::from_fn(|bus| params.track_layout.state.fx_send(slot, bus));
         let inserts = params.track_layout.state.inserts(slot);
+        let fx_send_mute = std::array::from_fn(|bus| params.track_layout.state.fx_send_muted(slot, bus));
 
         self.lane_clipboard = Some(LaneClipboardData {
             kind,
@@ -677,6 +683,7 @@ impl EditorUIState {
             length_locked,
             texture_path,
             fx_send,
+            fx_send_mute,
             inserts,
         });
     }
@@ -717,6 +724,7 @@ impl EditorUIState {
         }
         layout.slots[target_slot].fx_send = clipboard.fx_send;
         layout.slots[target_slot].inserts = clipboard.inserts;
+        layout.slots[target_slot].fx_send_mute = clipboard.fx_send_mute;
         PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
 
         // Pasting onto an EMPTY lane also turns a slot into a new instrument,

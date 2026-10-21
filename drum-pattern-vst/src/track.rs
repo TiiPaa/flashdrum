@@ -539,6 +539,9 @@ pub struct TrackSlot {
     /// `track-layout-v1` blobs load with no send.
     #[serde(default)]
     pub fx_send: [f32; FX_SLOT_COUNT],
+    /// [300] A send switched off without losing its level (the M button beside it).
+    #[serde(default)]
+    pub fx_send_mute: [bool; FX_SLOT_COUNT],
     /// [303] The lane's inserts (Transient, Filter, EQ, Drive, Bitcrush, Compressor):
     /// which are on and their knobs. Lane settings, never locked per step.
     /// `#[serde(default)]` so older `track-layout-v1` blobs load with every insert off.
@@ -556,6 +559,7 @@ impl TrackSlot {
             midi_note: TrackInstrumentKind::Kick.default_midi_note(),
             linked_up: false,
             fx_send: [0.0; FX_SLOT_COUNT],
+            fx_send_mute: [false; FX_SLOT_COUNT],
             inserts: Default::default(),
         }
     }
@@ -569,6 +573,7 @@ impl TrackSlot {
             midi_note: kind.default_midi_note(),
             linked_up: false,
             fx_send: [0.0; FX_SLOT_COUNT],
+            fx_send_mute: [false; FX_SLOT_COUNT],
             inserts: Default::default(),
         }
     }
@@ -876,6 +881,7 @@ impl TrackLayoutState {
                 midi_note: crate::instrument_registry::INSTRUMENTS[i].midi_note,
                 linked_up: false,
                 fx_send: [0.0; FX_SLOT_COUNT],
+                fx_send_mute: [false; FX_SLOT_COUNT],
                 inserts: Default::default(),
             };
             // Classic HH↔OH choke out of the box.
@@ -991,6 +997,8 @@ pub struct AtomicTrackLayout {
     pub slot_linked: [AtomicBool; MAX_TRACKS],
     /// [286] Send levels (f32 bits) to Fx1 / Fx2, per slot.
     pub slot_fx_send: [[AtomicU32; FX_SLOT_COUNT]; MAX_TRACKS],
+    /// [300] Send mutes.
+    pub slot_fx_send_mute: [[AtomicBool; FX_SLOT_COUNT]; MAX_TRACKS],
     /// [303] The lane inserts: a bit per insert that is on, and every knob (f32 bits).
     pub slot_insert_on: [AtomicU8; MAX_TRACKS],
     /// [303] The chain order, 4 bits per position.
@@ -1010,6 +1018,7 @@ impl AtomicTrackLayout {
             slot_midi_notes: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
+            slot_fx_send_mute: std::array::from_fn(|_| std::array::from_fn(|_| AtomicBool::new(false))),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
             slot_insert_values: std::array::from_fn(|_| {
@@ -1063,6 +1072,7 @@ impl AtomicTrackLayout {
             for (bus, send) in slot.fx_send.iter().enumerate() {
                 self.slot_fx_send[i][bus]
                     .store(send.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+                self.slot_fx_send_mute[i][bus].store(slot.fx_send_mute[bus], Ordering::Relaxed);
             }
             let inserts = slot.inserts.sanitized();
             let on_bits = inserts
@@ -1119,6 +1129,11 @@ impl AtomicTrackLayout {
                 })
             }),
         }
+    }
+
+    /// [300] Is the send of `slot` to bus `bus` switched off?
+    pub fn fx_send_muted(&self, slot: usize, bus: usize) -> bool {
+        slot < MAX_TRACKS && bus < FX_SLOT_COUNT && self.slot_fx_send_mute[slot][bus].load(Ordering::Relaxed)
     }
 
     /// [286] Send level of `slot` to effect bus `bus` (0 = Fx1, 1 = Fx2).
@@ -1198,6 +1213,7 @@ impl Default for AtomicTrackLayout {
             slot_midi_notes: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
+            slot_fx_send_mute: std::array::from_fn(|_| std::array::from_fn(|_| AtomicBool::new(false))),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
             slot_insert_values: std::array::from_fn(|_| {
@@ -1300,6 +1316,7 @@ impl<'a> nih_plug::params::persist::PersistentField<'a, TrackLayoutState>
                 midi_note: self.state.slot_midi_notes[i].load(Ordering::Relaxed),
                 linked_up: self.state.slot_linked[i].load(Ordering::Relaxed),
                 fx_send: std::array::from_fn(|bus| self.state.fx_send(i, bus)),
+                fx_send_mute: std::array::from_fn(|bus| self.state.fx_send_muted(i, bus)),
                 inserts: self.state.inserts(i),
             }
         });

@@ -114,7 +114,7 @@ const fn menu(label: &'static str, options: &'static [&'static str], help: &'sta
 pub const INSERTS: [InsertDef; INSERT_COUNT] = [
     InsertDef {
         name: "Transient",
-        help: "Transient: reshapes the hit itself (up to 18 dB either way). Attack makes the start of each hit harder (up) or softer (down); Sustain makes the body and tail longer (up) or shorter (down). It follows the sound, whatever its level.",
+        help: "Transient: reshapes the hit itself (up to 18 dB either way), keeping the lane's overall level. Attack makes the start of each hit harder (up) or softer (down); Sustain makes the body and tail longer (up) or shorter (down). It follows the sound, whatever its level.",
         params: &[
             knob("Attack", -1.0, 1.0, 0.0, None, false, "Attack: up = a harder, snappier start of each hit; down = a softer one. 0 = untouched."),
             knob("Sustain", -1.0, 1.0, 0.0, None, false, "Sustain: up = a longer, fuller body and tail; down = a shorter, drier one. 0 = untouched."),
@@ -189,8 +189,9 @@ pub struct InsertSettings {
     pub order: [u8; INSERT_COUNT],
 }
 
-/// The default chain order.
-pub const DEFAULT_ORDER: [u8; INSERT_COUNT] = [0, 1, 2, 3, 4, 5];
+/// The default chain order: the Compressor first, then Transient, Filter, EQ, Drive,
+/// Bitcrush.
+pub const DEFAULT_ORDER: [u8; INSERT_COUNT] = [5, 0, 1, 2, 3, 4];
 
 fn default_value(insert: usize, slot: usize) -> f32 {
     knob_at(insert, slot).map_or(0.0, |d| d.default)
@@ -394,6 +395,11 @@ struct Transient {
     fast_rel: EnvFollower,
     slow_rel: EnvFollower,
     gain_db: f32,
+    /// Level compensation: slow power averages of what comes in and of what the shaping
+    /// makes, and the gain that brings the second back to the first.
+    power_in: f32,
+    power_out: f32,
+    comp: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -455,6 +461,10 @@ const TUBE_BIAS: f32 = 0.3;
 const COMP_KNEE_DB: f32 = 6.0;
 /// Transient: the bound on the gain, and the follower times.
 const TRANSIENT_MAX_DB: f32 = 18.0;
+/// The Transient keeps the lane's overall level: its output is brought back to its input's
+/// average power over this long a window (so it reshapes the hits without making the lane
+/// louder), within +-12 dB.
+const TRANSIENT_LEVEL_MS: f32 = 400.0;
 /// How much of the followers' difference (dB) becomes gain at Attack / Sustain = 1.
 const TRANSIENT_DEPTH: f32 = 1.0;
 
@@ -518,6 +528,8 @@ pub struct InsertRack {
     comp: Compressor,
     /// Transient follower coefficients.
     t_coefs: [f32; 4],
+    /// One-pole coefficient of the Transient's level compensation (~400 ms).
+    power_coef: f32,
     tone_coef: f32,
 }
 
@@ -539,6 +551,9 @@ impl InsertRack {
                 fast_rel: EnvFollower { value: 0.0 },
                 slow_rel: EnvFollower { value: 0.0 },
                 gain_db: 0.0,
+                power_in: 0.0,
+                power_out: 0.0,
+                comp: 1.0,
             },
             filter: Filter {
                 svf: [Svf::default(); 2],
@@ -579,6 +594,7 @@ impl InsertRack {
                 time_coef(20.0, sr), // fast release
                 time_coef(250.0, sr), // slow release
             ],
+            power_coef: 1.0 - time_coef(TRANSIENT_LEVEL_MS, sr),
             tone_coef: 1.0 - time_coef(1000.0 / (2.0 * PI * TONE_CORNER_HZ), sr),
         };
         rack.update_controls(true);
@@ -606,6 +622,9 @@ impl InsertRack {
         t.fast_rel.value = 0.0;
         t.slow_rel.value = 0.0;
         t.gain_db = 0.0;
+        t.power_in = 0.0;
+        t.power_out = 0.0;
+        t.comp = 1.0;
     }
 
     /// Is anything in (or still fading out)?
@@ -710,7 +729,18 @@ impl InsertRack {
         // A short smoothing (about 1 ms) so the gain itself does not crackle.
         t.gain_db += (target - t.gain_db) * 0.05;
         let g = db_to_gain(t.gain_db);
-        [x[0] * g, x[1] * g]
+        let y = [x[0] * g, x[1] * g];
+        // Level compensation (see `TRANSIENT_LEVEL_MS`).
+        let pc = self.power_coef;
+        t.power_in += (0.5 * (x[0] * x[0] + x[1] * x[1]) - t.power_in) * pc;
+        t.power_out += (0.5 * (y[0] * y[0] + y[1] * y[1]) - t.power_out) * pc;
+        let want = if t.power_in > 1.0e-10 && t.power_out > 1.0e-10 {
+            (t.power_in / t.power_out).sqrt().clamp(0.25, 4.0)
+        } else {
+            t.comp
+        };
+        t.comp = flush(t.comp + (want - t.comp) * pc * 4.0);
+        [y[0] * t.comp, y[1] * t.comp]
     }
 
     fn filter(&mut self, x: [f32; 2]) -> [f32; 2] {
@@ -1149,7 +1179,7 @@ mod tests {
             high
         };
         let filter_last = run([0, 2, 3, 1, 4, 5]); // Drive, then Filter: the harmonics are filtered
-        let drive_last = run(DEFAULT_ORDER); // Filter, then Drive: the harmonics come after
+        let drive_last = run([0, 1, 2, 3, 4, 5]); // Filter, then Drive: the harmonics come after
         println!("high energy: filter last {filter_last:.4}, drive last {drive_last:.4}");
         assert!(drive_last > 3.0 * filter_last);
     }
@@ -1187,5 +1217,36 @@ mod tests {
                 assert_eq!(knob_at(n, k).map(|d| d.label), Some(p.label));
             }
         }
+    }
+
+    /// The Transient reshapes the hits but keeps the lane's level: over a run of hits its
+    /// output stays within a few dB of its input, at full Attack or full Sustain.
+    #[test]
+    fn the_transient_shaper_keeps_the_overall_level() {
+        let hit = |i: usize| {
+            let t = (i % (SR as usize / 4)) as f32 / SR;
+            (2.0 * PI * 120.0 * t).sin() * (-t / 0.08).exp() * 0.5
+        };
+        for (attack, sustain) in [(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (-1.0, -1.0)] {
+            let mut r = rack(TRANSIENT, &[(0, attack), (1, sustain)]);
+            let (mut e_in, mut e_out) = (0.0f64, 0.0f64);
+            for i in 0..(SR as usize * 4) {
+                let x = hit(i);
+                let (y, _) = r.process(x, x);
+                if i > SR as usize * 2 {
+                    e_in += (x * x) as f64;
+                    e_out += (y * y) as f64;
+                }
+            }
+            let db = 10.0 * (e_out / e_in).log10();
+            println!("transient attack {attack} sustain {sustain}: level {db:+.1} dB");
+            assert!(db.abs() < 3.0, "the Transient changed the lane's level by {db:.1} dB");
+        }
+    }
+
+    #[test]
+    fn the_compressor_heads_the_default_chain() {
+        assert_eq!(DEFAULT_ORDER[0] as usize, COMPRESSOR);
+        assert_eq!(InsertSettings::default().order, DEFAULT_ORDER);
     }
 }
