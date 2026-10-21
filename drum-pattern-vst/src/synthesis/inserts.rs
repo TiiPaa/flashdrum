@@ -34,8 +34,9 @@ use std::f32::consts::PI;
 
 /// The six inserts, in chain order.
 pub const INSERT_COUNT: usize = 6;
-/// The most knobs an insert has (the EQ: Low, Mid, Mid Freq, High, Low Freq).
-pub const INSERT_PARAMS: usize = 5;
+/// The most value slots an insert uses (the Compressor: Threshold, Ratio, Attack, Release,
+/// Makeup, Mix).
+pub const INSERT_PARAMS: usize = 6;
 
 pub const TRANSIENT: usize = 0;
 pub const FILTER: usize = 1;
@@ -166,12 +167,14 @@ pub const INSERTS: [InsertDef; INSERT_COUNT] = [
     },
     InsertDef {
         name: "Compressor",
-        help: "Compressor: brings the loud parts down so the lane sounds denser and more even. Its makeup gain is automatic.",
+        help: "Compressor: brings the loud parts down so the lane sounds denser and more even. A slow Attack lets the start of each hit through before it reacts (punch); the GR meter shows how much it takes off.",
         params: &[
             knob("Threshold", -48.0, 0.0, -18.0, Some(" dB"), false, "Threshold: the level above which the sound is compressed."),
             knob("Ratio", 1.0, 20.0, 4.0, None, true, "Ratio: how hard. 2 = gentle, 4 = clear, 10 and more = a limiter."),
             knob("Attack", 0.1, 100.0, 5.0, Some(" ms"), true, "Attack: how fast it reacts. Slow lets the start of each hit through (more punch)."),
             knob("Release", 10.0, 1_000.0, 120.0, Some(" ms"), true, "Release: how fast it lets go. Short = pumping, long = smooth."),
+            knob("Makeup", 0.0, 24.0, 0.0, Some(" dB"), false, "Makeup: gain added after the compression, to bring the level back up. Watch the GR meter: a makeup about equal to the usual reduction keeps the lane at the same loudness."),
+            knob("Mix", 0.0, 1.0, 1.0, None, false, "Mix: how much of the compressed sound replaces the dry one. Below 1 = parallel compression: the hits keep their punch, the body gets denser."),
         ],
     },
 ];
@@ -446,6 +449,8 @@ struct Crush {
 struct Compressor {
     y1: f32,
     yl: f32,
+    /// The most gain reduction (dB) since the editor last read it.
+    gr_peak: f32,
 }
 
 /// The high shelf's corner, and the bell's Q.
@@ -587,7 +592,7 @@ impl InsertRack {
                 rate: Smooth { value: v[BITCRUSH][1] },
                 mix: Smooth { value: v[BITCRUSH][2] },
             },
-            comp: Compressor { y1: 0.0, yl: 0.0 },
+            comp: Compressor { y1: 0.0, yl: 0.0, gr_peak: 0.0 },
             t_coefs: [
                 time_coef(0.1, sr),  // fast attack
                 time_coef(15.0, sr), // slow attack
@@ -615,7 +620,7 @@ impl InsertRack {
         self.drive.tone_lp = [0.0; 2];
         self.crush.held = [0.0; 2];
         self.crush.phase = 1.0;
-        self.comp = Compressor { y1: 0.0, yl: 0.0 };
+        self.comp = Compressor { y1: 0.0, yl: 0.0, gr_peak: 0.0 };
         let t = &mut self.transient;
         t.fast_atk.value = 0.0;
         t.slow_atk.value = 0.0;
@@ -625,6 +630,14 @@ impl InsertRack {
         t.power_in = 0.0;
         t.power_out = 0.0;
         t.comp = 1.0;
+    }
+
+    /// [303] The compressor's largest gain reduction (dB, >= 0) since the last call, for
+    /// the editor's GR meter; 0 while the compressor is off.
+    pub fn take_gr_peak(&mut self) -> f32 {
+        let gr = if self.fade[COMPRESSOR] > 0.0 { self.comp.gr_peak } else { 0.0 };
+        self.comp.gr_peak = 0.0;
+        gr
     }
 
     /// Is anything in (or still fading out)?
@@ -826,10 +839,14 @@ impl InsertRack {
         let c = &mut self.comp;
         c.y1 = x_l.max(a_rel * c.y1 + (1.0 - a_rel) * x_l);
         c.yl = a_atk * c.yl + (1.0 - a_atk) * c.y1;
+        c.gr_peak = c.gr_peak.max(c.yl);
         // Makeup: half of the reduction a full-scale signal would get.
-        let makeup = 0.5 * (threshold - threshold / ratio).abs();
-        let g = db_to_gain(makeup - c.yl);
-        [x[0] * g, x[1] * g]
+        // Makeup is the user's (an automatic one boosted every hit that got through before
+        // the attack, so the level jumped from hit to hit with the spacing of the hits).
+        let g = db_to_gain(v[4] - c.yl);
+        let mix = v[5].clamp(0.0, 1.0);
+        let gain = 1.0 + (g - 1.0) * mix;
+        [x[0] * gain, x[1] * gain]
     }
 }
 
@@ -1005,8 +1022,7 @@ mod tests {
 
     #[test]
     fn the_compressor_follows_its_static_curve() {
-        // -6 dBFS sine (peak), threshold -18, ratio 4: 12 dB over -> 9 dB of reduction,
-        // plus the makeup of half of what full scale gets (0.5 * 13.5 = 6.75 dB).
+        // -6 dBFS sine (peak), threshold -18, ratio 4: 12 dB over -> 9 dB of reduction.
         let mut r = rack(COMPRESSOR, &[(0, -18.0), (1, 4.0), (2, 1.0), (3, 50.0)]);
         let n = SR as usize;
         let (mut peak_in, mut peak_out) = (0.0f32, 0.0f32);
@@ -1019,15 +1035,15 @@ mod tests {
             }
         }
         let change = gain_to_db(peak_out) - gain_to_db(peak_in);
-        println!("compressor: {change:.2} dB (expected -9 + 6.75 = -2.25)");
-        assert!((change + 2.25).abs() < 1.0, "{change}");
+        println!("compressor: {change:.2} dB (expected -9)");
+        assert!((change + 9.0).abs() < 1.0, "{change}");
     }
 
     #[test]
     fn under_the_threshold_the_compressor_only_adds_its_makeup() {
-        let mut r = rack(COMPRESSOR, &[(0, -18.0), (1, 4.0), (2, 1.0), (3, 50.0)]);
+        let mut r = rack(COMPRESSOR, &[(0, -18.0), (1, 4.0), (2, 1.0), (3, 50.0), (4, 5.0)]);
         let level = response_db(&mut r, 100.0); // a 0.1 sine is -20 dBFS: under -18 - knee/2
-        assert!((level - 6.75).abs() < 0.5, "{level}");
+        assert!((level - 5.0).abs() < 0.3, "{level}");
     }
 
     /// The transient designer reshapes a hit: Attack up lifts the first milliseconds,
@@ -1084,7 +1100,7 @@ mod tests {
     fn switching_an_insert_does_not_click() {
         let mut r = InsertRack::new(SR);
         let mut s = InsertSettings::default();
-        s.values[FILTER] = [0.0, 200.0, 0.0, 1.0, 0.0];
+        s.values[FILTER] = [0.0, 200.0, 0.0, 1.0, 0.0, 0.0];
         let mut prev = 0.0f32;
         let mut worst = 0.0f32;
         for i in 0..(SR as usize) {
@@ -1159,7 +1175,7 @@ mod tests {
             let mut s = InsertSettings::default();
             s.on[FILTER] = true;
             s.on[DRIVE] = true;
-            s.values[FILTER] = [0.0, 300.0, 0.0, 1.0, 0.0];
+            s.values[FILTER] = [0.0, 300.0, 0.0, 1.0, 0.0, 0.0];
             s.values[DRIVE][1] = 30.0;
             s.order = order;
             let mut r = InsertRack::new(SR);
@@ -1248,5 +1264,50 @@ mod tests {
     fn the_compressor_heads_the_default_chain() {
         assert_eq!(DEFAULT_ORDER[0] as usize, COMPRESSOR);
         assert_eq!(InsertSettings::default().order, DEFAULT_ORDER);
+    }
+
+    #[test]
+    fn the_gr_meter_reads_the_compressors_reduction() {
+        let mut r = rack(COMPRESSOR, &[(0, -18.0), (1, 4.0), (2, 1.0), (3, 50.0)]);
+        for i in 0..(SR as usize / 2) {
+            let x = (2.0 * PI * 100.0 * i as f32 / SR).sin() * db_to_gain(-6.0);
+            r.process(x, x);
+        }
+        let gr = r.take_gr_peak();
+        assert!((gr - 9.0).abs() < 1.0, "12 dB over at 4:1 = 9 dB of reduction ({gr})");
+        assert_eq!(r.take_gr_peak(), 0.0, "reading resets it");
+    }
+
+    /// With no makeup, a compressor never makes a hit louder than it came in, whatever the
+    /// spacing of the hits (the automatic makeup used to push isolated hits up to +4 dB).
+    #[test]
+    fn no_hit_comes_out_louder_than_it_went_in() {
+        let gaps = [0.5f32, 0.5, 0.25, 0.125, 0.125, 0.5, 1.0, 0.25, 0.5];
+        for atk in [0.1f32, 5.0, 30.0] {
+            let mut r = rack(COMPRESSOR, &[(0, -18.0), (1, 4.0), (2, atk), (3, 120.0)]);
+            for g in gaps {
+                let (mut pk_in, mut pk_out) = (0.0f32, 0.0f32);
+                for i in 0..(g * SR) as usize {
+                    let t = i as f32 / SR;
+                    let f = 50.0 + 150.0 * (-t / 0.02).exp();
+                    let x = (2.0 * PI * f * t).sin() * (-t / 0.15).exp() * 0.9;
+                    let (y, _) = r.process(x, x);
+                    pk_in = pk_in.max(x.abs());
+                    pk_out = pk_out.max(y.abs());
+                }
+                assert!(pk_out <= pk_in * 1.001, "attack {atk}: {pk_out} > {pk_in}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_compressor_mix_blends_the_dry_hit_back() {
+        let level = |mix: f32| {
+            let mut r = rack(COMPRESSOR, &[(0, -30.0), (1, 10.0), (2, 0.1), (3, 50.0), (4, 0.0), (5, mix)]);
+            response_db(&mut r, 100.0)
+        };
+        let (wet, half, dry) = (level(1.0), level(0.5), level(0.0));
+        println!("compressor mix: wet {wet:.1}, half {half:.1}, dry {dry:.1}");
+        assert!(dry.abs() < 0.1 && wet < -8.0 && half > wet + 3.0 && half < -1.0);
     }
 }

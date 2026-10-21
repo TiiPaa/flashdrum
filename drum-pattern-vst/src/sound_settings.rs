@@ -315,11 +315,27 @@ pub struct SoundSettingsState {
     /// level; `fx_live_on` says whether the values are fresh (the transport plays).
     pub fx_live: [[AtomicU32; FX_LIVE_FIELDS]; crate::track::FX_SLOT_COUNT],
     pub fx_live_on: [AtomicBool; crate::track::FX_SLOT_COUNT],
+    /// [303] Each lane's compressor-insert gain reduction (dB, f32 bits): the largest since
+    /// the editor last read it (the audio thread keeps the max, the editor takes it).
+    pub insert_gr: [AtomicU32; crate::track::MAX_TRACKS],
 }
 
 pub use crate::synthesis::FX_LIVE_FIELDS;
 
 impl SoundSettingsState {
+    /// [303] Audio thread: add a block's gain reduction (positive floats order like their
+    /// bits, so `fetch_max` on the bits keeps the largest).
+    pub fn publish_insert_gr(&self, slot: usize, gr_db: f32) {
+        if let Some(cell) = self.insert_gr.get(slot) {
+            cell.fetch_max(gr_db.max(0.0).to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// [303] Editor: the largest gain reduction since the last read, and reset it.
+    pub fn take_insert_gr(&self, slot: usize) -> f32 {
+        self.insert_gr.get(slot).map_or(0.0, |cell| f32::from_bits(cell.swap(0, Ordering::Relaxed)))
+    }
+
     /// [286] Publish what effect bus `bus` is using (audio thread; atomic stores).
     pub fn publish_fx_live(&self, bus: usize, values: [f32; FX_LIVE_FIELDS], playing: bool) {
         if bus >= crate::track::FX_SLOT_COUNT {
@@ -378,6 +394,7 @@ impl SoundSettingsState {
             needs_param_seed: AtomicBool::new(false),
             fx_live: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
             fx_live_on: std::array::from_fn(|_| AtomicBool::new(false)),
+            insert_gr: std::array::from_fn(|_| AtomicU32::new(0)),
         })
     }
 

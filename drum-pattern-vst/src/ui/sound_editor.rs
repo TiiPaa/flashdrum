@@ -1651,7 +1651,12 @@ pub fn draw_sound_panel(
     };
 
     draw_panel_header(ui, &cx, state, scope_badge);
-    draw_panel_tabs(ui, state, scope_badge);
+    // [303] An effect lane has no sends and no inserts: no Effects tab.
+    let show_effects = !layout_snapshot.slots[slot].kind.is_effect();
+    if !show_effects && state.sound_editor_tab == SoundEditorTab::Effects {
+        state.sound_editor_tab = SoundEditorTab::Sound;
+    }
+    draw_panel_tabs(ui, state, scope_badge, show_effects);
     draw_action_strip(ui, &cx, state, &mut src);
 
     let mut freq = src.get(ParamId::Std(StandardField::Freq));
@@ -1900,6 +1905,36 @@ pub fn draw_sound_panel(
             module_end(ui, section_module);
             }
 
+            // [301] An effect lane's Sequencer (in its Sound tab: an effect lane has no Effects tab): how its p-locks behave (Glide) and
+            // whether it goes back to its sliders when the pattern loops (Loop Restart,
+            // also the arrow on the lane's first cell). Lane settings, never locks.
+            if crate::track::is_fx_slot(slot) && layout_snapshot.slots[slot].kind.is_effect() {
+                let seq_module = module_begin(ui, Some("Sequencer"));
+                let instrument = &crate::instrument_registry::INSTRUMENTS[voice_idx];
+                for def in instrument
+                    .special_params
+                    .iter()
+                    .filter(|d| is_fx_sequencer_param(d.name))
+                {
+                    let id = ParamId::Special(def.special_index);
+                    // Loop Restart is stored inverted (older lanes hold 0 = restart).
+                    let inverted = def.name.ends_with("_norestart");
+                    let stored = src.get(id);
+                    let mut on = if inverted { 1.0 - stored } else { stored };
+                    let row_help_text = help::special_param(def.name).to_string();
+                    let toggled = help::zone(ui, ("fx_seq_row", def.name), &row_help_text, |ui| {
+                        ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
+                            draw_editor_switch_row(ui, def.label, &mut on).changed()
+                        })
+                        .inner
+                    });
+                    if toggled {
+                        src.set(id, if inverted { 1.0 - on } else { on });
+                        changed = true;
+                    }
+                }
+                module_end(ui, seq_module);
+            }
             // [286] On an effect lane: what the reverb is using RIGHT NOW. While the
             // transport plays, the p-locks of the lane move its knobs; this shows where
             // they actually are (a value that differs from the lane's own is lit).
@@ -2144,39 +2179,9 @@ pub fn draw_sound_panel(
                 module_end(ui, sends_module);
             }
 
-            // [303] / [301] An effect lane's Sequencer: how its p-locks behave (Glide) and
-            // whether it goes back to its sliders when the pattern loops (Loop Restart,
-            // also the arrow on the lane's first cell). Lane settings, never locks.
-            if crate::track::is_fx_slot(slot) && layout_snapshot.slots[slot].kind.is_effect() {
-                let seq_module = module_begin(ui, Some("Sequencer"));
-                let instrument = &crate::instrument_registry::INSTRUMENTS[voice_idx];
-                for def in instrument
-                    .special_params
-                    .iter()
-                    .filter(|d| is_fx_sequencer_param(d.name))
-                {
-                    let id = ParamId::Special(def.special_index);
-                    // Loop Restart is stored inverted (older lanes hold 0 = restart).
-                    let inverted = def.name.ends_with("_norestart");
-                    let stored = src.get(id);
-                    let mut on = if inverted { 1.0 - stored } else { stored };
-                    let row_help_text = help::special_param(def.name).to_string();
-                    let toggled = help::zone(ui, ("fx_seq_row", def.name), &row_help_text, |ui| {
-                        ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
-                            draw_editor_switch_row(ui, def.label, &mut on).changed()
-                        })
-                        .inner
-                    });
-                    if toggled {
-                        src.set(id, if inverted { 1.0 - on } else { on });
-                        changed = true;
-                    }
-                }
-                module_end(ui, seq_module);
-            }
             // [303] The lane's inserts, in chain order (instrument lanes only).
             if layout_snapshot.slots[slot].active && !layout_snapshot.slots[slot].kind.is_effect() {
-                draw_lane_inserts(ui, params, slot, state);
+                draw_lane_inserts(ui, params, sound_settings, slot, state);
             }
                         }
                         SoundEditorTab::Track => {
@@ -2352,7 +2357,7 @@ fn draw_panel_header(
 /// one is cut from the plate and opens onto it, the other sits back. The
 /// flat blue half-width tabs were the one control of the panel without the
 /// skeuomorphic look.
-fn draw_panel_tabs(ui: &mut egui::Ui, state: &mut EditorUIState, scope_badge: Option<usize>) {
+fn draw_panel_tabs(ui: &mut egui::Ui, state: &mut EditorUIState, scope_badge: Option<usize>, show_effects: bool) {
     const BAND_H: f32 = 36.0;
     const MARGIN: f32 = 14.0;
     const GAP: f32 = 6.0;
@@ -2363,7 +2368,8 @@ fn draw_panel_tabs(ui: &mut egui::Ui, state: &mut EditorUIState, scope_badge: Op
     painter.rect_filled(band, 0.0, PANEL_SKEUO_HEADER);
     // The plate's top edge, on a half pixel so the 1 px line stays crisp.
     let base = band.bottom() - 0.5;
-    let tab_w = ((band.width() - 2.0 * MARGIN - 2.0 * GAP) / 3.0).round();
+    let tab_count = if show_effects { 3.0 } else { 2.0 };
+    let tab_w = ((band.width() - 2.0 * MARGIN - (tab_count - 1.0) * GAP) / tab_count).round();
     let edge = egui::Stroke::new(1.0, egui::Color32::from_rgb(20, 20, 24));
 
     let mut active_span = None;
@@ -2376,7 +2382,7 @@ fn draw_panel_tabs(ui: &mut egui::Ui, state: &mut EditorUIState, scope_badge: Op
         (
             SoundEditorTab::Effects,
             "Effects",
-            "Sends to the effect lanes; on an effect lane, its Sequencer switches",
+            "Sends to the effect lanes, and the lane's inserts",
         ),
         (
             SoundEditorTab::Track,
@@ -2385,6 +2391,7 @@ fn draw_panel_tabs(ui: &mut egui::Ui, state: &mut EditorUIState, scope_badge: Op
         ),
     ]
     .into_iter()
+    .filter(|(tab, _, _)| show_effects || *tab != SoundEditorTab::Effects)
     .enumerate()
     {
         let selected = state.sound_editor_tab == tab;
@@ -3405,7 +3412,13 @@ fn draw_standard_rows(
 /// its buttons: move up, move down, fold. Folded (the default), only its On switch shows.
 /// Lane settings (never locked per step, whatever cell is selected), written to the track
 /// layout.
-fn draw_lane_inserts(ui: &mut egui::Ui, params: &DrumFlashParams, slot: usize, state: &mut EditorUIState) {
+fn draw_lane_inserts(
+    ui: &mut egui::Ui,
+    params: &DrumFlashParams,
+    sound_settings: &SoundSettingsState,
+    slot: usize,
+    state: &mut EditorUIState,
+) {
     use crate::synthesis::inserts::{value_index, INSERTS, INSERT_COUNT};
     let mut ins = params.track_layout.state.inserts(slot);
     let mut edited = false;
@@ -3423,13 +3436,30 @@ fn draw_lane_inserts(ui: &mut egui::Ui, params: &DrumFlashParams, slot: usize, s
         );
         let unfolded = state.insert_unfolded[n];
         let size = 18.0;
+        // Right to left: the On switch, the fold triangle, the drag handle.
+        let switch_rect = egui::Rect::from_min_size(
+            egui::pos2(strip.right() - 12.0 - 34.0, strip.center().y - 9.0),
+            Vec2::new(34.0, 18.0),
+        );
         let button = |k: f32| {
             egui::Rect::from_center_size(
-                egui::pos2(strip.right() - 14.0 - k * (size + 6.0), strip.center().y),
+                egui::pos2(switch_rect.left() - 14.0 - k * (size + 6.0), strip.center().y),
                 Vec2::splat(size),
             )
         };
         let (fold_rect, grip_rect) = (button(0.0), button(1.0));
+        let switched = ui
+            .put(switch_rect, crate::ui::widgets::ToggleSwitch::new(ins.on[n]))
+            .on_hover_text(def.help)
+            .clicked();
+        if switched {
+            ins.on[n] = !ins.on[n];
+            // Switching an insert on opens it: its settings are what one wants next.
+            if ins.on[n] {
+                state.insert_unfolded[n] = true;
+            }
+            edited = true;
+        }
         let fold = ui.interact(fold_rect, ui.make_persistent_id(("insert_fold", n)), egui::Sense::click());
         let grip = ui.interact(grip_rect, ui.make_persistent_id(("insert_grip", n)), egui::Sense::drag());
         let painter = ui.painter();
@@ -3473,20 +3503,10 @@ fn draw_lane_inserts(ui: &mut egui::Ui, params: &DrumFlashParams, slot: usize, s
             state.insert_unfolded[n] = !unfolded;
         }
 
-        let mut on = if ins.on[n] { 1.0 } else { 0.0 };
-        let toggled = help::zone(ui, ("insert_on", slot, n), def.help, |ui| {
-            ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
-                draw_editor_switch_row(ui, "On", &mut on).changed()
-            })
-            .inner
-        });
-        if toggled {
-            ins.on[n] = on >= 0.5;
-            // Switching an insert on opens it: its settings are what one wants next.
-            if ins.on[n] {
-                state.insert_unfolded[n] = true;
-            }
-            edited = true;
+        // [303] The compressor's GR meter, under its title (also folded: it is what one
+        // watches while playing).
+        if n == crate::synthesis::inserts::COMPRESSOR && ins.on[n] {
+            draw_gr_meter(ui, sound_settings, slot);
         }
         if state.insert_unfolded[n] {
             let enabled = ins.on[n];
@@ -3568,7 +3588,46 @@ fn draw_lane_inserts(ui: &mut egui::Ui, params: &DrumFlashParams, slot: usize, s
     }
 }
 
-/// [303] The effect lanes' Sequencer switches (shown in the Effects tab, not in Sound).
+/// [303] Gain-reduction meter of a lane's compressor insert: a bar from 0 to 24 dB that
+/// jumps to each new peak and falls back at 20 dB/s, with its value.
+fn draw_gr_meter(ui: &mut egui::Ui, sound_settings: &SoundSettingsState, slot: usize) {
+    const RANGE_DB: f32 = 24.0;
+    const FALL_DB_PER_S: f32 = 20.0;
+    let id = egui::Id::new(("insert_gr_meter", slot));
+    let now = ui.ctx().input(|i| i.time);
+    let (shown, last) = ui.ctx().data(|d| d.get_temp::<(f32, f64)>(id)).unwrap_or((0.0, now));
+    let fallen = (shown - FALL_DB_PER_S * (now - last) as f32).max(0.0);
+    let gr = sound_settings.take_insert_gr(slot).max(fallen);
+    ui.ctx().data_mut(|d| d.insert_temp(id, (gr, now)));
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    help::zone(
+        ui,
+        ("insert_gr", slot),
+        "GR: how many dB the compressor is taking off right now. A bar that jumps on every hit and falls back between them is a compressor working on the hits; one that never falls back is a compressor holding the whole lane down.",
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                editor_label(ui, "GR");
+                let w = (EDITOR_PARAMS_W - EDITOR_LABEL_W - 64.0).max(60.0);
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 10.0), egui::Sense::hover());
+                let painter = ui.painter();
+                painter.rect_filled(rect, 2.0, Color32::from_rgb(18, 18, 22));
+                let frac = (gr / RANGE_DB).clamp(0.0, 1.0);
+                if frac > 0.0 {
+                    let bar = egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + rect.width() * frac, rect.bottom()));
+                    painter.rect_filled(bar, 2.0, AMBER());
+                }
+                for db in [3.0, 6.0, 12.0, 18.0] {
+                    let x = rect.left() + rect.width() * db / RANGE_DB;
+                    painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(1.0, Color32::from_black_alpha(140)));
+                }
+                ui.label(RichText::new(format!("-{gr:.1} dB")).font(f_mono_med(11.0)).color(INK()));
+            });
+        },
+    );
+}
+
+/// [303] The effect lanes' Sequencer switches (in their Sound tab).
 fn is_fx_sequencer_param(name: &str) -> bool {
     matches!(
         name,

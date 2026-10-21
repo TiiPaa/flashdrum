@@ -1603,6 +1603,11 @@ impl DrumSynthesizer {
         }
     }
 
+    /// [303] The largest gain reduction of `slot`'s compressor insert since the last call.
+    pub fn take_insert_gr(&mut self, slot: usize) -> f32 {
+        self.inserts.get_mut(slot).map_or(0.0, |rack| rack.take_gr_peak())
+    }
+
     /// [300] Which sends are switched off (once per block).
     pub fn set_send_mutes(&mut self, muted: [[bool; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS]) {
         self.send_muted = muted;
@@ -1917,7 +1922,7 @@ mod tests {
             synth.set_voice_settings(2, VoiceSettings::hihat());
             let mut ins = inserts::InsertSettings::default();
             ins.on[inserts::FILTER] = filter_on;
-            ins.values[inserts::FILTER] = [0.0, 150.0, 0.0, 1.0, 0.0];
+            ins.values[inserts::FILTER] = [0.0, 150.0, 0.0, 1.0, 0.0, 0.0];
             synth.set_inserts(2, ins);
             synth.trigger(2, 1.0);
             let mut out = Vec::new();

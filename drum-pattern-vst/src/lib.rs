@@ -4172,6 +4172,11 @@ impl Plugin for DrumFlashVst {
             write_aux_outputs(aux, sample_idx, &track_routings, &voice_outputs, master_vol);
         }
 
+        // [303] The compressor inserts' gain reduction, for the editor's GR meters.
+        for slot in 0..crate::track::FX_FIRST_SLOT {
+            let gr = self.synthesizer.take_insert_gr(slot);
+            self.sound_settings_state.publish_insert_gr(slot, gr);
+        }
         self.apply_midi_pattern_switch();
         self.advance_song_mode();
         self.publish_playheads(use_internal_sequencer);
