@@ -2135,6 +2135,10 @@ pub fn draw_sound_panel(
                 }
                 module_end(ui, seq_module);
             }
+            // [303] The lane's inserts, in chain order (instrument lanes only).
+            if layout_snapshot.slots[slot].active && !layout_snapshot.slots[slot].kind.is_effect() {
+                draw_lane_inserts(ui, params, slot);
+            }
                         }
                         SoundEditorTab::Track => {
                             draw_track_tab(ui, params, sound_settings, setter, state);
@@ -3358,6 +3362,66 @@ fn draw_standard_rows(
 /// [269] The special rows of one section, stored PER SLOT. Returns the
 /// edited Stereo switch (some specials draw it) and whether a row was edited.
 #[allow(clippy::too_many_arguments)]
+/// [303] The lane's inserts, in chain order (Transient, Filter, EQ, Drive, Bitcrush,
+/// Compressor): an On switch per insert, its knobs greyed while it is off. Lane settings
+/// (never locked per step, whatever cell is selected), written to the track layout.
+fn draw_lane_inserts(ui: &mut egui::Ui, params: &DrumFlashParams, slot: usize) {
+    use crate::synthesis::inserts::INSERTS;
+    let mut ins = params.track_layout.state.inserts(slot);
+    let mut edited = false;
+    for (n, def) in INSERTS.iter().enumerate() {
+        let module = module_begin(ui, Some(def.name));
+        let mut on = if ins.on[n] { 1.0 } else { 0.0 };
+        let toggled = help::zone(ui, ("insert_on", slot, n), def.help, |ui| {
+            ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
+                draw_editor_switch_row(ui, "On", &mut on).changed()
+            })
+            .inner
+        });
+        if toggled {
+            ins.on[n] = on >= 0.5;
+            edited = true;
+        }
+        let enabled = ins.on[n];
+        ui.add_enabled_ui(enabled, |ui| {
+            for (k, p) in def.params.iter().enumerate() {
+                let value = &mut ins.values[n][k];
+                let changed = help::zone(ui, ("insert_param", slot, n, k), p.help, |ui| {
+                    ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
+                        if let Some(options) = p.options {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                editor_label(ui, p.label);
+                                let last = options.len().saturating_sub(1) as f32;
+                                let current = value.round().clamp(0.0, last) as usize;
+                                match right_aligned_select(ui, ("insert_menu", slot, n, k), current, options) {
+                                    Some(idx) if idx != current => {
+                                        *value = idx as f32;
+                                        true
+                                    }
+                                    _ => false,
+                                }
+                            })
+                            .inner
+                        } else {
+                            draw_editor_slider_row(ui, p.label, value, p.min, p.max, p.default, p.log, p.unit)
+                                .changed()
+                        }
+                    })
+                    .inner
+                });
+                edited |= changed;
+            }
+        });
+        module_end(ui, module);
+    }
+    if edited {
+        let mut layout = PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());
+        layout.slots[slot].inserts = ins;
+        PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
+    }
+}
+
 /// [303] The effect lanes' Sequencer switches (shown in the Effects tab, not in Sound).
 fn is_fx_sequencer_param(name: &str) -> bool {
     matches!(

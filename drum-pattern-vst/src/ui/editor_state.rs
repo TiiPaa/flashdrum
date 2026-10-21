@@ -45,6 +45,8 @@ pub struct LaneClipboardData {
     pub texture_path: Option<std::path::PathBuf>,
     /// [286] The lane's sends to Fx1 / Fx2.
     pub fx_send: [f32; crate::track::FX_SLOT_COUNT],
+    /// [303] The lane's inserts.
+    pub inserts: crate::synthesis::inserts::InsertSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -656,6 +658,7 @@ impl EditorUIState {
         let length_locked = params.lane_length_locks.is_locked(slot);
         let texture_path = params.user_textures.path(slot);
         let fx_send = std::array::from_fn(|bus| params.track_layout.state.fx_send(slot, bus));
+        let inserts = params.track_layout.state.inserts(slot);
 
         self.lane_clipboard = Some(LaneClipboardData {
             kind,
@@ -671,6 +674,7 @@ impl EditorUIState {
             length_locked,
             texture_path,
             fx_send,
+            inserts,
         });
     }
 
@@ -709,6 +713,7 @@ impl EditorUIState {
             layout.slots[target_slot] = TrackSlot::active_with_kind(clipboard.kind);
         }
         layout.slots[target_slot].fx_send = clipboard.fx_send;
+        layout.slots[target_slot].inserts = clipboard.inserts;
         PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
 
         // Pasting onto an EMPTY lane also turns a slot into a new instrument,

@@ -10,6 +10,7 @@ mod cymbal;
 mod delay;
 mod dsp;
 mod hihat;
+pub mod inserts;
 mod kick;
 mod kick_808;
 mod oneshot;
@@ -1418,6 +1419,9 @@ pub struct DrumSynthesizer {
     /// [286] The send levels p-locked on the step a lane last fired: they replace the
     /// lane's own sends until its next hit (`None` = follow the lane).
     send_override: [[Option<f32>; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
+    /// [303] Each instrument lane's inserts (no heap inside: rebuilt in
+    /// `initialize_with_layout` for the sample rate, never in `process`).
+    inserts: Box<[inserts::InsertRack; crate::track::MAX_TRACKS]>,
 }
 
 const VELOCITY_SMOOTH_MS: f32 = 1.5;
@@ -1430,6 +1434,7 @@ impl DrumSynthesizer {
             fx_reverb: std::array::from_fn(|_| ReverbCore::new(44100.0)),
             fx_delay: std::array::from_fn(|_| DelayCore::new(44100.0)),
             fx_rumble: std::array::from_fn(|_| RumbleCore::new(44100.0)),
+            inserts: Box::new(std::array::from_fn(|_| inserts::InsertRack::new(44100.0))),
             fx_bypassed: [false; crate::track::FX_SLOT_COUNT],
             send_state: [[0.0; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
             send_override: [[None; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
@@ -1462,6 +1467,7 @@ impl DrumSynthesizer {
         self.fx_reverb = std::array::from_fn(|_| ReverbCore::new(sample_rate));
         self.fx_delay = std::array::from_fn(|_| DelayCore::new(sample_rate));
         self.fx_rumble = std::array::from_fn(|_| RumbleCore::new(sample_rate));
+        self.inserts = Box::new(std::array::from_fn(|_| inserts::InsertRack::new(sample_rate)));
         self.send_coef = 1.0 - (-1.0 / (sample_rate * SEND_SMOOTH_MS * 0.001)).exp();
         for smoother in self.velocity_smoothers.iter_mut() {
             *smoother = dsp::OnePoleSmoother::new(sample_rate, VELOCITY_SMOOTH_MS, 1.0);
@@ -1594,6 +1600,29 @@ impl DrumSynthesizer {
         }
     }
 
+    /// [303] Hand a lane its inserts (once per block, from the layout's atomics).
+    pub fn set_inserts(&mut self, slot: usize, settings: inserts::InsertSettings) {
+        if let Some(rack) = self.inserts.get_mut(slot) {
+            rack.set_settings(settings);
+        }
+    }
+
+    /// [303] Run every instrument lane through its inserts. Call right after
+    /// `process_voice_samples_stereo` and before `process_fx`: an insert sits on the lane
+    /// itself, so the sends hear it. Effect buses have none.
+    pub fn process_inserts(&mut self, outputs: &mut [[f32; 2]; crate::track::MAX_TRACKS]) {
+        for slot in 0..crate::track::FX_FIRST_SLOT {
+            if !self.active[slot] {
+                continue;
+            }
+            let rack = &mut self.inserts[slot];
+            if rack.is_active() {
+                let (l, r) = rack.process(outputs[slot][0], outputs[slot][1]);
+                outputs[slot] = [l, r];
+            }
+        }
+    }
+
     /// [286] The Rumble's duck gain on bus `bus` (1 = untouched), `None` when the bus is not a
     /// Rumble. For the Lane Editor's "Playing now".
     pub fn rumble_duck_gain(&self, bus: usize) -> Option<f32> {
@@ -1689,6 +1718,9 @@ impl DrumSynthesizer {
         }
         for fx in self.fx_rumble.iter_mut() {
             fx.reset();
+        }
+        for rack in self.inserts.iter_mut() {
+            rack.reset();
         }
         self.send_state = [[0.0; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
         self.send_override = [[None; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
@@ -1856,6 +1888,50 @@ mod tests {
             println!("send {send}: bus input peak {peak_in:.3}, duck gain down to {lowest:.3}, {back:.3} at 475 ms");
             assert!(lowest < 0.4, "the kick at send {send} did not duck the rumble ({lowest})");
             assert!(back > 0.9, "the rumble must be back after the Release ({back})");
+        }
+    }
+
+    /// [303] A lane's inserts act on the lane's own output (so its main mix, aux and sends
+    /// hear them): a 150 Hz low-pass takes the highs out of a hi-hat; all off, the lane is
+    /// untouched, bit for bit.
+    #[test]
+    fn lane_inserts_shape_the_lane_and_all_off_change_nothing() {
+        use crate::track::{TrackInstrumentKind as K, TrackLayoutState, TrackSlot};
+        let run = |filter_on: bool| {
+            let mut layout = TrackLayoutState::empty_layout();
+            layout.slots[2] = TrackSlot::active_with_kind(K::HiHat);
+            let mut synth = DrumSynthesizer::new();
+            synth.initialize_with_layout(44100.0, &layout);
+            synth.set_voice_settings(2, VoiceSettings::hihat());
+            let mut ins = inserts::InsertSettings::default();
+            ins.on[inserts::FILTER] = filter_on;
+            ins.values[inserts::FILTER] = [0.0, 150.0, 0.0, 1.0];
+            synth.set_inserts(2, ins);
+            synth.trigger(2, 1.0);
+            let mut out = Vec::new();
+            let mut outputs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
+            for _ in 0..8000 {
+                synth.process_voice_samples_stereo(&mut outputs);
+                synth.process_inserts(&mut outputs);
+                out.push(outputs[2][0]);
+            }
+            out
+        };
+        let (dry, filtered) = (run(false), run(true));
+        let e = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>();
+        assert!(e(&dry) > 1.0e-3, "the hi-hat plays");
+        assert!(e(&filtered) < 0.1 * e(&dry), "a 150 Hz low-pass guts a hi-hat");
+        // Off is a wire: the same voice with no insert on is exactly the raw output.
+        let mut layout = TrackLayoutState::empty_layout();
+        layout.slots[2] = TrackSlot::active_with_kind(K::HiHat);
+        let mut raw = DrumSynthesizer::new();
+        raw.initialize_with_layout(44100.0, &layout);
+        raw.set_voice_settings(2, VoiceSettings::hihat());
+        raw.trigger(2, 1.0);
+        let mut outputs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
+        for i in 0..8000 {
+            raw.process_voice_samples_stereo(&mut outputs);
+            assert_eq!(outputs[2][0], dry[i]);
         }
     }
 

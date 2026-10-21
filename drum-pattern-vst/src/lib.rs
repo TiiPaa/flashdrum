@@ -4063,6 +4063,10 @@ impl Plugin for DrumFlashVst {
 
         let (track_routings, mix_gains) = self.update_mix_gating();
         let (fx_sends, fx_bypass) = self.fx_block_state();
+        // [303] The lanes' inserts, read once per block from the layout's atomics.
+        for slot in 0..crate::track::FX_FIRST_SLOT {
+            self.synthesizer.set_inserts(slot, self.params.track_layout.state.inserts(slot));
+        }
         if !self.sequencer.is_playing() {
             self.synthesizer.clear_send_overrides();
         }
@@ -4150,6 +4154,8 @@ impl Plugin for DrumFlashVst {
             let mut voice_outputs = [[0.0f32; 2]; crate::track::MAX_TRACKS];
             self.synthesizer
                 .process_voice_samples_stereo(&mut voice_outputs);
+            // [303] Each lane's inserts, before the sends hear it.
+            self.synthesizer.process_inserts(&mut voice_outputs);
             // [286] The effect buses: sends in, wet return into the bus slots.
             self.synthesizer
                 .process_fx(&mut voice_outputs, &fx_sends, fx_bypass);

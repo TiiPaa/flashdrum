@@ -534,6 +534,11 @@ pub struct TrackSlot {
     /// `track-layout-v1` blobs load with no send.
     #[serde(default)]
     pub fx_send: [f32; FX_SLOT_COUNT],
+    /// [303] The lane's inserts (Transient, Filter, EQ, Drive, Bitcrush, Compressor):
+    /// which are on and their knobs. Lane settings, never locked per step.
+    /// `#[serde(default)]` so older `track-layout-v1` blobs load with every insert off.
+    #[serde(default)]
+    pub inserts: crate::synthesis::inserts::InsertSettings,
 }
 
 impl TrackSlot {
@@ -546,6 +551,7 @@ impl TrackSlot {
             midi_note: TrackInstrumentKind::Kick.default_midi_note(),
             linked_up: false,
             fx_send: [0.0; FX_SLOT_COUNT],
+            inserts: Default::default(),
         }
     }
 
@@ -558,6 +564,7 @@ impl TrackSlot {
             midi_note: kind.default_midi_note(),
             linked_up: false,
             fx_send: [0.0; FX_SLOT_COUNT],
+            inserts: Default::default(),
         }
     }
 }
@@ -864,6 +871,7 @@ impl TrackLayoutState {
                 midi_note: crate::instrument_registry::INSTRUMENTS[i].midi_note,
                 linked_up: false,
                 fx_send: [0.0; FX_SLOT_COUNT],
+                inserts: Default::default(),
             };
             // Classic HH↔OH choke out of the box.
             if matches!(
@@ -978,6 +986,10 @@ pub struct AtomicTrackLayout {
     pub slot_linked: [AtomicBool; MAX_TRACKS],
     /// [286] Send levels (f32 bits) to Fx1 / Fx2, per slot.
     pub slot_fx_send: [[AtomicU32; FX_SLOT_COUNT]; MAX_TRACKS],
+    /// [303] The lane inserts: a bit per insert that is on, and every knob (f32 bits).
+    pub slot_insert_on: [AtomicU8; MAX_TRACKS],
+    pub slot_insert_values: [[[AtomicU32; crate::synthesis::inserts::INSERT_PARAMS];
+        crate::synthesis::inserts::INSERT_COUNT]; MAX_TRACKS],
     pub global_channel: AtomicU8,
     pub global_base_note: AtomicU8,
     pub version: std::sync::atomic::AtomicU64,
@@ -991,6 +1003,10 @@ impl AtomicTrackLayout {
             slot_midi_notes: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
+            slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
+            slot_insert_values: std::array::from_fn(|_| {
+                std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0)))
+            }),
             global_channel: AtomicU8::new(10),
             global_base_note: AtomicU8::new(36),
             version: std::sync::atomic::AtomicU64::new(0),
@@ -1040,6 +1056,18 @@ impl AtomicTrackLayout {
                 self.slot_fx_send[i][bus]
                     .store(send.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
             }
+            let inserts = slot.inserts.sanitized();
+            let on_bits = inserts
+                .on
+                .iter()
+                .enumerate()
+                .fold(0u8, |bits, (n, on)| if *on { bits | (1 << n) } else { bits });
+            self.slot_insert_on[i].store(on_bits, Ordering::Relaxed);
+            for (n, values) in inserts.values.iter().enumerate() {
+                for (k, v) in values.iter().enumerate() {
+                    self.slot_insert_values[i][n][k].store(v.to_bits(), Ordering::Relaxed);
+                }
+            }
         }
         self.global_channel
             .store(state.global_midi_channel.clamp(1, 16), Ordering::Relaxed);
@@ -1062,6 +1090,24 @@ impl AtomicTrackLayout {
 
     pub fn is_active(&self, slot: usize) -> bool {
         slot < MAX_TRACKS && self.slot_kinds[slot].load(Ordering::Relaxed) != 0xFF
+    }
+
+    /// [303] The inserts of `slot` (all off for an out-of-range slot). Atomic loads only:
+    /// the audio thread reads it once per block.
+    pub fn inserts(&self, slot: usize) -> crate::synthesis::inserts::InsertSettings {
+        use crate::synthesis::inserts::InsertSettings;
+        if slot >= MAX_TRACKS {
+            return InsertSettings::default();
+        }
+        let bits = self.slot_insert_on[slot].load(Ordering::Relaxed);
+        InsertSettings {
+            on: std::array::from_fn(|n| bits & (1 << n) != 0),
+            values: std::array::from_fn(|n| {
+                std::array::from_fn(|k| {
+                    f32::from_bits(self.slot_insert_values[slot][n][k].load(Ordering::Relaxed))
+                })
+            }),
+        }
     }
 
     /// [286] Send level of `slot` to effect bus `bus` (0 = Fx1, 1 = Fx2).
@@ -1141,6 +1187,10 @@ impl Default for AtomicTrackLayout {
             slot_midi_notes: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
+            slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
+            slot_insert_values: std::array::from_fn(|_| {
+                std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0)))
+            }),
             global_channel: AtomicU8::new(10),
             global_base_note: AtomicU8::new(36),
             version: std::sync::atomic::AtomicU64::new(0),
@@ -1238,6 +1288,7 @@ impl<'a> nih_plug::params::persist::PersistentField<'a, TrackLayoutState>
                 midi_note: self.state.slot_midi_notes[i].load(Ordering::Relaxed),
                 linked_up: self.state.slot_linked[i].load(Ordering::Relaxed),
                 fx_send: std::array::from_fn(|bus| self.state.fx_send(i, bus)),
+                inserts: self.state.inserts(i),
             }
         });
         let state = TrackLayoutState {
@@ -1865,5 +1916,30 @@ mod tests {
         layout.slots[12].name = "Ma reverb".to_string();
         assert!(!layout.migrate_fx_names(), "a typed name is kept");
         assert_eq!(layout.slots[12].name, "Ma reverb");
+    }
+
+    /// [303] The inserts go through the atomic layout and back unchanged, and a layout saved
+    /// before them loads with every insert off.
+    #[test]
+    fn lane_inserts_round_trip_and_old_layouts_load_with_them_off() {
+        use crate::synthesis::inserts::{InsertSettings, DRIVE, FILTER};
+        let mut layout = TrackLayoutState::empty_layout();
+        layout.slots[3] = TrackSlot::active_with_kind(TrackInstrumentKind::Snare);
+        let mut ins = InsertSettings::default();
+        ins.on[FILTER] = true;
+        ins.on[DRIVE] = true;
+        ins.values[FILTER][1] = 440.0;
+        ins.values[DRIVE][1] = 20.0;
+        layout.slots[3].inserts = ins;
+        let atomic = AtomicTrackLayout::new();
+        atomic.update_from_state(&layout);
+        assert_eq!(atomic.inserts(3), ins);
+        assert_eq!(atomic.inserts(4), InsertSettings { on: [false; 6], ..atomic.inserts(4) });
+        // A slot saved before [303]: no `inserts` key.
+        let mut json = serde_json::to_value(&layout.slots[3]).unwrap();
+        json.as_object_mut().unwrap().remove("inserts");
+        let old: TrackSlot = serde_json::from_value(json).unwrap();
+        assert_eq!(old.inserts, InsertSettings::default());
+        assert!(!old.inserts.any_on());
     }
 }
