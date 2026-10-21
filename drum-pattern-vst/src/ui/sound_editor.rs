@@ -1708,12 +1708,15 @@ pub fn draw_sound_panel(
     // Store / Restore / Default strip above already ends with its own space,
     // and 8 here left it 9 px under the tabs but 17 px over Volume (2 px
     // more than above, which the keys' drop shadow takes back).
-    if state.sound_editor_tab == SoundEditorTab::Sound {
+    // [303] The Effects tab keeps the lane's Volume in view as well.
+    if matches!(state.sound_editor_tab, SoundEditorTab::Sound | SoundEditorTab::Effects) {
+        // (No Store / Restore strip above it in Effects: the tabs' edge needs the room.)
+        let top = if state.sound_editor_tab == SoundEditorTab::Effects { 10 } else { 2 };
         egui::Frame::new()
             .inner_margin(egui::Margin {
                 left: 14,
                 right: 14 + 20,
-                top: 2,
+                top,
                 bottom: 0,
             })
             .show(ui, |ui| {
@@ -3684,16 +3687,10 @@ fn draw_special_rows(
         if is_fx_sequencer_param(def.name) {
             continue;
         }
-        // [286] A lane-wide switch (the effect lane's Glide) is not part of a step's
-        // lock: it only shows when the lane itself is edited (salt scope 0).
-        if src.salt().0 != 0
-            && crate::instrument_registry::param_is_lane_global(
-                voice_idx,
-                ParamId::Special(def.special_index),
-            )
-        {
-            continue;
-        }
+        // [286] A lane-wide setting (the Delay's Sync, the Reverb's Type and Gate switch, the
+        // Rumble's triggers...) is never part of a step's lock, but it SHOWS with a cell
+        // selected too: editing it there changes the lane (`PlockSource` passes it through),
+        // and it says what the step's Time lock means (a synced Time is greyed).
         // [223] The filter type heads the section, above the
         // standard rows.
         if def.name.ends_with("_filter_type") {
