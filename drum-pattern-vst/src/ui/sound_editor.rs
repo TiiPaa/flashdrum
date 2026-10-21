@@ -110,6 +110,8 @@ struct ModuleSlot {
     idx: egui::layers::ShapeIdx,
     top: f32,
     title: Option<&'static str>,
+    /// How far right the title sits (room for a control before it).
+    title_dx: f32,
 }
 
 fn module_begin(ui: &mut egui::Ui, title: Option<&'static str>) -> ModuleSlot {
@@ -120,7 +122,7 @@ fn module_begin(ui: &mut egui::Ui, title: Option<&'static str>) -> ModuleSlot {
     } else {
         6.0
     });
-    ModuleSlot { idx, top, title }
+    ModuleSlot { idx, top, title, title_dx: 0.0 }
 }
 
 fn module_end(ui: &mut egui::Ui, module: ModuleSlot) {
@@ -132,7 +134,7 @@ fn module_end(ui: &mut egui::Ui, module: ModuleSlot) {
     );
     ui.painter().set(
         module.idx,
-        crate::ui::skeuo::editor_module(ui.ctx(), rect, module.title),
+        crate::ui::skeuo::editor_module_indented(ui.ctx(), rect, module.title, module.title_dx),
     );
     // Gap to the next module (plus the item spacing): wide enough that two
     // modules' edges read as two frames, not as a bundle of lines.
@@ -3412,6 +3414,9 @@ fn draw_standard_rows(
 /// its buttons: move up, move down, fold. Folded (the default), only its On switch shows.
 /// Lane settings (never locked per step, whatever cell is selected), written to the track
 /// layout.
+/// [303] Room left before an insert's name for its drag handle.
+const GRIP_ROOM: f32 = 16.0;
+
 fn draw_lane_inserts(
     ui: &mut egui::Ui,
     params: &DrumFlashParams,
@@ -3427,8 +3432,11 @@ fn draw_lane_inserts(
     for pos in 0..INSERT_COUNT {
         let n = ins.order[pos] as usize;
         let def = &INSERTS[n];
-        let module = module_begin(ui, Some(def.name));
-        // The strip's controls, right-aligned: the drag handle, then the fold triangle.
+        let mut module = module_begin(ui, Some(def.name));
+        // The drag handle sits at the start of the strip, before the name.
+        module.title_dx = GRIP_ROOM;
+        // The strip's controls: the handle on the left; the fold triangle and the On switch
+        // on the right.
         let content = ui.max_rect();
         let strip = egui::Rect::from_min_max(
             egui::pos2(content.left() - MODULE_INSET, module.top),
@@ -3436,7 +3444,7 @@ fn draw_lane_inserts(
         );
         let unfolded = state.insert_unfolded[n];
         let size = 18.0;
-        // Right to left: the On switch, the fold triangle, the drag handle.
+        // Right to left: the On switch, then the fold triangle.
         let switch_rect = egui::Rect::from_min_size(
             egui::pos2(strip.right() - 12.0 - 34.0, strip.center().y - 9.0),
             Vec2::new(34.0, 18.0),
@@ -3447,7 +3455,11 @@ fn draw_lane_inserts(
                 Vec2::splat(size),
             )
         };
-        let (fold_rect, grip_rect) = (button(0.0), button(1.0));
+        let fold_rect = button(0.0);
+        let grip_rect = egui::Rect::from_center_size(
+            egui::pos2(strip.left() + crate::ui::skeuo::MODULE_TITLE_X + 4.0, strip.center().y),
+            Vec2::splat(size),
+        );
         let switched = ui
             .put(switch_rect, crate::ui::widgets::ToggleSwitch::new(ins.on[n]))
             .on_hover_text(def.help)

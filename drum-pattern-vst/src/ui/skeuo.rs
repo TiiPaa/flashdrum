@@ -788,7 +788,14 @@ pub const WASH_BLUE: Color32 = rgb(47, 134, 196);
 /// Opacity of a wash where it is strongest.
 pub const WASH_ALPHA: f32 = 110.0;
 
-pub fn editor_module(ctx: &egui::Context, rect: egui::Rect, title: Option<&str>) -> egui::Shape {
+/// [303] `title_dx` moves the title right (room for a control before it, like an insert's
+/// drag handle); 0 for every other module.
+pub fn editor_module_indented(
+    ctx: &egui::Context,
+    rect: egui::Rect,
+    title: Option<&str>,
+    title_dx: f32,
+) -> egui::Shape {
     use egui::{pos2, vec2, CornerRadius, Rect, Shape, Stroke, StrokeKind};
     let mut shapes = Vec::with_capacity(16);
     // [282] One line per edge: no lit lip around the module, no highlight
@@ -867,7 +874,7 @@ pub fn editor_module(ctx: &egui::Context, rect: egui::Rect, title: Option<&str>)
         );
         let galley = ctx.fonts(|f| f.layout_job(job));
         let pos = pos2(
-            rect.left() + MODULE_TITLE_X,
+            rect.left() + MODULE_TITLE_X + title_dx,
             strip.center().y - galley.size().y * 0.5,
         );
         shapes.push(Shape::galley(pos, galley, INK()));
