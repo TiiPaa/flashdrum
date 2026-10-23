@@ -344,6 +344,10 @@ pub struct DrumFlashVst {
     external_midi_triggers: Arc<[AtomicBool; crate::track::MAX_TRACKS]>,
     sound_settings_state: Arc<SoundSettingsState>,
     last_sound_settings_version: u64,
+    /// [304] The host tempo the voices' synced LFO rates are computed from, and the one
+    /// they were last pushed with (a tempo change re-pushes the settings).
+    lfo_bpm: f32,
+    last_push_bpm: f32,
     /// [242] Last macro knob values applied to the lanes; a moved knob is
     /// re-applied, a still one is skipped. -1 forces a first apply.
     last_macro_values: [f32; macros::MACRO_COUNT],
@@ -2325,6 +2329,8 @@ impl Default for DrumFlashVst {
             external_midi_triggers: external_midi_triggers.clone(),
             sound_settings_state: sound_settings_state.clone(),
             last_sound_settings_version: 0,
+            lfo_bpm: 120.0,
+            last_push_bpm: 120.0,
             last_macro_values: [-1.0; macros::MACRO_COUNT],
             last_host_pos: None,
             rng_state: AtomicU32::new(0xACE1_0000),
@@ -2417,7 +2423,21 @@ impl DrumFlashVst {
         stereo: f32,
     ) -> synthesis::VoiceSettings {
         // Specials live per SLOT (two slots of the same kind are independent).
-        let special = self.sound_settings_state.instruments[slot_idx].load_specials();
+        let mut special = self.sound_settings_state.instruments[slot_idx].load_specials();
+        // [304] An LFO rate synced to the tempo: one cycle per note value at the host tempo,
+        // inside the knob's own range.
+        for def in crate::instrument_registry::INSTRUMENTS[voice_idx].special_params {
+            let Some(k) = crate::instrument_registry::lfo_sync_slot(def.name) else {
+                continue;
+            };
+            let entry = self.params.track_layout.state.lfo_sync(slot_idx, k) as usize;
+            if let Some(beats) = synthesis::NOTE_SYNC_BEATS.get(entry).copied().filter(|b| *b > 0.0) {
+                let hz = self.lfo_bpm / (60.0 * beats);
+                if let Some(cell) = special.get_mut(def.special_index) {
+                    *cell = hz.clamp(def.min, def.max);
+                }
+            }
+        }
         // Algo params are positional per slot; clamp to the kind's algo count
         // because every param now shares the widest range.
         let algo_count = crate::instrument_registry::INSTRUMENTS[voice_idx]
@@ -3284,8 +3304,11 @@ impl DrumFlashVst {
         // a trigger with plock settings would be overwritten by global settings
         // in the same buffer, creating a one-sample discontinuity.
         let current_version = self.sound_settings_state.version.load(Ordering::Acquire);
-        if current_version != self.last_sound_settings_version {
+        // [304] A tempo change re-pushes too: synced LFO rates follow it.
+        let tempo_moved = (self.lfo_bpm - self.last_push_bpm).abs() > 1.0e-3;
+        if current_version != self.last_sound_settings_version || tempo_moved {
             self.last_sound_settings_version = current_version;
+            self.last_push_bpm = self.lfo_bpm;
             for (slot_idx, inst) in self.sound_settings_state.instruments.iter().enumerate() {
                 let Some(voice_idx) = slot_voices[slot_idx] else {
                     continue;
@@ -4089,6 +4112,7 @@ impl Plugin for DrumFlashVst {
         self.seed_legacy_specials(&slot_voices);
         self.seed_late_specials(&slot_voices);
         self.apply_macro_knobs(&slot_voices);
+        self.lfo_bpm = if bpm.is_finite() && bpm > 0.0 { bpm as f32 } else { 120.0 };
         self.push_sound_settings(&slot_voices);
 
         // Pre-calculate step duration in samples for stutter spacing.
@@ -4098,6 +4122,8 @@ impl Plugin for DrumFlashVst {
         let mut next_event = context.next_event();
         let solo_window = self.step_solo_window();
 
+        // [302] Each lane's output peak over the block, for the lane meters.
+        let mut lane_peaks = [0.0f32; crate::track::MAX_TRACKS];
         for (sample_idx, mut channel_samples) in buffer.iter_samples().enumerate() {
             self.fire_pending_triggers(sample_idx, &slot_voices, context);
 
@@ -4164,6 +4190,9 @@ impl Plugin for DrumFlashVst {
             self.synthesizer
                 .process_fx(&mut voice_outputs, &fx_sends, fx_bypass);
             let (mixed_left, mixed_right) = main_mix(&voice_outputs, &mix_gains, master_vol);
+            for (peak, out) in lane_peaks.iter_mut().zip(voice_outputs.iter()) {
+                *peak = peak.max(out[0].abs()).max(out[1].abs());
+            }
 
             for (ch, sample) in channel_samples.iter_mut().enumerate() {
                 *sample = if ch == 0 { mixed_left } else { mixed_right };
@@ -4172,6 +4201,9 @@ impl Plugin for DrumFlashVst {
             write_aux_outputs(aux, sample_idx, &track_routings, &voice_outputs, master_vol);
         }
 
+        for (slot, peak) in lane_peaks.iter().enumerate() {
+            self.sound_settings_state.publish_lane_peak(slot, *peak);
+        }
         // [303] The compressor inserts' gain reduction, for the editor's GR meters.
         for slot in 0..crate::track::FX_FIRST_SLOT {
             let gr = self.synthesizer.take_insert_gr(slot);
@@ -5328,6 +5360,42 @@ mod tests {
             energy += outs[12][0].powi(2) + outs[12][1].powi(2);
         }
         assert!(energy > 0.01, "the bus must return the kick ({energy})");
+    }
+
+    /// [304] A synced LFO rate follows the tempo: one cycle per note value; Free keeps the
+    /// knob; the value stays inside the knob's range.
+    #[test]
+    fn synced_lfo_rates_follow_the_tempo() {
+        use nih_plug::params::persist::PersistentField;
+        let mut vst = DrumFlashVst::default();
+        let mut layout = crate::track::TrackLayoutState::modular_default_layout();
+        layout.slots[0] = crate::track::TrackSlot::active_with_kind(crate::track::TrackInstrumentKind::Rift);
+        layout.slots[0].lfo_sync = [9, 0]; // 1/4 on the pitch LFO, Free on the filter LFO
+        PersistentField::<crate::track::TrackLayoutState>::set(&vst.params.track_layout, layout);
+        vst.sound_settings_state.reset_slot_to_defaults(0, crate::track::TrackInstrumentKind::Rift, 0.5);
+        let rift = crate::track::TrackInstrumentKind::Rift.drum_voice_index();
+        let rate_of = |vst: &DrumFlashVst, name: &str| {
+            let def = crate::instrument_registry::INSTRUMENTS[rift]
+                .special_params
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap();
+            vst.voice_settings_at_step(0, rift, 0).special[def.special_index]
+        };
+        vst.lfo_bpm = 120.0;
+        assert!((rate_of(&vst, "rift_pitch_lfo_rate") - 2.0).abs() < 1e-4, "1/4 at 120 bpm = 2 Hz");
+        vst.lfo_bpm = 90.0;
+        assert!((rate_of(&vst, "rift_pitch_lfo_rate") - 1.5).abs() < 1e-4, "1/4 at 90 bpm = 1.5 Hz");
+        let free = rate_of(&vst, "rift_filter_lfo_rate");
+        let knob = vst.sound_settings_state.instruments[0].special_value(
+            crate::instrument_registry::INSTRUMENTS[rift]
+                .special_params
+                .iter()
+                .find(|d| d.name == "rift_filter_lfo_rate")
+                .unwrap()
+                .special_index,
+        );
+        assert_eq!(free, knob, "Free keeps the knob");
     }
 
     #[test]

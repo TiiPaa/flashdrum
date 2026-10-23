@@ -279,10 +279,24 @@ pub fn draw_plock_popup(
                         (g.start_cell as usize) <= step && step <= (g.end_cell as usize)
                     });
 
+                    // [299] An effect lane has no notes, so no sequencer p-lock
+                    // (stutter, micro-timing, probability, condition): only its
+                    // sound locks, and no Sound / Sequencer choice.
+                    let effect_lane = params
+                        .track_layout
+                        .state
+                        .kind_for_slot(inst)
+                        .is_some_and(|k| k.is_effect());
+                    let popup = if effect_lane {
+                        crate::ui::editor_state::PlockPopup { sequencer: false, ..popup }
+                    } else {
+                        popup
+                    };
                     // [213] Pick the p-lock type here, on the cell, instead of
                     // flipping the grid-wide "P-Lock Mode" first. Same two
                     // labels as that switch, so they read as the same choice;
                     // this one is local to the popup and leaves the grid alone.
+                    if !effect_lane {
                     help::zone(ui, "step_menu_type", help::STEP_MENU_TYPE, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
@@ -317,6 +331,7 @@ pub fn draw_plock_popup(
                         })
                     });
                     ui.add_space(8.0);
+                    }
 
                     if popup.sequencer {
                         if let Some((idx, group)) = fusion_info {

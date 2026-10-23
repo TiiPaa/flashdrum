@@ -497,6 +497,8 @@ Several lanes can share an output; the list shows how many already use each one.
 
 pub const TRACK_FX_SEND: &str = "Send: how much of this lane goes into the effect on lane 13 (Fx1) or lane 14 (Fx2). 0 = dry. Taken after the lane Volume, whatever the Main Mix switch. On a selected cell it is that step's lock: the hit thrown from that step goes to the effect by that amount. Greyed until that lane holds an effect.";
 
+pub const LFO_SYNC: &str = "Sync: Free = the rate knob above, in Hz. A note value (1/16, 1/8., 1/4...) locks this LFO to the host tempo, one cycle per note value, and greys the rate knob. A lane setting: it is never locked per step.";
+
 pub const TRACK_CHOKE: &str = "Choke group: when this lane plays, it cuts the other lanes of the same group (a closed hi-hat cutting the open one). None = never cut.";
 
 pub const TRACK_CHANNEL: &str = "MIDI channel of the notes sent. It is shared by all lanes: change it in Settings > Global MIDI Channel.";

@@ -47,6 +47,8 @@ pub struct LaneClipboardData {
     pub fx_send: [f32; crate::track::FX_SLOT_COUNT],
     /// [300] The lane's send mutes.
     pub fx_send_mute: [bool; crate::track::FX_SLOT_COUNT],
+    /// [304] The lane's LFO tempo sync.
+    pub lfo_sync: [u8; crate::track::LFO_SYNC_SLOTS],
     /// [303] The lane's inserts.
     pub inserts: crate::synthesis::inserts::InsertSettings,
 }
@@ -668,6 +670,7 @@ impl EditorUIState {
         let fx_send = std::array::from_fn(|bus| params.track_layout.state.fx_send(slot, bus));
         let inserts = params.track_layout.state.inserts(slot);
         let fx_send_mute = std::array::from_fn(|bus| params.track_layout.state.fx_send_muted(slot, bus));
+        let lfo_sync = std::array::from_fn(|k| params.track_layout.state.lfo_sync(slot, k));
 
         self.lane_clipboard = Some(LaneClipboardData {
             kind,
@@ -684,6 +687,7 @@ impl EditorUIState {
             texture_path,
             fx_send,
             fx_send_mute,
+            lfo_sync,
             inserts,
         });
     }
@@ -725,6 +729,7 @@ impl EditorUIState {
         layout.slots[target_slot].fx_send = clipboard.fx_send;
         layout.slots[target_slot].inserts = clipboard.inserts;
         layout.slots[target_slot].fx_send_mute = clipboard.fx_send_mute;
+        layout.slots[target_slot].lfo_sync = clipboard.lfo_sync;
         PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
 
         // Pasting onto an EMPTY lane also turns a slot into a new instrument,

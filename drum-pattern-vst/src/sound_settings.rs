@@ -318,6 +318,9 @@ pub struct SoundSettingsState {
     /// [303] Each lane's compressor-insert gain reduction (dB, f32 bits): the largest since
     /// the editor last read it (the audio thread keeps the max, the editor takes it).
     pub insert_gr: [AtomicU32; crate::track::MAX_TRACKS],
+    /// [302] Each lane's output peak (linear, f32 bits) since the editor last read it, for
+    /// the meter at the end of the lane.
+    pub lane_peak: [AtomicU32; crate::track::MAX_TRACKS],
 }
 
 pub use crate::synthesis::FX_LIVE_FIELDS;
@@ -329,6 +332,19 @@ impl SoundSettingsState {
         if let Some(cell) = self.insert_gr.get(slot) {
             cell.fetch_max(gr_db.max(0.0).to_bits(), Ordering::Relaxed);
         }
+    }
+
+    /// [302] Audio thread: a block's output peak of `slot` (kept as the max until read).
+    pub fn publish_lane_peak(&self, slot: usize, peak: f32) {
+        if let Some(cell) = self.lane_peak.get(slot) {
+            let peak = if peak.is_finite() { peak.max(0.0) } else { 0.0 };
+            cell.fetch_max(peak.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// [302] Editor: the lane's output peak since the last read, and reset it.
+    pub fn take_lane_peak(&self, slot: usize) -> f32 {
+        self.lane_peak.get(slot).map_or(0.0, |cell| f32::from_bits(cell.swap(0, Ordering::Relaxed)))
     }
 
     /// [303] Editor: the largest gain reduction since the last read, and reset it.
@@ -395,6 +411,7 @@ impl SoundSettingsState {
             fx_live: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
             fx_live_on: std::array::from_fn(|_| AtomicBool::new(false)),
             insert_gr: std::array::from_fn(|_| AtomicU32::new(0)),
+            lane_peak: std::array::from_fn(|_| AtomicU32::new(0)),
         })
     }
 

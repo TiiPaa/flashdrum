@@ -622,18 +622,26 @@ fn draw_legacy_slot_lane_v2(
         // [288] Displayed 0..1; the stored gain keeps its 0..2 range.
         let mut lane_vol =
             f32::from_bits(inst_state.volume.load(Ordering::Relaxed)) * 0.5;
-        let lane_vol_response =
-            draw_mini_value_slider(
-                ui,
-                &mut lane_vol,
-                0.0,
-                1.0,
-                0.5,
-                vol_w,
-                if is_fx { AMBER() } else { BLUE() },
-                "",
-            )
+        // [302] The volume bar gives up a few pixels to the lane's level meter, right after
+        // it: the column keeps its width, so nothing else moves.
+        let lane_vol_response = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = LANE_METER_GAP;
+                let response = draw_mini_value_slider(
+                    ui,
+                    &mut lane_vol,
+                    0.0,
+                    1.0,
+                    0.5,
+                    vol_w - LANE_METER_W - LANE_METER_GAP,
+                    if is_fx { AMBER() } else { BLUE() },
+                    "",
+                )
                 .help(help::LANE_VOL);
+                draw_lane_meter(ui, sound_settings, slot_idx, response.rect.height());
+                response
+            })
+            .inner;
         if lane_vol_response.clicked() || lane_vol_response.dragged() {
             select_legacy_track(state, slot_idx);
         }
@@ -1663,6 +1671,8 @@ pub fn change_slot_kind(
     }
     slot.kind = kind;
     slot.name = kind.default_name().to_string();
+    // [304] The LFO syncs belonged to the old instrument's LFOs.
+    slot.lfo_sync = [0; crate::track::LFO_SYNC_SLOTS];
     slot.midi_note = kind.default_midi_note();
     PersistentField::<TrackLayoutState>::set(&params.track_layout, new_state);
     sound_settings.reset_slot_to_defaults(slot_idx, kind, state.global_config.default_analog);
@@ -2613,6 +2623,47 @@ fn draw_loop_reset_icon(painter: &egui::Painter, rect: egui::Rect, color: Color3
             [egui::pos2(c.x - d, c.y + d), egui::pos2(c.x + d, c.y - d)],
             egui::Stroke::new(2.0, color),
         );
+    }
+}
+
+/// [302] Width of the level meter at the end of a lane, and its gap to the volume bar.
+const LANE_METER_W: f32 = 6.0;
+const LANE_METER_GAP: f32 = 3.0;
+
+/// [302] A lane's level meter: a thin vertical bar, -48 dBFS at the bottom to 0 at the top,
+/// green, amber over -6 dBFS, red at full scale. It jumps to each new peak and falls back at
+/// 24 dB/s (the audio thread keeps the block's max until the editor reads it).
+fn draw_lane_meter(ui: &mut egui::Ui, sound_settings: &SoundSettingsState, slot: usize, height: f32) {
+    const FLOOR_DB: f32 = -48.0;
+    const FALL_DB_PER_S: f32 = 24.0;
+    let id = egui::Id::new(("lane_meter", slot));
+    let now = ui.ctx().input(|i| i.time);
+    let (shown_db, last) = ui.ctx().data(|d| d.get_temp::<(f32, f64)>(id)).unwrap_or((FLOOR_DB, now));
+    let fallen = (shown_db - FALL_DB_PER_S * (now - last) as f32).max(FLOOR_DB);
+    let peak = sound_settings.take_lane_peak(slot);
+    let peak_db = if peak > 0.0 { 20.0 * peak.log10() } else { FLOOR_DB };
+    let level_db = peak_db.max(fallen);
+    ui.ctx().data_mut(|d| d.insert_temp(id, (level_db, now)));
+    if level_db > FLOOR_DB {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    }
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(LANE_METER_W, height.max(8.0)), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 1.5, Color32::from_rgb(16, 16, 20));
+    let frac = ((level_db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0);
+    if frac > 0.0 {
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 1.0, rect.bottom() - 1.0 - (rect.height() - 2.0) * frac),
+            egui::pos2(rect.right() - 1.0, rect.bottom() - 1.0),
+        );
+        let color = if level_db >= -0.1 {
+            RED()
+        } else if level_db > -6.0 {
+            AMBER()
+        } else {
+            GREEN()
+        };
+        painter.rect_filled(bar, 1.0, color);
     }
 }
 

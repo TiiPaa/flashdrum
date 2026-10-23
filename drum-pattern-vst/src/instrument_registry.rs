@@ -191,10 +191,25 @@ pub const LATE_SPECIALS: [&str; 11] = [
 ];
 
 /// [286] The Rumble's Echo note values: the same menu as the delay's Sync.
-const RUMBLE_ECHO_SYNC: &[&str] = &[
+pub const RUMBLE_ECHO_SYNC: &[&str] = &[
     "Free", "1/32", "1/16T", "1/16", "1/8T", "1/16.", "1/8", "1/4T", "1/8.", "1/4", "1/2T", "1/4.", "1/2",
     "1 bar",
 ];
+
+/// [304] The LFO rates that can follow the host tempo, and which of the lane's two LFO-sync
+/// settings (`TrackSlot::lfo_sync`) each one reads. The sync is a LANE setting kept in the
+/// track layout (the voices' `special[]` has no room left on Rift), never a p-lock.
+pub const LFO_SYNC_RATES: [(&str, usize); 4] = [
+    ("rift_pitch_lfo_rate", 0),
+    ("rift_filter_lfo_rate", 1),
+    ("sdrex_flanger_rate", 0),
+    ("buzz_gate_rate", 0),
+];
+
+/// [304] The lane LFO-sync slot a rate parameter reads, if it can be synced.
+pub fn lfo_sync_slot(name: &str) -> Option<usize> {
+    LFO_SYNC_RATES.iter().find(|(n, _)| *n == name).map(|(_, k)| *k)
+}
 
 /// [292] TM6(AC) Model: 0 was "Auto" (the model followed the pitch), now retired;
 /// 1 = Low tom, 2 = High tom. The stored index stays so saved lanes keep their model.

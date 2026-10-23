@@ -521,6 +521,9 @@ fn pack_insert_order(order: [u8; crate::synthesis::inserts::INSERT_COUNT]) -> u3
     order.iter().enumerate().fold(0u32, |bits, (pos, n)| bits | (u32::from(*n & 0xF) << (4 * pos)))
 }
 
+/// [304] How many LFOs of a lane can follow the tempo (Rift has two).
+pub const LFO_SYNC_SLOTS: usize = 2;
+
 /// One internal track slot.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TrackSlot {
@@ -542,6 +545,11 @@ pub struct TrackSlot {
     /// [300] A send switched off without losing its level (the M button beside it).
     #[serde(default)]
     pub fx_send_mute: [bool; FX_SLOT_COUNT],
+    /// [304] Tempo sync of the lane's LFO rates (see `instrument_registry::LFO_SYNC_RATES`):
+    /// 0 = Free (the rate knob, in Hz), otherwise an entry of the note-value menu
+    /// (`delay::SYNC_BEATS`). A lane setting; cleared when the lane changes instrument.
+    #[serde(default)]
+    pub lfo_sync: [u8; LFO_SYNC_SLOTS],
     /// [303] The lane's inserts (Transient, Filter, EQ, Drive, Bitcrush, Compressor):
     /// which are on and their knobs. Lane settings, never locked per step.
     /// `#[serde(default)]` so older `track-layout-v1` blobs load with every insert off.
@@ -560,6 +568,7 @@ impl TrackSlot {
             linked_up: false,
             fx_send: [0.0; FX_SLOT_COUNT],
             fx_send_mute: [false; FX_SLOT_COUNT],
+            lfo_sync: [0; LFO_SYNC_SLOTS],
             inserts: Default::default(),
         }
     }
@@ -574,6 +583,7 @@ impl TrackSlot {
             linked_up: false,
             fx_send: [0.0; FX_SLOT_COUNT],
             fx_send_mute: [false; FX_SLOT_COUNT],
+            lfo_sync: [0; LFO_SYNC_SLOTS],
             inserts: Default::default(),
         }
     }
@@ -882,6 +892,7 @@ impl TrackLayoutState {
                 linked_up: false,
                 fx_send: [0.0; FX_SLOT_COUNT],
                 fx_send_mute: [false; FX_SLOT_COUNT],
+                lfo_sync: [0; LFO_SYNC_SLOTS],
                 inserts: Default::default(),
             };
             // Classic HH↔OH choke out of the box.
@@ -999,6 +1010,8 @@ pub struct AtomicTrackLayout {
     pub slot_fx_send: [[AtomicU32; FX_SLOT_COUNT]; MAX_TRACKS],
     /// [300] Send mutes.
     pub slot_fx_send_mute: [[AtomicBool; FX_SLOT_COUNT]; MAX_TRACKS],
+    /// [304] LFO tempo sync per lane.
+    pub slot_lfo_sync: [[AtomicU8; LFO_SYNC_SLOTS]; MAX_TRACKS],
     /// [303] The lane inserts: a bit per insert that is on, and every knob (f32 bits).
     pub slot_insert_on: [AtomicU8; MAX_TRACKS],
     /// [303] The chain order, 4 bits per position.
@@ -1019,6 +1032,7 @@ impl AtomicTrackLayout {
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
             slot_fx_send_mute: std::array::from_fn(|_| std::array::from_fn(|_| AtomicBool::new(false))),
+            slot_lfo_sync: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU8::new(0))),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
             slot_insert_values: std::array::from_fn(|_| {
@@ -1073,6 +1087,9 @@ impl AtomicTrackLayout {
                 self.slot_fx_send[i][bus]
                     .store(send.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
                 self.slot_fx_send_mute[i][bus].store(slot.fx_send_mute[bus], Ordering::Relaxed);
+            }
+            for (k, sync) in slot.lfo_sync.iter().enumerate() {
+                self.slot_lfo_sync[i][k].store(*sync, Ordering::Relaxed);
             }
             let inserts = slot.inserts.sanitized();
             let on_bits = inserts
@@ -1129,6 +1146,14 @@ impl AtomicTrackLayout {
                 })
             }),
         }
+    }
+
+    /// [304] The tempo sync of LFO slot `k` of `slot` (0 = Free).
+    pub fn lfo_sync(&self, slot: usize, k: usize) -> u8 {
+        if slot >= MAX_TRACKS || k >= LFO_SYNC_SLOTS {
+            return 0;
+        }
+        self.slot_lfo_sync[slot][k].load(Ordering::Relaxed)
     }
 
     /// [300] Is the send of `slot` to bus `bus` switched off?
@@ -1214,6 +1239,7 @@ impl Default for AtomicTrackLayout {
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
             slot_fx_send_mute: std::array::from_fn(|_| std::array::from_fn(|_| AtomicBool::new(false))),
+            slot_lfo_sync: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU8::new(0))),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
             slot_insert_values: std::array::from_fn(|_| {
@@ -1317,6 +1343,7 @@ impl<'a> nih_plug::params::persist::PersistentField<'a, TrackLayoutState>
                 linked_up: self.state.slot_linked[i].load(Ordering::Relaxed),
                 fx_send: std::array::from_fn(|bus| self.state.fx_send(i, bus)),
                 fx_send_mute: std::array::from_fn(|bus| self.state.fx_send_muted(i, bus)),
+                lfo_sync: std::array::from_fn(|k| self.state.lfo_sync(i, k)),
                 inserts: self.state.inserts(i),
             }
         });

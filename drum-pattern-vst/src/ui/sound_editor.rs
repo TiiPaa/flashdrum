@@ -1185,6 +1185,8 @@ fn draw_track_tab(
                         let label = kind.default_name();
                         new_state.slots[slot_idx].kind = kind;
                         new_state.slots[slot_idx].name = label.to_string();
+                        // [304] The LFO syncs belonged to the old instrument's LFOs.
+                        new_state.slots[slot_idx].lfo_sync = [0; crate::track::LFO_SYNC_SLOTS];
                         new_state.slots[slot_idx].midi_note = kind.default_midi_note();
                         state.track_name_input = label.to_string();
                         changed = true;
@@ -3799,7 +3801,10 @@ fn draw_special_rows(
         let sync_disabled = (def.name == "delay_time"
             && src.get(ParamId::Special(crate::synthesis::delay_sp::SYNC)) >= 0.5)
             || (def.name == "rumble_echo_time"
-                && src.get(ParamId::Special(crate::synthesis::rumble_sp::ECHO_SYNC)) >= 0.5);
+                && src.get(ParamId::Special(crate::synthesis::rumble_sp::ECHO_SYNC)) >= 0.5)
+            // [304] An LFO rate synced to the tempo.
+            || crate::instrument_registry::lfo_sync_slot(def.name)
+                .is_some_and(|k| params.track_layout.state.lfo_sync(slot, k) > 0);
         let special_id = ParamId::Special(def.special_index);
         // [184] A parameter with no per-step slot of its own is
         // greyed WITH its reason rather than hidden: the special
@@ -3866,6 +3871,27 @@ fn draw_special_rows(
             },
         );
         set_sub_indent(0.0);
+        // [304] Under an LFO rate: its tempo sync (a lane setting, never a lock).
+        if let Some(k) = crate::instrument_registry::lfo_sync_slot(def.name) {
+            let current = params.track_layout.state.lfo_sync(slot, k) as usize;
+            let options = crate::instrument_registry::RUMBLE_ECHO_SYNC;
+            set_sub_indent(SUB_INDENT_PX);
+            let picked = help::zone(ui, ("lfo_sync", slot, k), help::LFO_SYNC, |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_max_width(EDITOR_PARAMS_W);
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    editor_label(ui, "Sync");
+                    right_aligned_select(ui, ("lfo_sync_menu", slot, k), current.min(options.len() - 1), options)
+                })
+                .inner
+            });
+            set_sub_indent(0.0);
+            if let Some(entry) = picked.filter(|e| *e != current) {
+                let mut layout = PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());
+                layout.slots[slot].lfo_sync[k] = entry as u8;
+                PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
+            }
+        }
         if unsupported.is_none() {
             let mut row_help = help::special_param(def.name).to_string();
             if def.continuous && def.options.is_none() {
