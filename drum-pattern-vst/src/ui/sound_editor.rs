@@ -3673,6 +3673,8 @@ fn draw_special_rows(
     } = *cx;
     let special_defs = instrument.special_params;
     let mut changed = false;
+    // [304] Rows drawn so far in this section (an LFO group after other rows gets a divider).
+    let mut rows_drawn = 0usize;
     // Special params for this family — stored PER SLOT so two
     // slots of the same kind stay independent.
     for def in special_defs.iter().filter(|d| d.family == family) {
@@ -3837,6 +3839,15 @@ fn draw_special_rows(
         if saturation_sub || gate_sub {
             set_sub_indent(SUB_INDENT_PX);
         }
+        // [304] Each LFO (its Rate, Sync and Depth) reads as its own group: a hairline
+        // between it and the rows above.
+        if rows_drawn > 0 && crate::instrument_registry::lfo_sync_slot(def.name).is_some() {
+            ui.add_space(2.0);
+            let (line, _) = ui.allocate_exact_size(Vec2::new(EDITOR_PARAMS_W, 1.0), egui::Sense::hover());
+            ui.painter().hline(line.x_range(), line.center().y, egui::Stroke::new(1.0, LINE()));
+            ui.add_space(2.0);
+        }
+        rows_drawn += 1;
         let row_area = ui.add_enabled_ui(
             !(sample_disabled
                 || modulation_disabled
@@ -3875,17 +3886,21 @@ fn draw_special_rows(
         if let Some(k) = crate::instrument_registry::lfo_sync_slot(def.name) {
             let current = params.track_layout.state.lfo_sync(slot, k) as usize;
             let options = crate::instrument_registry::RUMBLE_ECHO_SYNC;
-            set_sub_indent(SUB_INDENT_PX);
+            // Named after its rate ("Pitch LFO Rate" -> "Pitch LFO Sync"): two LFOs, two
+            // Syncs, no guessing which is which.
+            let sync_label = match def.label.strip_suffix(" Rate") {
+                Some(stem) => format!("{stem} Sync"),
+                None => "Sync".to_string(),
+            };
             let picked = help::zone(ui, ("lfo_sync", slot, k), help::LFO_SYNC, |ui| {
                 ui.horizontal(|ui| {
                     ui.set_max_width(EDITOR_PARAMS_W);
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    editor_label(ui, "Sync");
+                    editor_label(ui, &sync_label);
                     right_aligned_select(ui, ("lfo_sync_menu", slot, k), current.min(options.len() - 1), options)
                 })
                 .inner
             });
-            set_sub_indent(0.0);
             if let Some(entry) = picked.filter(|e| *e != current) {
                 let mut layout = PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());
                 layout.slots[slot].lfo_sync[k] = entry as u8;

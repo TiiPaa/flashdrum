@@ -97,7 +97,8 @@ pub fn draw_grid_v2(
             let mst_w = STEP_H * 2.0 + GAP_TIGHT;
             let extra_w = 44.0;
             let gap = 7.0;
-            let fixed_w = grip_w + name_w + vol_w + mst_w + extra_w * 2.0 + gap * 6.0;
+            // [302] + the level meter at the end of each lane.
+            let fixed_w = grip_w + name_w + vol_w + mst_w + extra_w * 2.0 + gap * 7.0 + LANE_METER_W;
             let steps_w = (row_w - fixed_w).max(320.0);
             let cell_w = ((steps_w - GAP_TIGHT * 15.0) / 16.0).floor().max(18.0);
 
@@ -622,26 +623,18 @@ fn draw_legacy_slot_lane_v2(
         // [288] Displayed 0..1; the stored gain keeps its 0..2 range.
         let mut lane_vol =
             f32::from_bits(inst_state.volume.load(Ordering::Relaxed)) * 0.5;
-        // [302] The volume bar gives up a few pixels to the lane's level meter, right after
-        // it: the column keeps its width, so nothing else moves.
-        let lane_vol_response = ui
-            .horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = LANE_METER_GAP;
-                let response = draw_mini_value_slider(
-                    ui,
-                    &mut lane_vol,
-                    0.0,
-                    1.0,
-                    0.5,
-                    vol_w - LANE_METER_W - LANE_METER_GAP,
-                    if is_fx { AMBER() } else { BLUE() },
-                    "",
-                )
+        let lane_vol_response =
+            draw_mini_value_slider(
+                ui,
+                &mut lane_vol,
+                0.0,
+                1.0,
+                0.5,
+                vol_w,
+                if is_fx { AMBER() } else { BLUE() },
+                "",
+            )
                 .help(help::LANE_VOL);
-                draw_lane_meter(ui, sound_settings, slot_idx, response.rect.height());
-                response
-            })
-            .inner;
         if lane_vol_response.clicked() || lane_vol_response.dragged() {
             select_legacy_track(state, slot_idx);
         }
@@ -1160,6 +1153,8 @@ fn draw_legacy_slot_lane_v2(
                 select_legacy_track(state, slot_idx);
             }
         }
+        // [302] The lane's level meter, at the very end of the lane.
+        draw_lane_meter(ui, sound_settings, slot_idx, STEP_H);
     })
     .response
 }
@@ -2626,9 +2621,8 @@ fn draw_loop_reset_icon(painter: &egui::Painter, rect: egui::Rect, color: Color3
     }
 }
 
-/// [302] Width of the level meter at the end of a lane, and its gap to the volume bar.
+/// [302] Width of the level meter at the end of a lane.
 const LANE_METER_W: f32 = 6.0;
-const LANE_METER_GAP: f32 = 3.0;
 
 /// [302] A lane's level meter: a thin vertical bar, -48 dBFS at the bottom to 0 at the top,
 /// green, amber over -6 dBFS, red at full scale. It jumps to each new peak and falls back at
