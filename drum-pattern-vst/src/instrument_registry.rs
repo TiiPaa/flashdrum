@@ -211,6 +211,18 @@ pub fn lfo_sync_slot(name: &str) -> Option<usize> {
     LFO_SYNC_RATES.iter().find(|(n, _)| *n == name).map(|(_, k)| *k)
 }
 
+/// SDrex: the retired Noise level (special 10) and the Noise <-> Synth balance that replaced
+/// it (special 19). A lane saved before holds its Noise level and 0 for the balance.
+pub const SDREX_OLD_NOISE_LEVEL: usize = 10;
+pub const SDREX_BALANCE: usize = 19;
+
+/// The balance that sounds like an old SDrex Noise level: the noise layer at `level / 0.8`
+/// of the recipe, the synth layers at full level (a level above the recipe's 0.8 cannot be
+/// reached by the balance, which tops both layers at full: it becomes the centre).
+pub fn sdrex_balance_from_noise_level(level: f32) -> f32 {
+    (1.0 - level / 1.6).clamp(0.5, 1.0)
+}
+
 /// [292] TM6(AC) Model: 0 was "Auto" (the model followed the pitch), now retired;
 /// 1 = Low tom, 2 = High tom. The stored index stays so saved lanes keep their model.
 pub const TM6_MODEL: &str = "ac_tm_model";
@@ -3787,13 +3799,16 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
                 9,
                 ParamFamily::Saturation,
             ),
+            // The balance between the noise and the synth layers (body + metal); 0.5 = the
+            // recipe, both at full level. Replaced the Noise level (special 10, retired:
+            // older lanes are converted by `seed_late_specials`).
             sp(
-                "sdrex_noise_level",
-                "Noise",
-                0.8,
+                "sdrex_balance",
+                "Noise <-> Synth",
+                0.5,
                 0.0,
                 1.0,
-                10,
+                19,
                 ParamFamily::Osc,
             ),
             sp_discrete(

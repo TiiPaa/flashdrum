@@ -1,6 +1,7 @@
 //! SDrex — metallic snare (user recipe "drex_snare").
 //!
-//! Three layers, mixed 0.50 / 0.80 / 0.18:
+//! Three layers, mixed 0.50 / 0.80 / 0.18 at the centre of the **Noise <-> Synth** balance
+//! (towards Noise the synth layers - body and metal - fade out, towards Synth the noise does):
 //! - **Body**: sine with a fast pitch drop (~+95 Hz → base, exp rate 45) and a
 //!   short exp envelope (rate 32).
 //! - **Noise**: selectable coloured noise high-passed by LP subtraction
@@ -228,15 +229,14 @@ impl Voice for SdrexVoice {
         );
         let body = self.body_phase.sin() * body_env;
 
-        // 2. Noise: coloured noise high-passed by LP subtraction, exp tail,
-        // level set by the Noise slider.
+        // 2. Noise: coloured noise high-passed by LP subtraction, exp tail.
         let white = self.noise.next();
         let noise_hp = white - self.noise_lp.process(white);
         let noise_env = dsp::shape_curve(
             (-amp_decay_t * 18.0 * tfac).exp(),
             self.settings.decay_curve,
         );
-        let noise = noise_hp * noise_env * self.settings.noise_level.clamp(0.0, 1.0) / 0.80;
+        let noise = noise_hp * noise_env;
 
         // 3. Metal: ring-mod pair (620 × 910 Hz at the reference base).
         let mscale = base / BODY_REF_HZ;
@@ -260,7 +260,14 @@ impl Voice for SdrexVoice {
         }
 
         self.amp_proxy = attack_gain * noise_env;
-        let mixed = (body * 0.50 + noise * 0.80 + metal * 0.18) * attack_gain * self.drift.level;
+        // The Noise <-> Synth balance: both layers at full level in the middle (the recipe),
+        // one fading out towards each end.
+        let balance = self.settings.balance.clamp(0.0, 1.0);
+        let noise_gain = (2.0 * (1.0 - balance)).min(1.0);
+        let synth_gain = (2.0 * balance).min(1.0);
+        let mixed = ((body * 0.50 + metal * 0.18) * synth_gain + noise * 0.80 * noise_gain)
+            * attack_gain
+            * self.drift.level;
 
         // 3b. LP filter with A-D envelope (bipolar curves), exponential sweep
         // toward 20 kHz (same law as Tom/Buzz).
@@ -403,7 +410,8 @@ impl Voice for SdrexVoice {
                 self.settings.saturation_pre_filter = value;
                 self.saturation.pre_filter = value > 0.5;
             }
-            10 => self.settings.noise_level = value,
+            // 10: the retired Noise level (see `instrument_registry::SDREX_OLD_NOISE_LEVEL`).
+            19 => self.settings.balance = value,
             11 => {
                 let nt = value as u8;
                 if self.settings.noise_type != nt {
@@ -682,9 +690,10 @@ mod tests {
 
     #[test]
     fn noise_level_and_type_change_the_output() {
+        // `level` is now the Noise <-> Synth balance: 0.5 = both layers, 1 = synth only.
         let render = |level: f32, ntype: f32| -> Vec<f32> {
             let mut settings = VoiceSettings::sdrex();
-            settings.special[10] = level;
+            settings.special[19] = if level == 0.0 { 1.0 } else { 0.5 };
             settings.special[11] = ntype;
             let mut voice = voice_with(settings);
             voice.trigger();
@@ -903,5 +912,32 @@ mod tests {
             assert!(voice.flanger_pos < voice.flanger_len);
             assert!(voice.flanger_len <= FLANGER_BUFFER_LEN);
         }
+    }
+
+    /// The Noise <-> Synth balance: at the Noise end only the noise is heard (and no body
+    /// tone), at the Synth end no noise, and the middle is the original recipe.
+    #[test]
+    fn the_balance_moves_between_noise_and_synth() {
+        let render = |balance: f32| -> Vec<f32> {
+            let mut settings = VoiceSettings::sdrex();
+            settings.analog = 0.0;
+            settings.special[19] = balance;
+            settings.special[4] = 0.0; // flanger dry, to compare the layers themselves
+            let mut voice = voice_with(settings);
+            voice.trigger();
+            (0..22050).map(|_| voice.process_sample()).collect()
+        };
+        // High-frequency share: the noise is the bright layer.
+        let brightness = |v: &[f32]| {
+            let total: f32 = v.iter().map(|x| x * x).sum();
+            let diff: f32 = v.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+            diff / total.max(1e-12)
+        };
+        let (noise, middle, synth) = (render(0.0), render(0.5), render(1.0));
+        let (bn, bm, bs) = (brightness(&noise), brightness(&middle), brightness(&synth));
+        println!("brightness: noise {bn:.3}, middle {bm:.3}, synth {bs:.3}");
+        assert!(bn > bm && bm > bs, "the balance must go from noise to synth");
+        // The default is the middle: the recipe.
+        assert_eq!(VoiceSettings::sdrex().special[19], 0.5);
     }
 }

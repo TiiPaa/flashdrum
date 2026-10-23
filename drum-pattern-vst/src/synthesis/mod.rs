@@ -927,12 +927,12 @@ impl VoiceSettings {
             algo: 0,
             // [0 fl_rate, 1 fl_min_delay, 2 fl_depth, 3 fl_feedback, 4 fl_wet,
             //  5 sat_type, 6 sat_amount, 7 sat_mix, 8 sat_gain, 9 sat_pre,
-            //  10 noise_level, 11 noise_type, 12 modulation_free_phase,
+            //  10 (retired: was noise_level), 11 noise_type, 12 modulation_free_phase,
             //  13 filt_attack, 14 filt_atk_curve, 15 filt_dec_curve,
             //  16 filt_hold, 17 modulation_type, …]
             special: [
-                5.7, 0.7, 1.8, 0.38, 0.32, 0.0, 0.0, 1.0, 1.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.6,
-                0.0, 0.0, 0.7071, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                5.7, 0.7, 1.8, 0.38, 0.32, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6,
+                0.0, 0.0, 0.7071, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
         }
     }

@@ -3254,6 +3254,22 @@ impl DrumFlashVst {
             let Some(voice_idx) = slot_voices[slot_idx] else {
                 continue;
             };
+            // SDrex: a lane saved with the old Noise level (and no balance) gets the balance
+            // that sounds like it; the old level is cleared so this runs once.
+            if voice_idx == synthesis::DrumVoice::Sdrex as usize {
+                let inst = &self.sound_settings_state.instruments[slot_idx];
+                let old = inst.special_value(crate::instrument_registry::SDREX_OLD_NOISE_LEVEL);
+                if old > 0.0
+                    && inst.special_value(crate::instrument_registry::SDREX_BALANCE) == 0.0
+                {
+                    inst.set_special(
+                        crate::instrument_registry::SDREX_BALANCE,
+                        crate::instrument_registry::sdrex_balance_from_noise_level(old),
+                    );
+                    inst.set_special(crate::instrument_registry::SDREX_OLD_NOISE_LEVEL, 0.0);
+                    changed = true;
+                }
+            }
             let inst = &self.sound_settings_state.instruments[slot_idx];
             for sp_def in crate::instrument_registry::INSTRUMENTS[voice_idx].special_params {
                 if crate::instrument_registry::LATE_SPECIALS.contains(&sp_def.name)
@@ -5717,5 +5733,29 @@ mod tests {
             channel, 15,
             "MIDI output channel must be global MIDI channel minus one"
         );
+    }
+
+    /// An SDrex lane saved with the old Noise level gets the balance that sounds like it.
+    #[test]
+    fn an_old_sdrex_noise_level_becomes_the_balance() {
+        let mut vst = DrumFlashVst::default();
+        let sdrex = synthesis::DrumVoice::Sdrex as usize;
+        let inst = &vst.sound_settings_state.instruments[3];
+        inst.set_special(crate::instrument_registry::SDREX_OLD_NOISE_LEVEL, 0.8);
+        inst.set_special(crate::instrument_registry::SDREX_BALANCE, 0.0);
+        let mut voices = [None; crate::track::MAX_TRACKS];
+        voices[3] = Some(sdrex);
+        vst.seed_late_specials(&voices);
+        let inst = &vst.sound_settings_state.instruments[3];
+        assert_eq!(inst.special_value(crate::instrument_registry::SDREX_BALANCE), 0.5, "the recipe level is the centre");
+        assert_eq!(inst.special_value(crate::instrument_registry::SDREX_OLD_NOISE_LEVEL), 0.0);
+        // Quieter noise -> towards Synth; a second pass changes nothing.
+        inst.set_special(crate::instrument_registry::SDREX_OLD_NOISE_LEVEL, 0.4);
+        inst.set_special(crate::instrument_registry::SDREX_BALANCE, 0.0);
+        vst.seed_late_specials(&voices);
+        let b = vst.sound_settings_state.instruments[3].special_value(crate::instrument_registry::SDREX_BALANCE);
+        assert!((b - 0.75).abs() < 1e-6, "{b}");
+        vst.seed_late_specials(&voices);
+        assert!((vst.sound_settings_state.instruments[3].special_value(crate::instrument_registry::SDREX_BALANCE) - 0.75).abs() < 1e-6);
     }
 }

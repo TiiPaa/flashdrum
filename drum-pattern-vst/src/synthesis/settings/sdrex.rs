@@ -31,8 +31,9 @@ pub struct SdrexSettings {
     pub flanger_feedback: f32,
     /// Flanger dry/wet 0..1 (default 0.32).
     pub flanger_wet: f32,
-    /// Noise layer level 0..1 (recipe default 0.80).
-    pub noise_level: f32,
+    /// Balance between the noise layer (0) and the synth layers, body + metal (1);
+    /// 0.5 = the recipe, both at full level.
+    pub balance: f32,
     /// Noise colour: 0 = white, 1 = pink, 2 = brown, 3 = blue.
     pub noise_type: u8,
     /// 1.0 = preserve the flanger LFO phase between hits; 0 = restart the LFO
@@ -80,7 +81,7 @@ impl From<VoiceSettings> for SdrexSettings {
             flanger_depth: v.special[2],
             flanger_feedback: v.special[3],
             flanger_wet: v.special[4],
-            noise_level: v.special[10],
+            balance: v.special[19],
             noise_type: v.special[11] as u8,
             modulation_free_phase: v.special[12],
             modulation_type: v.special[17] as u8,
@@ -107,7 +108,7 @@ impl From<SdrexSettings> for VoiceSettings {
         special[2] = s.flanger_depth;
         special[3] = s.flanger_feedback;
         special[4] = s.flanger_wet;
-        special[10] = s.noise_level;
+        special[19] = s.balance;
         special[11] = s.noise_type as f32;
         special[12] = s.modulation_free_phase;
         special[17] = s.modulation_type as f32;

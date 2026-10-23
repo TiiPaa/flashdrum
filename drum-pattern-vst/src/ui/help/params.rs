@@ -216,7 +216,7 @@ Off: every hit plays the Sample chosen below.";
         "sdrex_flanger_depth" => "Depth: amount of modulation. The sign sets the direction of the sweep: positive opens the filter above its Filter value (Flanger: the delay grows), negative closes it below (Flanger: the delay shrinks). 0 = none.",
         "sdrex_flanger_feedback" => "Feedback: resonance of the flanger (Flanger mode only).",
         "sdrex_flanger_wet" => "Wet: level of the modulated sound.",
-        "sdrex_noise_level" => "Noise: level of the noise layer.",
+        "sdrex_balance" => "Noise <-> Synth: the balance between the noise layer and the synthesis layers (the tuned body and the metallic ring). In the middle both play at full level (the original sound); towards Noise the synth fades out, towards Synth the noise does.",
         "sdrex_free_phase" => "Free Phase: on = the modulation keeps running between hits; off = it restarts on each hit.",
         "ac_bd_sweep" => "Sweep: range of the pitch drop.",
         "ac_bd_bend" => "Bend: speed of the pitch drop.",
