@@ -145,6 +145,36 @@ def level_flat(x, window_ms=120.0):
     return x / np.maximum(env, 1e-4)
 
 
+def highpass(x, hz, poles=4):
+    """Passe-haut a 1 pole repete `poles` fois (6 dB/oct chacun)."""
+    a = np.exp(-2.0 * np.pi * hz / SR)
+    for _ in range(poles):
+        y = np.empty_like(x)
+        prev_x = 0.0
+        prev_y = 0.0
+        for i in range(len(x)):
+            prev_y = a * (prev_y + x[i] - prev_x)
+            prev_x = x[i]
+            y[i] = prev_y
+        x = y
+    return x
+
+
+def level_flat_heard(x, window_ms=120.0, weight_hz=400.0):
+    """Comme `level_flat`, mais le niveau est mesure sur ce que l'oreille
+    entend : la version passee au passe-haut (2 poles a `weight_hz`), qui
+    neglige le grave comme le fait l'oreille a faible niveau. Une zone sourde
+    n'est plus remontee au meme RMS qu'une zone brillante (elle sonnait alors
+    plus faible), elle est remontee au meme niveau ENTENDU."""
+    heard = highpass(x, weight_hz, poles=2)
+    n = max(int(SR * window_ms / 1000.0), 3)
+    win = np.hanning(n)
+    win /= win.sum()
+    power = np.convolve(heard * heard, win, mode="same")
+    env = np.sqrt(np.maximum(power, 1e-12))
+    return x / np.maximum(env, 1e-4)
+
+
 def comb_varying(x, delay_ms, feedback):
     """Comb à délai variable (interpolation linéaire) avec réinjection : les
     résonances harmoniques d'un tuyau, dont la longueur bouge."""
@@ -167,84 +197,65 @@ def comb_varying(x, delay_ms, feedback):
 
 
 def noise_field(seed=0x21F1):
-    """1 — Champs de bruit coloré, 16 s.
+    """1 - Champs de bruit colore, 16 s.
 
-    Version 2 (2026-09-14) : **le niveau ne baisse jamais** — toutes les
-    dérives sont spectrales ou texturales, et un niveleur RMS (120 ms) tient
-    le volume constant ; la densité qui creusait des zones presque muettes a
-    disparu. Plus évolutif : la coupure parcourt trois décades plusieurs fois,
-    une bande résonante balaie avec un Q qui bouge, un comb à délai variable
-    fait apparaître des zones de tuyau métallique, et une modulation
-    d'amplitude à 12-90 Hz donne des zones rugueuses, granuleuses.
+    Version 3 (2026-10-23) : retour utilisateur, « les 4/5 ne sont pas
+    utilisables : trop faibles ou trop bas ». Mesure de la v2 : apres 2,5 s,
+    60 a 99 % de l'energie sous 200 Hz, et un niveau ENTENDU 10 a 20 dB sous le
+    debut (le niveleur egalisait le RMS, que le grave remplit sans s'entendre).
+    Donc : la couleur ne descend plus sous ~600 Hz de coupure, plus de couche
+    brune, une bande medium a la place, un passe-haut 150 Hz (24 dB/oct) sur
+    le tout, et un niveleur qui mesure le niveau entendu (`level_flat_heard`).
+    La matiere change toujours de couleur, de rugosite et de hauteur au fil
+    des secondes, a volume constant.
     """
     r = rng(seed)
     n = int(SR * NOISE_DURATION)
     white = r.standard_normal(n)
 
-    # Couleur : la coupure parcourt trois decades (50 Hz -> 16 kHz), avec des
-    # composantes assez rapides pour traverser la plage plusieurs fois. Quatre
-    # poles (deux SVF en cascade, 24 dB/oct) : mesure faite, un pole seul
-    # laissait le centroide entre 5,9 et 9,9 kHz sur tout le fichier - jamais
-    # de zone sourde.
-    cutoff = 50.0 * (320.0 ** drift(r, n, [0.021, 0.047, 0.083, 0.19, 0.31], [1.0, 0.8, 0.6, 0.35, 0.2]))
+    # Couleur : la coupure parcourt 600 Hz -> 15 kHz (25x), plusieurs fois.
+    cutoff = 600.0 * (25.0 ** drift(r, n, [0.021, 0.047, 0.083, 0.19, 0.31], [1.0, 0.8, 0.6, 0.35, 0.2]))
     q_lp = np.full(n, 0.7)
-    # Chaque composante est nivelee AVANT le melange (fenetre longue, pour ne
-    # pas pomper le grave a 50 Hz) : sinon, dans une zone sourde, le corps
-    # filtre est minuscule et la moindre couche aigue prend tout le niveau -
-    # mesure : centroide jamais sous 4,3 kHz. Niveles, les melanges sont des
-    # changements de COULEUR purs.
-    colored = level_flat(
+    colored = level_flat_heard(
         svf_varying(svf_varying(white, cutoff, q_lp, "lp"), cutoff, q_lp, "lp"), 300.0
     )
 
-    # Composante brune (integree, avec fuite), melangee par une derive lente :
-    # les zones sourdes existent toujours, mais au meme niveau que les autres.
-    brown = np.empty(n)
-    z = 0.0
-    for i in range(n):
-        z = 0.997 * z + 0.02 * white[i]
-        brown[i] = z
-    mix = drift(r, n, [0.029, 0.077, 0.013], [1.0, 0.5, 0.7])
-    body = colored * (1.0 - mix) + level_flat(brown, 300.0) * mix
+    # A la place du brun : une bande medium (300 Hz -> 1,5 kHz), le corps d'une
+    # zone sombre qui reste audible.
+    mid_cut = 300.0 * (5.0 ** drift(r, n, [0.029, 0.077, 0.013], [1.0, 0.5, 0.7]))
+    mid = svf_varying(white, mid_cut, np.full(n, 0.9), "bp")
+    mix = drift(r, n, [0.031, 0.071, 0.017], [1.0, 0.5, 0.7])
+    body = colored * (1.0 - 0.6 * mix) + level_flat_heard(mid, 300.0) * 0.6 * mix
 
-    # Air : une bande haute qui respire par-dessus, au cube pour disparaitre
-    # vraiment dans les zones sourdes.
+    # Air : une bande haute qui respire par-dessus.
     air = onepole_lp_varying(white, np.full(n, 9000.0)) - onepole_lp_varying(
         white, np.full(n, 3500.0)
     )
-    body += 0.7 * level_flat(air, 300.0) * drift(r, n, [0.017, 0.053, 0.13], [1.0, 0.6, 0.3]) ** 3
+    body += 0.7 * level_flat_heard(air, 300.0) * drift(r, n, [0.017, 0.053, 0.13], [1.0, 0.6, 0.3]) ** 3
 
-    # Bande resonante qui balaie, Q mobile : des hauteurs la ou il n'y avait
-    # que de la couleur.
+    # Bande resonante qui balaie (300 Hz -> 12 kHz), Q mobile.
     band = svf_varying(
         white * 0.4,
-        150.0 * (80.0 ** drift(r, n, [0.023, 0.061, 0.14, 0.27], [1.0, 0.7, 0.45, 0.25])),
+        300.0 * (40.0 ** drift(r, n, [0.023, 0.061, 0.14, 0.27], [1.0, 0.7, 0.45, 0.25])),
         2.5 + 18.0 * drift(r, n, [0.019, 0.11, 0.05], [1.0, 0.5, 0.6]),
     )
-    body += 0.9 * level_flat(band, 300.0) * drift(r, n, [0.015, 0.049, 0.09], [1.0, 0.6, 0.4]) ** 2
+    body += 0.9 * level_flat_heard(band, 300.0) * drift(r, n, [0.015, 0.049, 0.09], [1.0, 0.6, 0.4]) ** 2
 
-    # Tuyau : comb a delai variable, present par zones. Le delai glisse de
-    # 0,4 a 9 ms (hauteurs de 110 Hz a 2,5 kHz), la reinjection monte jusqu'a
-    # 0,9 la ou la zone est pleine.
+    # Tuyau : comb a delai variable, par zones (0,4 a 6 ms : 170 Hz a 2,5 kHz).
     pipe_zone = drift(r, n, [0.011, 0.037, 0.073], [1.0, 0.6, 0.35]) ** 3
-    delay_ms = 0.4 * (22.0 ** drift(r, n, [0.027, 0.069, 0.16], [1.0, 0.5, 0.3]))
-    # Nourri avec la matiere COLOREE, pas du blanc : un comb sur du blanc
-    # eclaircissait toutes les zones ou il apparaissait.
-    pipe = level_flat(comb_varying(body * 0.5, delay_ms, 0.9 * pipe_zone), 300.0)
+    delay_ms = 0.4 * (15.0 ** drift(r, n, [0.027, 0.069, 0.16], [1.0, 0.5, 0.3]))
+    pipe = level_flat_heard(comb_varying(body * 0.5, delay_ms, 0.9 * pipe_zone), 300.0)
     body = body * (1.0 - 0.7 * pipe_zone) + pipe * pipe_zone
 
-    # Rugosite : modulation d'amplitude a 12-90 Hz, par zones. Trop rapide
-    # pour etre un volume, assez lente pour etre un grain.
-    t = np.arange(n) / SR
-    # 18 Hz au plus lent : en dessous, le niveleur final (120 ms) lisserait la
-    # modulation au lieu de la laisser passer comme un grain.
+    # Rugosite : modulation d'amplitude a 18-90 Hz, par zones.
     am_rate = 18.0 * (5.0 ** drift(r, n, [0.031, 0.087], [1.0, 0.5]))
     am_phase = 2 * np.pi * np.cumsum(am_rate) / SR
     rough_zone = drift(r, n, [0.013, 0.041, 0.097], [1.0, 0.7, 0.4]) ** 3
     body *= 1.0 - 0.85 * rough_zone * (0.5 + 0.5 * np.sin(am_phase))
 
-    # Le niveleur tient le volume ; le pic final donne la marge.
-    return fade_edges(normalize(level_flat(body)))
+    # Pas de grave inutile, puis le niveau entendu tenu constant.
+    body = highpass(body, 150.0, poles=4)
+    return fade_edges(normalize(level_flat_heard(body)))
 
 
 def metal(seed=0x21F2):

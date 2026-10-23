@@ -3895,6 +3895,10 @@ fn draw_special_rows(
             let picked = help::zone(ui, ("lfo_sync", slot, k), help::LFO_SYNC, |ui| {
                 ui.horizontal(|ui| {
                     ui.set_max_width(EDITOR_PARAMS_W);
+                    // The same left gutter as every other row (its revert dot lives there):
+                    // without it the label sat one gutter to the left.
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.add_space(ROW_GUTTER_W);
                     ui.spacing_mut().item_spacing.x = 8.0;
                     editor_label(ui, &sync_label);
                     right_aligned_select(ui, ("lfo_sync_menu", slot, k), current.min(options.len() - 1), options)
