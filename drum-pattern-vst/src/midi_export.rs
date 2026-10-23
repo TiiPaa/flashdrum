@@ -28,6 +28,17 @@ fn step_tick_offset(step: usize, swing: f32, groove_type: GrooveType) -> u32 {
     }
 }
 
+/// [305] Tick at a FRACTIONAL step position: the swung grid at whole steps, a straight line
+/// inside each step (the pulses of a fused cell, as in the sequencer).
+fn fractional_step_tick(pos: f64, swing: f32, groove_type: GrooveType) -> f64 {
+    let pos = pos.max(0.0);
+    let whole = pos.floor();
+    let step = whole as usize;
+    let a = step_tick_offset(step, swing, groove_type) as f64;
+    let b = step_tick_offset(step + 1, swing, groove_type) as f64;
+    a + (b - a) * (pos - whole)
+}
+
 fn encode_vlq(mut value: u32) -> Vec<u8> {
     let mut bytes = Vec::new();
     loop {
@@ -152,15 +163,19 @@ fn export_pattern_to_midi_data(
                 if !group.is_start(step) || !bit {
                     continue;
                 }
-                // `step_count` pulses evenly spaced over the whole fused span.
+                // `step_count` pulses over the whole fused span, placed on the swung grid
+                // ([305]: as many pulses as cells = the swung steps).
                 let pulses = (group.step_count.max(1)) as u32;
                 let span = group.cell_span() as u32;
                 let total = (span * TICKS_PER_STEP).max(1);
-                let base = step_tick_offset(group.start_cell as usize, swing, groove_type);
-                let base = shifted(base, nudge_ticks(slot, group.start_cell as usize));
+                let start = group.start_cell as usize;
+                let start_tick = step_tick_offset(start, swing, groove_type);
+                let base = shifted(start_tick, nudge_ticks(slot, start));
                 let dur = (total / pulses).saturating_sub(1).clamp(1, 10);
                 for k in 0..pulses {
-                    let tick = base + (k as f32 * total as f32 / pulses as f32).round() as u32;
+                    let pos = start as f64 + k as f64 * span as f64 / pulses as f64;
+                    let offset = fractional_step_tick(pos, swing, groove_type) - start_tick as f64;
+                    let tick = base + offset.round().max(0.0) as u32;
                     emit(&mut events, tick, dur, note);
                 }
             } else if bit {
@@ -506,6 +521,50 @@ mod tests {
             bytes.windows(3).any(|window| window == [0x99, 38, 100]),
             "Snare note-on at step 63 should be exported"
         );
+    }
+
+    /// [305] With swing, a fused cell of 4 cells and 4 pulses exports the same notes as 4
+    /// plain swung steps, from an even or an odd start; Straight is unchanged.
+    #[test]
+    fn midi_export_fusion_pulses_follow_the_swing() {
+        use crate::sequencer::pattern::{FusedGroup, MorphTarget};
+        let layout = legacy_layout();
+        let seq = SequencerPlockState::new();
+        for (swing, groove) in [
+            (0.0, GrooveType::Swing16),
+            (0.25, GrooveType::Swing16),
+            (0.75, GrooveType::Swing16),
+            (0.5, GrooveType::Shuffle),
+            (0.5, GrooveType::Mpc),
+        ] {
+            for start in [0u8, 1, 5] {
+                let fused = SharedPattern::new(&Pattern::empty());
+                fused.set_step_mask(start as usize, 1u16 << 0);
+                fused.store_fusions(
+                    0,
+                    &[FusedGroup {
+                        start_cell: start,
+                        end_cell: start + 3,
+                        step_count: 4,
+                        morph_count: 0,
+                        morph_targets: [MorphTarget::default(); 4],
+                    }],
+                );
+                let plain = SharedPattern::new(&Pattern::empty());
+                for s in start..start + 4 {
+                    plain.set_step_mask(s as usize, 1u16 << 0);
+                }
+                let export = |p: &SharedPattern| {
+                    export_pattern_to_midi_bytes(p, &layout, 120.0, 16, swing, groove, &seq)
+                        .expect("MIDI export should succeed")
+                };
+                assert_eq!(
+                    note_on_ticks(&export(&fused)),
+                    note_on_ticks(&export(&plain)),
+                    "{groove:?} swing {swing} start {start}"
+                );
+            }
+        }
     }
 
     #[test]

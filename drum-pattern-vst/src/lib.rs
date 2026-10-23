@@ -175,6 +175,26 @@ fn step_condition_passes(
     }
 }
 
+/// [305] Delay (samples, from the group's first pulse) of pulse `k` of a fused cell: pulse
+/// `k` sits at cell `k * span / count` of the group, measured on the swing curve from the
+/// master step the group fired on. As many pulses as cells = exactly the swung steps;
+/// Straight = evenly spaced over the span, as before.
+fn fusion_pulse_delay(
+    master_step: usize,
+    span_cells: u8,
+    pulse_count: u8,
+    k: u8,
+    swing: f32,
+    groove_type: groove::GrooveType,
+    step_duration_samples: f32,
+) -> u32 {
+    let start = master_step as f64;
+    let pos = start + k as f64 * span_cells.max(1) as f64 / pulse_count.max(1) as f64;
+    let beats = groove::fractional_step_beat(pos, swing, groove_type)
+        - groove::fractional_step_beat(start, swing, groove_type);
+    (beats * step_duration_samples as f64 * 4.0).round().max(1.0) as u32
+}
+
 /// [269] Main mix of one sample: the slots' stereo outputs weighted by their
 /// mix gains, times the master volume.
 fn main_mix(
@@ -3588,12 +3608,8 @@ impl DrumFlashVst {
         context: &mut impl ProcessContext<Self>,
     ) {
         let pulse_count = trigger.fusion_pulse_count.max(1);
-        let spacing = if pulse_count > 1 {
-            (step_duration_samples * trigger.fusion_span_cells.max(1) as f32 / pulse_count as f32)
-                .max(1.0) as u32
-        } else {
-            0
-        };
+        let swing = self.params.swing.value();
+        let groove_type = self.params.groove_type.value();
         let morph_active = trigger.morph_count > 0;
         for k in 0..pulse_count {
             let mut settings = base_settings;
@@ -3633,7 +3649,15 @@ impl DrumFlashVst {
                 );
             } else if self.pending_trigger_count < self.pending_triggers.len() {
                 self.pending_triggers[self.pending_trigger_count] = (
-                    spacing * k as u32,
+                    fusion_pulse_delay(
+                        trigger.master_step,
+                        trigger.fusion_span_cells,
+                        pulse_count,
+                        k,
+                        swing,
+                        groove_type,
+                        step_duration_samples,
+                    ),
                     slot_idx,
                     trigger.velocity,
                     step_for_trigger,
@@ -5757,5 +5781,31 @@ mod tests {
         assert!((b - 0.75).abs() < 1e-6, "{b}");
         vst.seed_late_specials(&voices);
         assert!((vst.sound_settings_state.instruments[3].special_value(crate::instrument_registry::SDREX_BALANCE) - 0.75).abs() < 1e-6);
+    }
+
+    /// [305] The pulses of a fused cell land on the swung grid: as many pulses as cells
+    /// fall exactly where plain swung steps would, whichever step the group starts on.
+    #[test]
+    fn fusion_pulses_follow_the_swing() {
+        let step_samples = 5512.5f32; // 120 BPM at 44.1 kHz
+        let at = |step: usize, swing: f32, groove: groove::GrooveType| {
+            groove::step_start_beat(step, swing, groove) * step_samples as f64 * 4.0
+        };
+        for groove in [groove::GrooveType::Swing16, groove::GrooveType::Shuffle, groove::GrooveType::Mpc] {
+            for swing in [0.0f32, 0.25, 0.5, 0.75] {
+                for start in [0usize, 1, 6, 7] {
+                    for k in 1..4u8 {
+                        let got = fusion_pulse_delay(start, 4, 4, k, swing, groove, step_samples) as f64;
+                        let want = at(start + k as usize, swing, groove) - at(start, swing, groove);
+                        assert!((got - want).abs() <= 1.0, "{groove:?} {swing} start {start} k {k}: {got} vs {want}");
+                    }
+                }
+            }
+        }
+        // Straight: evenly spaced over the span, as before (3 pulses over 2 cells).
+        for k in 1..3u8 {
+            let got = fusion_pulse_delay(5, 2, 3, k, 0.6, groove::GrooveType::Straight, step_samples);
+            assert_eq!(got, (k as f32 * step_samples * 2.0 / 3.0).round() as u32);
+        }
     }
 }

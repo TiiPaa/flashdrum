@@ -229,6 +229,9 @@ pub struct TriggerResult {
     /// it belongs to the NEXT loop, so step conditions must be evaluated with
     /// `loop_count + 1`.
     pub early_next_loop: bool,
+    /// [305] The master step this hit belongs to (its boundary on the swung grid): the
+    /// pulses of a fused cell are placed on the swing from there.
+    pub master_step: usize,
 }
 
 impl Default for TriggerResult {
@@ -242,6 +245,7 @@ impl Default for TriggerResult {
             morph_count: 0,
             morph_targets: [MorphTarget::default(); 4],
             early_next_loop: false,
+            master_step: 0,
         }
     }
 }
@@ -500,7 +504,7 @@ impl Sequencer {
                     morph_targets,
                 } = classify_cell(&self.fusions[grid], own_morphs, current_step)
                 {
-                    let trig = Self::eval_trigger(
+                    let mut trig = Self::eval_trigger(
                         &self.pattern,
                         self.mutes[slot],
                         track,
@@ -511,6 +515,7 @@ impl Sequencer {
                         morph_targets,
                         grid,
                     );
+                    trig.master_step = shifted_master;
                     if trig.should_trigger {
                         let micro = self.microtimings[slot][source_step].clamp(-100.0, 100.0);
                         if micro > 0.0 {
@@ -582,6 +587,8 @@ impl Sequencer {
                                 );
                                 if trig.should_trigger {
                                     trig.early_next_loop = crosses_wrap;
+                                    trig.master_step =
+                                        if crosses_loop_end { loop_start_step } else { next_master };
                                     if triggers[slot].should_trigger {
                                         // Same-sample collision: one sample
                                         // late beats a dropped hit.
@@ -641,6 +648,7 @@ impl Sequencer {
             morph_count,
             morph_targets,
             early_next_loop: false,
+            master_step: 0,
         }
     }
 

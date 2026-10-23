@@ -66,6 +66,18 @@ pub fn step_start_beat(step: usize, swing: f32, groove_type: GrooveType) -> f64 
     }
 }
 
+/// [305] Beat at a FRACTIONAL step position (in cells): the swung grid at whole steps,
+/// a straight line inside each step. The pulses of a fused cell are placed on it, so as many
+/// pulses as cells land exactly on the swung steps; Straight gives `pos * 0.25`.
+pub fn fractional_step_beat(pos: f64, swing: f32, groove_type: GrooveType) -> f64 {
+    let pos = pos.max(0.0);
+    let whole = pos.floor();
+    let step = whole as usize;
+    let a = step_start_beat(step, swing, groove_type);
+    let b = step_start_beat(step + 1, swing, groove_type);
+    a + (b - a) * (pos - whole)
+}
+
 fn straight_step(beat_pos: f64) -> usize {
     ((beat_pos / 0.25).floor() as usize).clamp(0, 63)
 }
@@ -113,6 +125,24 @@ fn mpc_step(beat_pos: f64, swing: f32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [305] Whole positions are the swung steps; Straight is a straight line.
+    #[test]
+    fn fractional_step_beat_follows_the_swing() {
+        for groove in [GrooveType::Straight, GrooveType::Swing16, GrooveType::Shuffle, GrooveType::Mpc] {
+            for swing in [0.0f32, 0.25, 0.5, 0.75] {
+                for step in 0..16usize {
+                    let got = fractional_step_beat(step as f64, swing, groove);
+                    assert!((got - step_start_beat(step, swing, groove)).abs() < 1e-12);
+                }
+            }
+        }
+        assert!((fractional_step_beat(2.5, 0.6, GrooveType::Straight) - 0.625).abs() < 1e-12);
+        // Halfway through the long first step of a swung pair.
+        let ratio = swing_ratio_for(0.5, GrooveType::Swing16);
+        let mid = fractional_step_beat(0.5, 0.5, GrooveType::Swing16);
+        assert!((mid - 0.25 * ratio).abs() < 1e-12);
+    }
 
     #[test]
     fn test_stright_no_swing() {
