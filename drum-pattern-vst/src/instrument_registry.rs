@@ -734,6 +734,16 @@ const BUZZ_STD: &[StandardParamDef] = &[
         false,
         None,
     ),
+    // [146] The bipolar attack curve: to the left, the fast-rising (concave) attack.
+    s(
+        StandardField::ReleaseCurve,
+        "Attack Curve",
+        ParamFamily::Env,
+        -1.0,
+        1.0,
+        false,
+        None,
+    ),
     s(
         StandardField::Hold,
         "Hold",
@@ -1377,6 +1387,16 @@ const SMP606_STD: &[StandardParamDef] = &[
     s(
         StandardField::DecayCurve,
         "Decay Curve",
+        ParamFamily::Env,
+        -1.0,
+        1.0,
+        false,
+        None,
+    ),
+    // [146] The bipolar attack curve: to the left, the fast-rising (concave) attack.
+    s(
+        StandardField::ReleaseCurve,
+        "Attack Curve",
         ParamFamily::Env,
         -1.0,
         1.0,
@@ -3800,7 +3820,7 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
         // [freq, decay, vol, filter_freq, attack, release, decay_curve,
         //  release_curve, hold, filter_env_amount, filter_env_decay, analog, stereo]
         sound_settings_default: [
-            200.0, 0.5, 1.3, 1200.0, 0.0005, 0.2, 4.0, 3.0, 0.0, 0.6, 0.12, 0.5, 1.0,
+            200.0, 0.5, 1.3, 1200.0, 0.0005, 0.2, 4.0, 0.0, 0.0, 0.6, 0.12, 0.5, 1.0,
         ],
         freq_display_ratio: 1.0,
         filter_type_label: "",

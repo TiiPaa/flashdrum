@@ -3277,6 +3277,18 @@ impl DrumFlashVst {
             let Some(voice_idx) = slot_voices[slot_idx] else {
                 continue;
             };
+            // [146] Buzz never read its attack curve, and every lane holds the registry's
+            // old 3.0 there (out of the -1..1 range): it becomes linear, the attack heard.
+            if voice_idx == synthesis::DrumVoice::Buzz as usize {
+                let inst = &self.sound_settings_state.instruments[slot_idx];
+                let curve = crate::param_id::ParamId::Std(
+                    crate::instrument_registry::StandardField::ReleaseCurve,
+                );
+                if inst.get(curve) > 1.0 {
+                    inst.set_standard(crate::instrument_registry::StandardField::ReleaseCurve, 0.0);
+                    changed = true;
+                }
+            }
             // SDrex: a lane saved with the old Noise level (and no balance) gets the balance
             // that sounds like it; the old level is cleared so this runs once.
             if voice_idx == synthesis::DrumVoice::Sdrex as usize {
@@ -5824,5 +5836,24 @@ mod tests {
                 slot + 1
             );
         }
+    }
+
+    /// [146] An older Buzz lane (attack curve 3.0, never read) keeps its linear attack.
+    #[test]
+    fn an_old_buzz_attack_curve_becomes_linear() {
+        let mut vst = DrumFlashVst::default();
+        let buzz = synthesis::DrumVoice::Buzz as usize;
+        let curve = crate::param_id::ParamId::Std(crate::instrument_registry::StandardField::ReleaseCurve);
+        vst.sound_settings_state.instruments[5]
+            .set_standard(crate::instrument_registry::StandardField::ReleaseCurve, 3.0);
+        let mut voices = [None; crate::track::MAX_TRACKS];
+        voices[5] = Some(buzz);
+        vst.seed_late_specials(&voices);
+        assert_eq!(vst.sound_settings_state.instruments[5].get(curve), 0.0);
+        // A curve set by the user stays.
+        vst.sound_settings_state.instruments[5]
+            .set_standard(crate::instrument_registry::StandardField::ReleaseCurve, -0.8);
+        vst.seed_late_specials(&voices);
+        assert_eq!(vst.sound_settings_state.instruments[5].get(curve), -0.8);
     }
 }

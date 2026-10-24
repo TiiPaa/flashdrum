@@ -97,7 +97,7 @@ impl BuzzVoice {
 
         let decay = settings.decay.max(0.01).min(5.0);
         let mut amp_env =
-            dsp::DecayReleaseEnvelope::new(sample_rate, settings.decay_curve, decay, 0.0, 0.0)
+            dsp::DecayReleaseEnvelope::new(sample_rate, settings.decay_curve, decay, settings.release_curve, 0.0)
                 .with_attack_ms((settings.attack * 1000.0).max(MIN_AMP_ATTACK_MS));
         amp_env.set_hold(settings.hold);
 
@@ -415,6 +415,8 @@ impl Voice for BuzzVoice {
         // Amp A-H-D envelope via setters — never recreate (would reset the tail).
         self.amp_env.set_decay(self.settings.decay.max(0.01));
         self.amp_env.set_decay_curve(self.settings.decay_curve);
+        // [146] The Attack Curve (stored in the release-curve slot, like every voice).
+        self.amp_env.set_release_curve(self.settings.release_curve);
         self.amp_env.set_hold(self.settings.hold);
         self.amp_env
             .set_attack_ms((self.settings.attack * 1000.0).max(MIN_AMP_ATTACK_MS));
@@ -638,5 +640,22 @@ mod tests {
             max_diff > 0.05,
             "filter type should change the output (diff {max_diff})"
         );
+    }
+
+    /// [146] The Attack Curve shapes Buzz's attack: to the left the level rises faster.
+    #[test]
+    fn the_attack_curve_shapes_the_attack() {
+        let render = |curve: f32| -> f32 {
+            let mut settings = VoiceSettings::buzz();
+            settings.analog = 0.0;
+            settings.attack = 0.05;
+            settings.release_curve = curve;
+            let mut voice = BuzzVoice::new(44100.0, BuzzSettings::from(settings));
+            voice.trigger();
+            // Energy over the first 10 ms of a 50 ms attack.
+            (0..441).map(|_| voice.process_sample().powi(2)).sum()
+        };
+        let (fast, linear, slow) = (render(-1.0), render(0.0), render(1.0));
+        assert!(fast > linear && linear > slow, "fast {fast}, linear {linear}, slow {slow}");
     }
 }

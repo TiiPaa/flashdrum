@@ -889,7 +889,7 @@ impl VoiceSettings {
             attack: 0.0005,
             release: 0.2,
             decay_curve: 4.0,
-            release_curve: 3.0,
+            release_curve: 0.0, // [146] linear: Buzz's attack before it had an Attack Curve
             hold: 0.0,
             filter_env_amount: 0.6,
             filter_env_decay: 0.12,
