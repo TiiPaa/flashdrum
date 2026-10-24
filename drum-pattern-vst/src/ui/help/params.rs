@@ -166,7 +166,7 @@ pub fn special(name: &str) -> &'static str {
 Off: every hit plays the Sample chosen below.";
     }
     if ends("_sample") {
-        return "Sample: which of the 8 recordings is played (or which stereo pair when Stereo is on). Greyed while Analog Mode is on.";
+        return "Sample: which of the 8 recordings is played (or which stereo pair when Stereo is on). While Analog Mode is on it reads \"Random each hit\": every hit picks another recording, by design.";
     }
     if ends("_one_shot") {
         return "One Shot: plays the whole recording and ignores the Amp envelope (its rows are greyed).";
@@ -298,6 +298,10 @@ Off: every hit plays the Sample chosen below.";
         "rift_grain_shape" => "Grain Shape: smoothness of the grain's edges (Loop only).",
         "rift_stereo_spread" => "Stereo Spread: the right channel reads a little ahead, for width.",
         "rift_lfo_shape" => "LFO Shape: waveform of the LFO (S&H = random steps).",
+        "tom_lfo_shape" => "LFO Shape: waveform of the pitch LFO.",
+        "tom_pitch_lfo_rate" => "Pitch LFO Rate: speed of the vibrato. It restarts on each hit.",
+        "tom_pitch_lfo_depth" => "Pitch LFO Depth: depth of the vibrato, in semitones. 0 = off.",
+        "tom_pitch_lfo_fade" => "Fade-in: the vibrato comes in progressively over this time after each hit. 0 = at full depth from the start.",
         "rift_lfo_free_phase" => "LFO Free Phase: on = the LFO keeps running between hits; off = it restarts on each hit.",
         "rift_pitch_lfo_rate" => "Pitch LFO Rate: speed of the vibrato.",
         "rift_pitch_lfo_depth" => "Pitch LFO Depth: depth of the vibrato, in semitones.",

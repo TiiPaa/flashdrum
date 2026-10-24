@@ -6,6 +6,7 @@
 //! - One-pole lowpass filter
 //! - Exponential amplitude envelope
 //! - Optional stick attack (short noise burst) for realism
+//! - [94] Pitch LFO (vibrato) on the body, restarted on each hit, with a fade-in
 
 use super::{dsp, saturation, settings::tom::TomSettings, Voice, VoiceSettings};
 
@@ -38,6 +39,9 @@ pub struct TomVoice {
     // Per-hit analog drift (breathing) + DC blocker.
     drift: dsp::AnalogDrift,
     dc_block: dsp::DcBlocker,
+    /// [94] Pitch LFO, and the time since the hit (for its fade-in).
+    pitch_lfo: dsp::Lfo,
+    hit_time: f32,
 
     active: bool,
 }
@@ -89,6 +93,8 @@ impl TomVoice {
             },
             drift: dsp::AnalogDrift::new(0x5151_2222),
             dc_block: dsp::DcBlocker::default(),
+            pitch_lfo: dsp::Lfo::new(sample_rate, 0x7011_1F0E),
+            hit_time: 0.0,
             active: false,
         };
         voice.update_derived_params();
@@ -109,6 +115,28 @@ impl TomVoice {
             .set_decay(self.settings.filter_env_decay.max(0.001));
         let sweep_time = 0.14f32.min(self.settings.decay);
         self.pitch_env.set_sweep_time(sweep_time);
+        self.pitch_lfo
+            .set_rate(self.settings.pitch_lfo_rate.clamp(0.05, 40.0));
+    }
+
+    /// [94] The pitch LFO's frequency ratio for this sample (1 when its depth is 0). The
+    /// depth ramps up linearly over the fade-in, from the hit.
+    fn pitch_lfo_ratio(&mut self) -> f32 {
+        let shape = dsp::LfoShape::from_index(self.settings.lfo_shape.round().clamp(0.0, 3.0) as u8);
+        let lfo = self.pitch_lfo.next(shape);
+        let fade_s = self.settings.pitch_lfo_fade_ms.clamp(0.0, 1000.0) * 0.001;
+        let fade = if fade_s <= 0.0 {
+            1.0
+        } else {
+            (self.hit_time / fade_s).clamp(0.0, 1.0)
+        };
+        self.hit_time += 1.0 / self.sample_rate;
+        let semis = lfo * self.settings.pitch_lfo_depth.clamp(0.0, 12.0) * fade;
+        if semis.abs() > 1e-4 {
+            2f32.powf(semis / 12.0)
+        } else {
+            1.0
+        }
     }
 
     fn stick_amount(&self) -> f32 {
@@ -136,6 +164,8 @@ impl Voice for TomVoice {
         self.amp_env
             .set_release(self.settings.release * self.drift.time);
         self.pitch_env.trigger();
+        self.pitch_lfo.retrigger();
+        self.hit_time = 0.0;
         self.amp_env.trigger();
         self.filter_env.trigger();
         if self.stick_amount() > 0.0 {
@@ -154,7 +184,7 @@ impl Voice for TomVoice {
         if self.active {
             // Pitch sweep — advanced ONCE per sample (it was previously also
             // advanced inside the algo branches → 2× speed).
-            let pitch_ratio = self.pitch_env.next();
+            let pitch_ratio = self.pitch_env.next() * self.pitch_lfo_ratio();
 
             // Amplitude envelope
             let env = self.amp_env.next();
@@ -233,6 +263,8 @@ impl Voice for TomVoice {
         self.filter.reset();
         self.stick_filter.reset();
         self.dc_block.reset();
+        self.pitch_lfo.reset();
+        self.hit_time = 0.0;
     }
 
     fn set_settings(&mut self, settings: VoiceSettings) {
@@ -275,8 +307,74 @@ impl Voice for TomVoice {
                 self.settings.saturation_pre_filter = value;
                 self.saturation.pre_filter = value > 0.5;
             }
+            7 => self.settings.lfo_shape = value,
+            8 => {
+                self.settings.pitch_lfo_rate = value;
+                self.pitch_lfo.set_rate(value.clamp(0.05, 40.0));
+            }
+            9 => self.settings.pitch_lfo_depth = value,
+            10 => self.settings.pitch_lfo_fade_ms = value,
             _ => {}
         }
         self.saturation.update_compensation();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render(settings: VoiceSettings, n: usize) -> Vec<f32> {
+        let mut voice = TomVoice::new(44100.0, TomSettings::from(settings));
+        voice.trigger();
+        (0..n).map(|_| voice.process_sample()).collect()
+    }
+
+    fn base() -> VoiceSettings {
+        let mut settings = VoiceSettings::tom1();
+        settings.analog = 0.0;
+        settings.special[0] = 0.0; // no stick: the body alone
+        settings
+    }
+
+    /// [94] Depth 0 = the tom as before; a depth moves the pitch; the fade-in holds the
+    /// vibrato back at the start of the hit.
+    #[test]
+    fn the_pitch_lfo_bends_the_body_and_fades_in() {
+        let n = 8820; // 200 ms
+        let plain = render(base(), n);
+        let mut zero = base();
+        zero.special[9] = 0.0;
+        zero.special[8] = 7.0;
+        assert_eq!(render(zero, n), plain, "depth 0 must leave the tom untouched");
+
+        let mut lfo = base();
+        lfo.special[8] = 12.0;
+        lfo.special[9] = 6.0;
+        let wobbly = render(lfo, n);
+        let diff = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+        assert!(diff(&wobbly, &plain) > 0.05, "a 6-semitone LFO must change the sound");
+        assert!(wobbly.iter().all(|x| x.is_finite()));
+
+        let mut faded = lfo;
+        faded.special[10] = 500.0;
+        let faded = render(faded, n);
+        // The first 5 ms: the fade-in has barely started, so it sounds like the plain tom.
+        let early = 220;
+        assert!(
+            diff(&faded[..early], &plain[..early]) < diff(&wobbly[..early], &plain[..early]),
+            "the fade-in must hold the vibrato back at the start"
+        );
+    }
+
+    /// [94] Every shape runs and stays finite.
+    #[test]
+    fn every_lfo_shape_plays() {
+        for shape in 0..4 {
+            let mut settings = base();
+            settings.special[7] = shape as f32;
+            settings.special[9] = 3.0;
+            assert!(render(settings, 4410).iter().all(|x| x.is_finite()));
+        }
     }
 }

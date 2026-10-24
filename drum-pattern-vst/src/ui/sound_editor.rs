@@ -4160,7 +4160,12 @@ fn special_row_widget(
     // Multisample voices: Sample select 1..8 (stored 1-based)
     } else if def.name.ends_with("_sample") {
         editor_label(ui, def.label);
-        if stereo > 0.5 {
+        // [284] Analog Mode plays a different recording on every hit: say so where the
+        // number would be, so the variation does not read as a setting that moves.
+        if src.get(ParamId::Special(0)) > 0.5 {
+            let random = if stereo > 0.5 { "Random pair / hit" } else { "Random each hit" };
+            right_aligned_select(ui, (def.name, row_salt), 0, &[random]);
+        } else if stereo > 0.5 {
             // [168] Stereo on: the list picks the PAIR.
             let pair_names = ["1+2", "3+4", "5+6", "7+8"];
             let current_idx = ((current.round() as usize).clamp(1, 8) - 1) / 2;

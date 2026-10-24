@@ -21,6 +21,12 @@ pub struct TomSettings {
     pub saturation_mix: f32,
     pub saturation_output_gain: f32,
     pub saturation_pre_filter: f32,
+    /// [94] Pitch LFO: shape (0 Sine, 1 Triangle, 2 Square, 3 Saw), rate (Hz), depth
+    /// (semitones) and fade-in (ms, the depth ramps up from the hit).
+    pub lfo_shape: f32,
+    pub pitch_lfo_rate: f32,
+    pub pitch_lfo_depth: f32,
+    pub pitch_lfo_fade_ms: f32,
     pub algo: u8,
 }
 
@@ -45,6 +51,10 @@ impl From<VoiceSettings> for TomSettings {
             saturation_mix: v.special[3],
             saturation_output_gain: v.special[4],
             saturation_pre_filter: v.special[5],
+            lfo_shape: v.special[7],
+            pitch_lfo_rate: v.special[8],
+            pitch_lfo_depth: v.special[9],
+            pitch_lfo_fade_ms: v.special[10],
             algo: v.algo,
         }
     }
@@ -60,6 +70,10 @@ impl From<TomSettings> for VoiceSettings {
         special[4] = t.saturation_output_gain;
         special[5] = t.saturation_pre_filter;
         special[6] = t.resonance;
+        special[7] = t.lfo_shape;
+        special[8] = t.pitch_lfo_rate;
+        special[9] = t.pitch_lfo_depth;
+        special[10] = t.pitch_lfo_fade_ms;
         Self {
             frequency: t.frequency,
             attack: t.attack,

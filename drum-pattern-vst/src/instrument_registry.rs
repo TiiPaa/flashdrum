@@ -175,8 +175,10 @@ pub struct SpecialParamDef {
 
 /// [287] Specials added after sessions existed: an older lane stores 0 for
 /// them, below their minimum. `DrumFlashVst::seed_late_specials` reseeds those.
-pub const LATE_SPECIALS: [&str; 11] = [
+pub const LATE_SPECIALS: [&str; 12] = [
     "tom_resonance",
+    // [94] The Toms' Pitch LFO Rate: an older tom lane holds 0, below the minimum.
+    "tom_pitch_lfo_rate",
     "sdrex_resonance",
     "buzz_resonance",
     "reverb_highcut",
@@ -199,8 +201,9 @@ pub const RUMBLE_ECHO_SYNC: &[&str] = &[
 /// [304] The LFO rates that can follow the host tempo, and which of the lane's two LFO-sync
 /// settings (`TrackSlot::lfo_sync`) each one reads. The sync is a LANE setting kept in the
 /// track layout (the voices' `special[]` has no room left on Rift), never a p-lock.
-pub const LFO_SYNC_RATES: [(&str, usize); 4] = [
+pub const LFO_SYNC_RATES: [(&str, usize); 5] = [
     ("rift_pitch_lfo_rate", 0),
+    ("tom_pitch_lfo_rate", 0),
     ("rift_filter_lfo_rate", 1),
     ("sdrex_flanger_rate", 0),
     ("buzz_gate_rate", 0),
@@ -2517,6 +2520,45 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
                 6,
                 ParamFamily::Filter,
             ),
+            // [94] Pitch LFO: a vibrato on the body, restarted on each hit, that can come in
+            // progressively (Fade-in) and follow the tempo (Sync, [304]).
+            sp_unit(
+                "tom_pitch_lfo_rate",
+                "Pitch LFO Rate",
+                5.0,
+                0.05,
+                40.0,
+                8,
+                ParamFamily::Modulation,
+                " Hz",
+            ),
+            sp(
+                "tom_pitch_lfo_depth",
+                "Pitch LFO Depth",
+                0.0,
+                0.0,
+                12.0,
+                9,
+                ParamFamily::Modulation,
+            ),
+            sp_options(
+                "tom_lfo_shape",
+                "LFO Shape",
+                0.0,
+                7,
+                ParamFamily::Modulation,
+                &["Sine", "Triangle", "Square", "Saw"],
+            ),
+            sp_unit(
+                "tom_pitch_lfo_fade",
+                "Fade-in",
+                0.0,
+                0.0,
+                1000.0,
+                10,
+                ParamFamily::Modulation,
+                " ms",
+            ),
         ],
         // No hold, filter env, no stereo
         sound_settings_default: [
@@ -2601,6 +2643,45 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
                 6,
                 ParamFamily::Filter,
             ),
+            // [94] Pitch LFO: a vibrato on the body, restarted on each hit, that can come in
+            // progressively (Fade-in) and follow the tempo (Sync, [304]).
+            sp_unit(
+                "tom_pitch_lfo_rate",
+                "Pitch LFO Rate",
+                5.0,
+                0.05,
+                40.0,
+                8,
+                ParamFamily::Modulation,
+                " Hz",
+            ),
+            sp(
+                "tom_pitch_lfo_depth",
+                "Pitch LFO Depth",
+                0.0,
+                0.0,
+                12.0,
+                9,
+                ParamFamily::Modulation,
+            ),
+            sp_options(
+                "tom_lfo_shape",
+                "LFO Shape",
+                0.0,
+                7,
+                ParamFamily::Modulation,
+                &["Sine", "Triangle", "Square", "Saw"],
+            ),
+            sp_unit(
+                "tom_pitch_lfo_fade",
+                "Fade-in",
+                0.0,
+                0.0,
+                1000.0,
+                10,
+                ParamFamily::Modulation,
+                " ms",
+            ),
         ],
         // No hold, filter env, no stereo
         sound_settings_default: [
@@ -2684,6 +2765,45 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
                 10.0,
                 6,
                 ParamFamily::Filter,
+            ),
+            // [94] Pitch LFO: a vibrato on the body, restarted on each hit, that can come in
+            // progressively (Fade-in) and follow the tempo (Sync, [304]).
+            sp_unit(
+                "tom_pitch_lfo_rate",
+                "Pitch LFO Rate",
+                5.0,
+                0.05,
+                40.0,
+                8,
+                ParamFamily::Modulation,
+                " Hz",
+            ),
+            sp(
+                "tom_pitch_lfo_depth",
+                "Pitch LFO Depth",
+                0.0,
+                0.0,
+                12.0,
+                9,
+                ParamFamily::Modulation,
+            ),
+            sp_options(
+                "tom_lfo_shape",
+                "LFO Shape",
+                0.0,
+                7,
+                ParamFamily::Modulation,
+                &["Sine", "Triangle", "Square", "Saw"],
+            ),
+            sp_unit(
+                "tom_pitch_lfo_fade",
+                "Fade-in",
+                0.0,
+                0.0,
+                1000.0,
+                10,
+                ParamFamily::Modulation,
+                " ms",
             ),
         ],
         // No hold, filter env, no stereo
@@ -5492,6 +5612,12 @@ mod tests {
         assert_eq!(
             with_unit,
             vec![
+                ("tom_pitch_lfo_rate", " Hz"),
+                ("tom_pitch_lfo_fade", " ms"),
+                ("tom_pitch_lfo_rate", " Hz"),
+                ("tom_pitch_lfo_fade", " ms"),
+                ("tom_pitch_lfo_rate", " Hz"),
+                ("tom_pitch_lfo_fade", " ms"),
                 ("cymbal_shimmer_freq", " Hz"),
                 ("bassdrum808_click_tone", " Hz"),
                 ("bd606_fine_tune", " ct"),
