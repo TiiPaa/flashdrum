@@ -126,7 +126,7 @@ pub fn draw_amp_envelope(
     for i in 0..=SEG {
         let p = i as f32 / SEG as f32;
         let x = x_hold + (x_end - x_hold) * p;
-        dec_pts.push(Pos2::new(x, y_of(bipolar_shape_curve(1.0 - p, dec_curve))));
+        dec_pts.push(Pos2::new(x, y_of(crate::synthesis::shape_decay_curve(1.0 - p, dec_curve))));
     }
     painter.add(Shape::line(dec_pts, Stroke::new(CURVE_W, stage_decay())));
 
@@ -428,7 +428,7 @@ fn draw_ahd_on_region(
             }
             pts.push(Pos2::new(
                 x_of(t),
-                y_of(bipolar_shape_curve(1.0 - p, dec_curve)),
+                y_of(crate::synthesis::shape_decay_curve(1.0 - p, dec_curve)),
             ));
         }
         painter.add(Shape::line(pts, Stroke::new(CURVE_W, stage_decay())));
@@ -981,7 +981,7 @@ pub fn draw_sample_amp_graph(
         let mut dec_pts = Vec::with_capacity(POINTS + 1);
         for i in 0..=POINTS {
             let p = p_a + (1.0 - p_a) * (i as f32 / POINTS as f32);
-            let v = bipolar_shape_curve(1.0 - (p - p_a) / (1.0 - p_a).max(1e-6), decay_curve);
+            let v = crate::synthesis::shape_decay_curve(1.0 - (p - p_a) / (1.0 - p_a).max(1e-6), decay_curve);
             dec_pts.push(Pos2::new(x_of(p), y_of(v)));
         }
         painter.add(Shape::line(dec_pts, Stroke::new(CURVE_W, stage_decay())));

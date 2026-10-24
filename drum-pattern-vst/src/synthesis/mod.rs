@@ -53,6 +53,8 @@ pub use delay::sp as delay_sp;
 pub use delay::synced_time_ms as delay_synced_time_ms;
 pub use delay::{DelayCore, DelayParams, DelayVoice};
 #[allow(unused_imports)]
+pub use dsp::{decay_curve_amount, shape_decay_curve};
+#[allow(unused_imports)]
 pub use delay::SYNC_BEATS as NOTE_SYNC_BEATS;
 #[allow(unused_imports)]
 pub use reverb::sp as reverb_sp;

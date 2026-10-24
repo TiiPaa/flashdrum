@@ -1669,7 +1669,8 @@ pub fn draw_sound_panel(
     let mut filt = src.get(ParamId::Std(StandardField::FilterFreq));
     let mut attack = src.get(ParamId::Std(StandardField::Attack));
     let mut release = src.get(ParamId::Std(StandardField::Release));
-    let mut decay_curve = src.get(ParamId::Std(StandardField::DecayCurve));
+    // [146] A legacy stored 4.0 plays (and so shows) as 1.
+    let mut decay_curve = crate::synthesis::decay_curve_amount(src.get(ParamId::Std(StandardField::DecayCurve)));
     let mut release_curve = src.get(ParamId::Std(StandardField::ReleaseCurve));
     let mut hold = src.get(ParamId::Std(StandardField::Hold));
     let mut filter_env_amount = src.get(ParamId::Std(StandardField::FilterEnvAmount));

@@ -570,6 +570,36 @@ pub fn shape_curve(e: f32, curve: f32) -> f32 {
     }
 }
 
+/// [146] The amp Decay Curve runs from -2 to +2: inside -1..1 it is exactly [`shape_curve`],
+/// beyond it keeps steepening (exponent 6 at 1, 30 at 2). A stored value beyond 2 is the
+/// registry's legacy "fully curved" default (4.0 and the like, clamped to 1 until then): it
+/// still means 1, so no session changes sound.
+pub fn decay_curve_amount(raw: f32) -> f32 {
+    if !raw.is_finite() {
+        0.0
+    } else if raw.abs() > 2.0 {
+        raw.signum()
+    } else {
+        raw
+    }
+}
+
+/// [146] Shaping of the amp DECAY with the extended range (see [`decay_curve_amount`]).
+#[inline]
+pub fn shape_decay_curve(e: f32, curve: f32) -> f32 {
+    let c = decay_curve_amount(curve);
+    if c.abs() <= 1.0 {
+        return shape_curve(e, c);
+    }
+    let e = e.clamp(0.0, 1.0);
+    let n = 6.0 * 5f32.powf(c.abs() - 1.0);
+    if c > 0.0 {
+        e.powf(n)
+    } else {
+        1.0 - (1.0 - e).powf(n)
+    }
+}
+
 /// Amplitude envelope: **Attack-Hold-Decay** with independent BIPOLAR curve
 /// shaping on the attack and the decay (no release stage). Time-based; the
 /// attack ramps from the value captured at trigger time so retriggering during
@@ -665,7 +695,7 @@ impl DecayReleaseEnvelope {
             1.0
         } else {
             let p = ((t - a - h) / d).clamp(0.0, 1.0);
-            shape_curve(1.0 - p, self.dec_curve)
+            shape_decay_curve(1.0 - p, self.dec_curve)
         };
         let v = v.clamp(0.0, 1.0);
         // Only end during the decay tail (never during attack/hold).
@@ -1395,6 +1425,23 @@ impl Decimator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [146] The decay curve's old range is untouched, the new one steepens further, and a
+    /// legacy stored value (4.0) still means 1.
+    #[test]
+    fn the_extended_decay_curve_keeps_the_old_range() {
+        for c in [-1.0f32, -0.4, 0.0, 0.5, 1.0] {
+            for e in [0.0f32, 0.1, 0.5, 0.9, 1.0] {
+                assert_eq!(shape_decay_curve(e, c), shape_curve(e, c));
+            }
+        }
+        assert_eq!(shape_decay_curve(0.5, 4.0), shape_curve(0.5, 1.0));
+        assert_eq!(shape_decay_curve(0.5, -4.0), shape_curve(0.5, -1.0));
+        // Steeper than 1 on both sides, continuous at 1.
+        assert!(shape_decay_curve(0.5, 2.0) < shape_decay_curve(0.5, 1.0) * 0.01);
+        assert!(shape_decay_curve(0.5, -2.0) > 0.999);
+        assert!((shape_decay_curve(0.5, 1.0001) - shape_curve(0.5, 1.0)).abs() < 1e-3);
+    }
 
     /// The LFO is the project's first shared one ([221]); these pin the
     /// contract every caller relies on.

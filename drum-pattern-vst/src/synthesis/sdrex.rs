@@ -223,7 +223,7 @@ impl Voice for SdrexVoice {
         if self.body_phase >= 2.0 * std::f32::consts::PI {
             self.body_phase -= 2.0 * std::f32::consts::PI;
         }
-        let body_env = dsp::shape_curve(
+        let body_env = dsp::shape_decay_curve(
             (-amp_decay_t * 32.0 * tfac).exp(),
             self.settings.decay_curve,
         );
@@ -232,7 +232,7 @@ impl Voice for SdrexVoice {
         // 2. Noise: coloured noise high-passed by LP subtraction, exp tail.
         let white = self.noise.next();
         let noise_hp = white - self.noise_lp.process(white);
-        let noise_env = dsp::shape_curve(
+        let noise_env = dsp::shape_decay_curve(
             (-amp_decay_t * 18.0 * tfac).exp(),
             self.settings.decay_curve,
         );
@@ -248,7 +248,7 @@ impl Voice for SdrexVoice {
         if self.metal_phase_2 >= 2.0 * std::f32::consts::PI {
             self.metal_phase_2 -= 2.0 * std::f32::consts::PI;
         }
-        let metal_env = dsp::shape_curve(
+        let metal_env = dsp::shape_decay_curve(
             (-amp_decay_t * 25.0 * tfac).exp(),
             self.settings.decay_curve,
         );
