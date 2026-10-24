@@ -1611,21 +1611,24 @@ impl Default for DrumFlashParams {
             // avoids the IntRange { min: 0, max: 0 } division-by-zero crash in
             // nih-plug normalization (see bug [42]).
             // Params for slots that hold a single-algo kind in the default layout
-            // are hidden from host automation so they don't clutter the DAW lanes.
+            // stay out of host automation so they don't clutter the DAW lanes.
+            // [307] Never `.hide()`: the VST3 wrapper makes a hidden param READ-ONLY,
+            // and Studio One then drops the editor's edits while playing (the
+            // Algorithm menu of a lane on those slots snapped back: Buzz's Razor).
             algo_kick: IntParam::new("Slot 1 Algo", 0, algo_range),
             algo_snare: IntParam::new("Slot 2 Algo", 0, algo_range),
-            algo_hihat: IntParam::new("Slot 3 Algo", 0, algo_range).hide(),
-            algo_open_hh: IntParam::new("Slot 4 Algo", 0, algo_range).hide(),
+            algo_hihat: IntParam::new("Slot 3 Algo", 0, algo_range).non_automatable(),
+            algo_open_hh: IntParam::new("Slot 4 Algo", 0, algo_range).non_automatable(),
             algo_tom1: IntParam::new("Slot 5 Algo", 0, algo_range),
             algo_tom2: IntParam::new("Slot 6 Algo", 0, algo_range),
             algo_tom3: IntParam::new("Slot 7 Algo", 0, algo_range),
             algo_clap: IntParam::new("Slot 8 Algo", 0, algo_range),
             algo_ride: IntParam::new("Slot 9 Algo", 0, algo_range),
-            algo_cymbal: IntParam::new("Slot 10 Algo", 0, algo_range).hide(),
-            algo_snare606: IntParam::new("Slot 11 Algo", 0, algo_range).hide(),
-            algo_bassdrum808: IntParam::new("Slot 12 Algo", 0, algo_range).hide(),
+            algo_cymbal: IntParam::new("Slot 10 Algo", 0, algo_range).non_automatable(),
+            algo_snare606: IntParam::new("Slot 11 Algo", 0, algo_range).non_automatable(),
+            algo_bassdrum808: IntParam::new("Slot 12 Algo", 0, algo_range).non_automatable(),
             algo_perc1: IntParam::new("Slot 13 Algo", 0, algo_range),
-            algo_s13: IntParam::new("Slot 14 Algo", 0, algo_range).hide(),
+            algo_s13: IntParam::new("Slot 14 Algo", 0, algo_range).non_automatable(),
             // NOT hidden: nih-plug reports a hidden parameter to the host as
             // read-only, and while the host is processing audio every change
             // from the editor goes through the host, which then refuses it -
@@ -5806,6 +5809,20 @@ mod tests {
         for k in 1..3u8 {
             let got = fusion_pulse_delay(5, 2, 3, k, 0.6, groove::GrooveType::Straight, step_samples);
             assert_eq!(got, (k as f32 * step_samples * 2.0 / 3.0).round() as u32);
+        }
+    }
+
+    /// [307] The VST3 wrapper makes a hidden param read-only, and the host then
+    /// drops the editor's edits: no lane's Algorithm param may be hidden.
+    #[test]
+    fn no_algo_param_is_read_only_for_the_host() {
+        let vst = DrumFlashVst::default();
+        for (slot, param) in vst.params.algos().iter().enumerate() {
+            assert!(
+                !param.flags().contains(nih_plug::prelude::ParamFlags::HIDDEN),
+                "slot {} algo is hidden (read-only for the host)",
+                slot + 1
+            );
         }
     }
 }
