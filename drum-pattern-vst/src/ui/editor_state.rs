@@ -559,6 +559,11 @@ pub struct PlockPopup {
     pub step_was_active: bool,
     #[serde(with = "serde_pos2")]
     pub screen_pos: egui::Pos2,
+    /// [282] The clicked cell (the whole fused block on a fusion), in screen
+    /// coordinates: the menu opens under it, or above it when the window has no
+    /// room below. `None` = at `screen_pos`.
+    #[serde(skip)]
+    pub anchor: Option<egui::Rect>,
     /// [218] True on the frame the popup opened. The right-click that opens the
     /// menu is still "clicked" when the menu draws in that same frame, so
     /// without this the close-on-right-click swallowed its own opening gesture

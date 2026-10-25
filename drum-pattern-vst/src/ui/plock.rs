@@ -240,6 +240,29 @@ fn draw_fusion_group_menu(
     });
 }
 
+/// [282] Where the cell menu opens: under its cell (`anchor`), left-aligned with
+/// it, so the cell stays visible; above it when the window has no room below
+/// for the menu (`menu_h`, its height last frame); at the click point when there
+/// is no cell.
+fn popup_placement(
+    anchor: Option<egui::Rect>,
+    click: egui::Pos2,
+    menu_h: Option<f32>,
+    screen: egui::Rect,
+) -> (egui::Pos2, egui::Align2) {
+    const GAP: f32 = 3.0;
+    let Some(cell) = anchor else {
+        return (click, egui::Align2::LEFT_TOP);
+    };
+    let h = menu_h.unwrap_or(0.0);
+    let fits_below = cell.bottom() + GAP + h <= screen.bottom();
+    let fits_above = cell.top() - GAP - h >= screen.top();
+    if !fits_below && fits_above {
+        (cell.left_top() - egui::vec2(0.0, GAP), egui::Align2::LEFT_BOTTOM)
+    } else {
+        (cell.left_bottom() + egui::vec2(0.0, GAP), egui::Align2::LEFT_TOP)
+    }
+}
 pub fn draw_plock_popup(
     ctx: &egui::Context,
     setter: &ParamSetter,
@@ -254,10 +277,17 @@ pub fn draw_plock_popup(
     };
 
     let area_id = egui::Id::new("plock_popup");
+    let (pos, pivot) = popup_placement(
+        popup.anchor,
+        popup.screen_pos,
+        ctx.memory(|m| m.area_rect(area_id)).map(|r| r.height()),
+        ctx.screen_rect(),
+    );
     let response = egui::Area::new(area_id)
         .kind(egui::UiKind::Menu)
         .order(egui::Order::Foreground)
-        .fixed_pos(popup.screen_pos)
+        .pivot(pivot)
+        .fixed_pos(pos)
         .sense(egui::Sense::click())
         .show(ctx, |ui| {
             // Outer border: draw a slightly larger rounded rect behind the panel.
@@ -785,4 +815,30 @@ fn draw_sequencer_plock_menu(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    /// [282] The cell menu opens under its cell, above it when there is no room
+    /// below, at the click point without a cell.
+    #[test]
+    fn the_cell_menu_opens_under_its_cell_or_above_it() {
+        use nih_plug_egui::egui::{pos2, vec2, Align2, Rect};
+        let screen = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 600.0));
+        let cell = Rect::from_min_max(pos2(100.0, 200.0), pos2(130.0, 226.0));
+        let click = pos2(115.0, 210.0);
+        assert_eq!(
+            super::popup_placement(Some(cell), click, Some(300.0), screen),
+            (pos2(100.0, 229.0), Align2::LEFT_TOP)
+        );
+        let low = cell.translate(vec2(0.0, 300.0));
+        assert_eq!(
+            super::popup_placement(Some(low), click, Some(300.0), screen),
+            (pos2(100.0, 497.0), Align2::LEFT_BOTTOM)
+        );
+        assert_eq!(
+            super::popup_placement(None, click, Some(300.0), screen),
+            (click, Align2::LEFT_TOP)
+        );
+    }
 }

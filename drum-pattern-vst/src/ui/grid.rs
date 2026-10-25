@@ -1118,11 +1118,34 @@ fn draw_legacy_slot_lane_v2(
                             state.sound_edit_target = None;
                         }
                         if let Some(pos) = response.interact_pointer_pos() {
+                            // [282] The menu opens under the cell, so it never covers
+                            // the cell it edits; on a fusion, under the whole block
+                            // (its part on this page).
+                            let pitch = cell_w + GAP_TIGHT;
+                            let mut anchor = response.rect;
+                            if let Some(group) = fusion_group {
+                                let first = (group.start_cell as usize).max(page_offset);
+                                let last = (group.end_cell as usize).min(page_offset + 15);
+                                anchor.set_left(
+                                    response.rect.left()
+                                        - global_step.saturating_sub(first) as f32 * pitch,
+                                );
+                                anchor.set_right(
+                                    response.rect.right()
+                                        + last.saturating_sub(global_step) as f32 * pitch,
+                                );
+                            }
+                            if let Some(to_global) =
+                                ui.ctx().layer_transform_to_global(ui.layer_id())
+                            {
+                                anchor = to_global * anchor;
+                            }
                             state.plock_popup = Some(PlockPopup {
                                 instrument: slot_idx,
                                 step: source_step,
                                 step_was_active: active,
                                 screen_pos: pos,
+                                anchor: Some(anchor),
                                 just_opened: true,
                                 // [213] Seeded from the grid mode, then free to
                                 // change inside the menu.
