@@ -377,7 +377,7 @@ pub const SET_RANDOMIZE_KIND: &str = "The instrument whose Randomize Lane densit
 
 pub const SET_RANDOMIZE_DENSITY: &str = "The Randomize Lane density a new lane of this instrument starts with: left = a few steps, right = almost every step. Existing lanes keep theirs (right-click a lane name to change it). Saved for all your projects.";
 
-pub const SET_ZOOM: &str = "Size of the whole plugin window: text and controls grow with it. Saved for all your projects.\n\
+pub const SET_ZOOM: &str = "Size of the whole plugin window: text and controls grow with it, and Settings closes. Saved for all your projects.\n\
 If the window keeps its size, your host refused the new size.";
 
 // --- Pattern bank ------------------------------------------------------------------

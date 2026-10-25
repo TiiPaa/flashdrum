@@ -545,9 +545,14 @@ pub fn draw_settings_popup_if_any(
                     styled_select(ui, "settings_zoom", current_zoom, &zoom_names, 120.0);
                 response.help(help::SET_ZOOM);
                 if let Some(idx) = picked {
-                    state.global_config.zoom_percent = crate::config::ZOOM_STEPS
+                    let zoom = crate::config::ZOOM_STEPS
                         [idx.min(crate::config::ZOOM_STEPS.len() - 1)];
-                    let _ = state.global_config.save();
+                    if zoom != state.global_config.zoom_percent {
+                        state.global_config.zoom_percent = zoom;
+                        let _ = state.global_config.save();
+                        // The window resizes under it: Settings closes on a new zoom.
+                        state.settings_open = false;
+                    }
                 }
 
                 ui.add_space(14.0);
