@@ -2184,9 +2184,12 @@ fn handle_wav_drop(
                 wav_drop_hint(ui, pos, reason);
             }
         }
-    } else if let Some((pos, Some(DropTarget::Replace(_)))) = hover_target {
-        // [270] A drop here replaces a file: say so before it happens.
-        wav_drop_hint(ui, pos, "Replaces the file of this One-Shot lane.");
+    } else if let Some((_, Some(DropTarget::Replace(slot)))) = hover_target {
+        // [270] A drop here replaces a file: say so before it happens, ON the lane
+        // (a note by the cursor went unseen during the drag).
+        if let Some(row) = lane_row_rects[slot] {
+            wav_replace_banner(ui, row.intersect(grid_rect));
+        }
     }
 
     for drop in nih_plug_egui::file_drop::take_dropped(ui.ctx()) {
@@ -2241,6 +2244,31 @@ fn wav_drop_hint(ui: &mut egui::Ui, pos: egui::Pos2, text: &str) {
             );
         });
 }
+
+/// [270] The warning over the One-Shot lane a dragged WAV would replace the file of:
+/// the row framed in amber, the text across it.
+fn wav_replace_banner(ui: &egui::Ui, row: egui::Rect) {
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        ui.id().with("wav_replace_banner"),
+    ));
+    painter.rect(
+        row,
+        3.0,
+        Color32::from_black_alpha(190),
+        egui::Stroke::new(1.5, AMBER()),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        row.center(),
+        egui::Align2::CENTER_CENTER,
+        WAV_REPLACE_WARNING,
+        f_sans_med(10.0),
+        AMBER(),
+    );
+}
+
+const WAV_REPLACE_WARNING: &str = "Drop here REPLACES this One-Shot lane's file";
 
 /// [270] The lanes a dropped WAV can replace the file of: the active One-Shot lanes.
 fn oneshot_lanes(
@@ -4102,6 +4130,62 @@ mod tests {
         );
         state.global_config.set_randomize_density_for(TrackInstrumentKind::Kick, 0.5);
         assert_eq!(state.lane_randomize_density(&params, 0), 0.5);
+    }
+
+    /// [270] A file dragged over a One-Shot lane shows the replacement warning on
+    /// that lane; over an empty lane, nothing.
+    #[test]
+    fn dragging_a_wav_over_a_oneshot_lane_warns_of_the_replacement() {
+        use nih_plug::params::persist::PersistentField;
+        use nih_plug_egui::egui;
+        let params = crate::DrumFlashParams::default();
+        PersistentField::<TrackLayoutState>::set(
+            &params.track_layout,
+            TrackLayoutState::modular_default_layout(),
+        );
+        let pattern = params.pattern_state.shared();
+        let plock = &params.plock_state.state;
+        let settings = &params.sound_settings.state;
+        let mut state = crate::ui::editor_state::EditorUIState::default();
+        let slot = 5;
+        let wav = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/ch606.wav");
+        assert!(super::create_oneshot_from_drop(
+            &params, settings, &mut state, &pattern, plock, slot, &wav
+        ));
+        let rects: [Option<egui::Rect>; MAX_TRACKS] = std::array::from_fn(|i| {
+            Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, i as f32 * 21.0),
+                egui::vec2(800.0, 20.0),
+            ))
+        });
+        let grid = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0));
+        let ctx = egui::Context::default();
+        crate::ui::install_egui_fonts(&ctx);
+        let mut warned_over = |row: usize| {
+            // The bridge's hover position (`hover_id` in vendor file_drop.rs).
+            let pos = egui::pos2(50.0, row as f32 * 21.0 + 5.0);
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("egui_baseview_file_drop_hover"), pos));
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    super::handle_wav_drop(
+                        ui, &params, settings, &mut state, &pattern, plock, &rects, grid,
+                    );
+                });
+            });
+            out.shapes.iter().any(|c| {
+                matches!(&c.shape, egui::Shape::Text(t)
+                    if t.galley.text() == super::WAV_REPLACE_WARNING)
+            })
+        };
+        assert!(warned_over(slot), "over the One-Shot lane");
+        assert!(!warned_over(MAX_TRACKS - 3), "over an empty lane");
     }
 
     /// [270] A WAV dropped on a One-Shot lane replaces its file; its steps and locks stay.
