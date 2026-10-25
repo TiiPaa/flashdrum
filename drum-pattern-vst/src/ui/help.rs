@@ -217,7 +217,7 @@ pub const LANE_FX_MUTE: &str = "M = Mute: bypasses this effect. Nothing enters i
 pub const LANE_FX_STEPS: &str = "Cells of this effect lane. Click a cell to select it, then change the effect's parameters in the Lane Editor: each one you change becomes a lock on that cell. A lock holds until the next one, or until the pattern loops, then the sliders are back. With Glide on, the value moves smoothly from the sliders to the first lock and between locks. Right-click: copy, paste or clear the cell's locks.";
 
 pub const EMPTY_SLOT: &str = "Empty slot. Click to choose an instrument and create a lane here. Right-click: Paste Lane.\n\
-You can also drop a WAV file from your computer on the grid: it creates a One-Shot lane playing that file.";
+You can also drop a WAV file from your computer on the grid: it creates a One-Shot lane playing that file. Dropped on a One-Shot lane, it replaces that lane's file.";
 
 // --- Grid: lane right-click menu ---------------------------------------------
 

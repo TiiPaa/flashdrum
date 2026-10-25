@@ -2123,8 +2123,9 @@ fn draw_seq_grip_v2(ui: &mut egui::Ui, width: f32, height: f32) -> egui::Respons
 /// the file loaded on it (same path as File > Load... — the file is the
 /// lane's own [228] file: persisted, follows the lane, dropped on kind
 /// change). Target: the empty lane under the pointer, else the first free
-/// slot. An occupied lane is never replaced; a full grid ignores the drop.
-/// The lane flash confirms the creation.
+/// slot. [270] Dropped on a One-Shot lane, the file replaces that lane's file
+/// (its steps and settings stay); any other occupied lane is never replaced.
+/// The lane flash confirms the creation or the replacement.
 #[allow(clippy::too_many_arguments)]
 fn handle_wav_drop(
     ui: &mut egui::Ui,
@@ -2138,7 +2139,9 @@ fn handle_wav_drop(
 ) {
     let active: [bool; crate::track::MAX_TRACKS] =
         std::array::from_fn(|i| params.track_layout.state.is_active(i));
-    let available = active.iter().any(|active| !active)
+    let oneshot = oneshot_lanes(params, &active);
+    let available = (active.iter().take(crate::track::FX_FIRST_SLOT).any(|a| !*a)
+        || oneshot.iter().any(|o| *o))
         && state.preset_browser.is_none()
         && !state.macros_open
         && !state.settings_open;
@@ -2149,8 +2152,11 @@ fn handle_wav_drop(
     if !available {
         if let Some(pos) = nih_plug_egui::file_drop::rejected_hover_position(ui.ctx()) {
             if grid_rect.contains(pos) {
-                let reason = if active.iter().all(|a| *a) {
-                    "Grid full - an occupied lane is never replaced; remove one first."
+                let reason = if state.preset_browser.is_none()
+                    && !state.macros_open
+                    && !state.settings_open
+                {
+                    "Grid full - drop on a One-Shot lane to replace its file, or remove a lane first."
                 } else if state.preset_browser.is_some() {
                     "Close the Presets dialog to drop files."
                 } else if state.macros_open {
@@ -2190,14 +2196,69 @@ fn handle_wav_drop(
         };
         let active: [bool; crate::track::MAX_TRACKS] =
             std::array::from_fn(|i| params.track_layout.state.is_active(i));
-        let Some(slot) = pick_drop_lane(drop.position, lane_row_rects, &active) else {
+        let oneshot = oneshot_lanes(params, &active);
+        let Some(target) = pick_drop_lane(drop.position, lane_row_rects, &active, &oneshot) else {
             continue;
         };
-        if create_oneshot_from_drop(params, sound_settings, state, pattern, plock, slot, path) {
+        let (slot, done) = match target {
+            DropTarget::Create(slot) => (
+                slot,
+                create_oneshot_from_drop(params, sound_settings, state, pattern, plock, slot, path),
+            ),
+            DropTarget::Replace(slot) => (
+                slot,
+                replace_oneshot_file(params, sound_settings, slot, path),
+            ),
+        };
+        if done {
             state.slot_flash_until[slot] = ui.ctx().input(|i| i.time) + 0.5;
             ui.ctx().request_repaint();
         }
     }
+}
+
+/// [270] The lanes a dropped WAV can replace the file of: the active One-Shot lanes.
+fn oneshot_lanes(
+    params: &DrumFlashParams,
+    active: &[bool; crate::track::MAX_TRACKS],
+) -> [bool; crate::track::MAX_TRACKS] {
+    std::array::from_fn(|i| {
+        active[i]
+            && params.track_layout.state.kind_for_slot(i) == Some(TrackInstrumentKind::OneShot)
+    })
+}
+
+/// [270] Where a dropped WAV goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DropTarget {
+    /// A new One-Shot lane on this empty slot.
+    Create(usize),
+    /// This One-Shot lane's file is replaced.
+    Replace(usize),
+}
+
+/// [270] A WAV dropped on a One-Shot lane replaces its file, like File > Load in its
+/// Sound tab: the steps, locks and settings stay; a stereo file comes up in stereo.
+fn replace_oneshot_file(
+    params: &DrumFlashParams,
+    sound_settings: &SoundSettingsState,
+    slot: usize,
+    path: &std::path::Path,
+) -> bool {
+    if params.track_layout.state.kind_for_slot(slot) != Some(TrackInstrumentKind::OneShot)
+        || !params.track_layout.state.is_active(slot)
+    {
+        return false;
+    }
+    if params.user_textures.load(slot, path).is_err() {
+        return false;
+    }
+    if params.user_textures.is_stereo(slot) {
+        sound_settings.instruments[slot]
+            .set_standard(crate::instrument_registry::StandardField::Stereo, 1.0);
+    }
+    sound_settings.bump_version();
+    true
 }
 
 fn create_oneshot_from_drop(
@@ -2238,16 +2299,24 @@ fn create_oneshot_from_drop(
 }
 
 /// The drop target: the row UNDER the pointer when it hosts no active lane,
-/// else the first inactive slot. An occupied row is never replaced, and the
+/// else the first inactive slot. [270] A One-Shot row under the pointer gets
+/// its file replaced; any other occupied row is never replaced, and the
 /// effect-bus rows ([286]) never take an instrument.
-fn pick_drop_lane(pos: egui::Pos2, rects: &[Option<egui::Rect>], active: &[bool]) -> Option<usize> {
+fn pick_drop_lane(
+    pos: egui::Pos2,
+    rects: &[Option<egui::Rect>],
+    active: &[bool],
+    oneshot: &[bool],
+) -> Option<DropTarget> {
     for (i, rect) in rects.iter().enumerate() {
         if let Some(rect) = rect {
-            if rect.contains(pos)
-                && !crate::track::is_fx_slot(i)
-                && !active.get(i).copied().unwrap_or(true)
-            {
-                return Some(i);
+            if rect.contains(pos) && !crate::track::is_fx_slot(i) {
+                if oneshot.get(i).copied().unwrap_or(false) {
+                    return Some(DropTarget::Replace(i));
+                }
+                if !active.get(i).copied().unwrap_or(true) {
+                    return Some(DropTarget::Create(i));
+                }
             }
         }
     }
@@ -2255,6 +2324,7 @@ fn pick_drop_lane(pos: egui::Pos2, rects: &[Option<egui::Rect>], active: &[bool]
         .iter()
         .take(crate::track::FX_FIRST_SLOT)
         .position(|a| !*a)
+        .map(DropTarget::Create)
 }
 
 fn draw_lane_name_v2(
@@ -3969,11 +4039,50 @@ mod tests {
             params.user_textures.path(0).is_none(),
             "occupied lane must not receive the file"
         );
+        // [270] Only a One-Shot lane takes a replacement file.
+        assert!(!super::replace_oneshot_file(&params, settings, 0, &wav));
+        assert!(params.user_textures.path(0).is_none());
+    }
+
+    /// [270] A WAV dropped on a One-Shot lane replaces its file; its steps and locks stay.
+    #[test]
+    fn wav_drop_on_a_oneshot_lane_replaces_its_file() {
+        use nih_plug::params::persist::PersistentField;
+        let params = crate::DrumFlashParams::default();
+        let layout = TrackLayoutState::modular_default_layout();
+        PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
+        let pattern = params.pattern_state.shared();
+        let plock = &params.plock_state.state;
+        let settings = &params.sound_settings.state;
+        let mut state = crate::ui::editor_state::EditorUIState::default();
+        let slot = 5;
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let first = assets.join("ch606.wav");
+        assert!(super::create_oneshot_from_drop(
+            &params, settings, &mut state, &pattern, plock, slot, &first
+        ));
+        pattern.set_step_mask(0, 1 << slot);
+        plock.set_field(slot, 0, 3, 200.0);
+        let second = std::fs::read_dir(&assets)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| {
+                p != &first && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("wav"))
+            })
+            .expect("a second embedded WAV");
+        assert!(super::replace_oneshot_file(&params, settings, slot, &second));
+        assert_eq!(params.user_textures.path(slot).as_deref(), Some(second.as_path()));
+        assert_eq!(
+            params.track_layout.state.kind_for_slot(slot),
+            Some(TrackInstrumentKind::OneShot)
+        );
+        assert_eq!(pattern.step_masks()[0], 1 << slot, "the lane's steps stay");
+        assert!(plock.masks.is_active(slot, 0), "the lane's locks stay");
     }
 
     /// [243] Drop target selection: the empty row under the pointer wins,
     /// else the first free slot; occupied rows are never replaced and a full
-    /// grid gives no target.
+    /// grid gives no target. [270] A One-Shot row under the pointer is replaced.
     #[test]
     fn pick_drop_lane_prefers_the_empty_row_under_the_pointer() {
         use nih_plug_egui::egui;
@@ -3981,18 +4090,25 @@ mod tests {
             |y: f32| egui::Rect::from_min_max(egui::pos2(0.0, y), egui::pos2(100.0, y + 20.0));
         let rects: [Option<egui::Rect>; MAX_TRACKS] =
             std::array::from_fn(|i| Some(rect(i as f32 * 21.0)));
+        use super::DropTarget::{Create, Replace};
         let mut active = [false; MAX_TRACKS];
         active[1] = true;
         active[2] = true;
-        // Pointer over row 1 (active): the first free slot wins, NOT row 1.
+        let mut oneshot = [false; MAX_TRACKS];
+        oneshot[2] = true;
+        // Pointer over row 1 (active, not a One-Shot): the first free slot wins, NOT row 1.
         let pos = egui::pos2(50.0, 25.0);
-        assert_eq!(super::pick_drop_lane(pos, &rects, &active), Some(0));
+        assert_eq!(super::pick_drop_lane(pos, &rects, &active, &oneshot), Some(Create(0)));
+        // Pointer over row 2 (a One-Shot lane): its file is replaced.
+        let row2 = egui::pos2(50.0, 2.0 * 21.0 + 5.0);
+        assert_eq!(super::pick_drop_lane(row2, &rects, &active, &oneshot), Some(Replace(2)));
         // Pointer over row 4 (empty): row 4 wins even though slot 0 is free.
         let pos = egui::pos2(50.0, 4.0 * 21.0 + 5.0);
-        assert_eq!(super::pick_drop_lane(pos, &rects, &active), Some(4));
-        // Full grid: no target.
+        assert_eq!(super::pick_drop_lane(pos, &rects, &active, &oneshot), Some(Create(4)));
+        // Full grid: no target, except on a One-Shot lane.
         let active = [true; MAX_TRACKS];
-        assert_eq!(super::pick_drop_lane(pos, &rects, &active), None);
+        assert_eq!(super::pick_drop_lane(pos, &rects, &active, &oneshot), None);
+        assert_eq!(super::pick_drop_lane(row2, &rects, &active, &oneshot), Some(Replace(2)));
     }
 
     /// The permutation the lane drag used before [191], kept as the reference
