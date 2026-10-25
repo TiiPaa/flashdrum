@@ -32,6 +32,10 @@ fn rejected_id() -> Id {
     Id::new("egui_baseview_file_drop_rejected_hover")
 }
 
+fn hover_id() -> Id {
+    Id::new("egui_baseview_file_drop_hover")
+}
+
 /// `None` disables drops (for example when the grid is full or a modal is open).
 pub fn set_target(ctx: &Context, rect: Option<Rect>, extensions: &[&str]) {
     ctx.data_mut(|data| match rect {
@@ -59,6 +63,13 @@ pub fn take_dropped(ctx: &Context) -> Vec<FileDrop> {
 /// drag is hovering (or after the drag leaves).
 pub fn rejected_hover_position(ctx: &Context) -> Option<Pos2> {
     ctx.data_mut(|data| data.get_temp::<Pos2>(rejected_id()))
+}
+
+/// [270] The position of ANY OS drag hovering this editor, accepted or not, so the
+/// UI can narrow its target to where a drop would do something. `None` once the
+/// drag leaves or drops.
+pub fn hover_position(ctx: &Context) -> Option<Pos2> {
+    ctx.data_mut(|data| data.get_temp::<Pos2>(hover_id()))
 }
 
 fn accepted_paths(ctx: &Context, position: Pos2, files: &DropData) -> Vec<PathBuf> {
@@ -91,6 +102,7 @@ pub(crate) fn handle_event(
             input.hovered_files.clear();
             ctx.data_mut(|data| {
                 data.remove::<Pos2>(rejected_id());
+                data.remove::<Pos2>(hover_id());
             });
             ctx.request_repaint();
             return Some(EventStatus::Ignored);
@@ -101,9 +113,17 @@ pub(crate) fn handle_event(
         input.hovered_files.clear();
         ctx.data_mut(|data| {
             data.remove::<Pos2>(rejected_id());
+            data.remove::<Pos2>(hover_id());
         });
         return Some(EventStatus::Ignored);
     };
+    ctx.data_mut(|data| {
+        if dropped {
+            data.remove::<Pos2>(hover_id());
+        } else {
+            data.insert_temp(hover_id(), position);
+        }
+    });
     let paths = accepted_paths(ctx, position, files);
     input.hovered_files.clear();
     if paths.is_empty() {
@@ -185,6 +205,26 @@ mod tests {
         assert_eq!(rejected_hover_position(&ctx), Some(position));
         handle_event(&ctx, &mut input, &MouseEvent::DragLeft, None);
         assert_eq!(rejected_hover_position(&ctx), None);
+    }
+
+    /// [270] Any hovering drag reports its position, accepted or not, until it
+    /// leaves or drops.
+    #[test]
+    fn any_drag_reports_its_hover_position_until_it_leaves_or_drops() {
+        let ctx = Context::default();
+        let mut input = RawInput::default();
+        let position = egui::pos2(50.0, 30.0);
+        assert_eq!(hover_position(&ctx), None);
+        handle_event(&ctx, &mut input, &event(&["kick.wav"], false), Some(position));
+        assert_eq!(hover_position(&ctx), Some(position), "rejected drag");
+        enable(&ctx);
+        handle_event(&ctx, &mut input, &event(&["kick.wav"], false), Some(position));
+        assert_eq!(hover_position(&ctx), Some(position), "accepted drag");
+        handle_event(&ctx, &mut input, &MouseEvent::DragLeft, None);
+        assert_eq!(hover_position(&ctx), None);
+        handle_event(&ctx, &mut input, &event(&["kick.wav"], false), Some(position));
+        handle_event(&ctx, &mut input, &event(&["kick.wav"], true), Some(position));
+        assert_eq!(hover_position(&ctx), None, "a drop ends the drag");
     }
 
     #[test]

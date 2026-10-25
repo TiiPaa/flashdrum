@@ -2140,48 +2140,41 @@ fn handle_wav_drop(
     let active: [bool; crate::track::MAX_TRACKS] =
         std::array::from_fn(|i| params.track_layout.state.is_active(i));
     let oneshot = oneshot_lanes(params, &active);
+    let modal_open = state.preset_browser.is_some() || state.macros_open || state.settings_open;
     let available = (active.iter().take(crate::track::FX_FIRST_SLOT).any(|a| !*a)
         || oneshot.iter().any(|o| *o))
-        && state.preset_browser.is_none()
-        && !state.macros_open
-        && !state.settings_open;
-    nih_plug_egui::file_drop::set_target(ui.ctx(), available.then_some(grid_rect), &["wav"]);
+        && !modal_open;
+    // [270] Under the dragged file: what a drop there would do. Where it would do
+    // nothing (a full grid, a lane other than One-Shot) the target is withdrawn, so
+    // the OS shows its ⊘ and the reason below.
+    let hover_target = nih_plug_egui::file_drop::hover_position(ui.ctx())
+        .filter(|pos| grid_rect.contains(*pos))
+        .map(|pos| (pos, pick_drop_lane(pos, lane_row_rects, &active, &oneshot)));
+    let accepting = available && !matches!(hover_target, Some((_, None)));
+    nih_plug_egui::file_drop::set_target(ui.ctx(), accepting.then_some(grid_rect), &["wav"]);
 
     // [273] A rejected drop says WHY next to the bare OS ⊘ cursor: full grid
-    // (a lane is never replaced) or an open modal blocks the target.
-    if !available {
+    // (only a One-Shot lane takes a file) or an open modal blocks the target.
+    if !accepting {
         if let Some(pos) = nih_plug_egui::file_drop::rejected_hover_position(ui.ctx()) {
             if grid_rect.contains(pos) {
-                let reason = if state.preset_browser.is_none()
-                    && !state.macros_open
-                    && !state.settings_open
-                {
-                    "Grid full - drop on a One-Shot lane to replace its file, or remove a lane first."
-                } else if state.preset_browser.is_some() {
+                let reason = if state.preset_browser.is_some() {
                     "Close the Presets dialog to drop files."
                 } else if state.macros_open {
                     "Close the Macros dialog to drop files."
-                } else {
+                } else if state.settings_open {
                     "Close the Settings dialog to drop files."
+                } else if oneshot.iter().any(|o| *o) {
+                    "Grid full - only a One-Shot lane takes a dropped file (it replaces its file). Remove a lane to create a new one."
+                } else {
+                    "Grid full - an occupied lane is never replaced; remove one first."
                 };
-                egui::Area::new(ui.id().with("wav_drop_rejected_hint"))
-                    .kind(egui::UiKind::Popup)
-                    .order(egui::Order::Tooltip)
-                    .fixed_pos(pos + egui::vec2(14.0, 14.0))
-                    .show(ui.ctx(), |ui| {
-                        let bg = ui.painter().add(egui::Shape::Noop);
-                        let resp = egui::Frame::NONE
-                            .inner_margin(egui::Margin::symmetric(8, 4))
-                            .show(ui, |ui| {
-                                ui.label(RichText::new(reason).font(f_sans_med(9.5)).color(INK()));
-                            });
-                        ui.painter().set(
-                            bg,
-                            crate::ui::skeuo::plate_shape(resp.response.rect, RADIUS_PANEL as f32),
-                        );
-                    });
+                wav_drop_hint(ui, pos, reason);
             }
         }
+    } else if let Some((pos, Some(DropTarget::Replace(_)))) = hover_target {
+        // [270] A drop here replaces a file: say so before it happens.
+        wav_drop_hint(ui, pos, "Replaces the file of this One-Shot lane.");
     }
 
     for drop in nih_plug_egui::file_drop::take_dropped(ui.ctx()) {
@@ -2215,6 +2208,26 @@ fn handle_wav_drop(
             ui.ctx().request_repaint();
         }
     }
+}
+
+/// [273] [270] A note next to the cursor during a file drag over the grid.
+fn wav_drop_hint(ui: &mut egui::Ui, pos: egui::Pos2, text: &str) {
+    egui::Area::new(ui.id().with("wav_drop_hint"))
+        .kind(egui::UiKind::Popup)
+        .order(egui::Order::Tooltip)
+        .fixed_pos(pos + egui::vec2(14.0, 14.0))
+        .show(ui.ctx(), |ui| {
+            let bg = ui.painter().add(egui::Shape::Noop);
+            let resp = egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.label(RichText::new(text).font(f_sans_med(9.5)).color(INK()));
+                });
+            ui.painter().set(
+                bg,
+                crate::ui::skeuo::plate_shape(resp.response.rect, RADIUS_PANEL as f32),
+            );
+        });
 }
 
 /// [270] The lanes a dropped WAV can replace the file of: the active One-Shot lanes.

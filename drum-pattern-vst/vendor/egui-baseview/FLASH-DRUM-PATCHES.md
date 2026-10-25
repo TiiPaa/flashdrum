@@ -24,6 +24,12 @@ position through `rejected_hover_position()` until it leaves or is accepted.
 The grid uses it to say WHY next to the bare OS ⊘ cursor (full grid, open
 modal). Covered by `rejected_drag_reports_its_position_until_it_leaves`.
 
+[270] hover reporting (`file_drop.rs`): `hover_position()` gives the position
+of ANY drag over the editor, accepted or not, until it leaves or drops. The
+grid uses it to accept a drop only where it would do something (a full grid
+takes a file only on a One-Shot lane) and to warn before a replacement.
+Covered by `any_drag_reports_its_hover_position_until_it_leaves_or_drops`.
+
 [282] zoom support (`window.rs`): upstream ignored `Context::set_zoom_factor`
 (screen size, pointer and wheel positions in native points, renderer at the
 native scale only). The screen rectangle, pointer position and pixel wheel
