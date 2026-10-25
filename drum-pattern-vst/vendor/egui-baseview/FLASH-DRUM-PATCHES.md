@@ -18,6 +18,16 @@ showed a sliver of the effect (the [238] lane-name flash) never got the frame
 that turns it fully off — the lit pixels stayed on screen until an unrelated
 repaint.
 
+Frame scheduling (`window.rs`, `repaint_schedule`): egui runs at every
+baseview tick but a frame is drawn only when egui asks for it now or when a
+repaint it asked for falls due. Two holes left the lane-name flash lit at
+random: an undrawn frame REPLACED the pending deadline with its own request,
+even a later one; and a drawn frame that asked for "now" (egui subtracts the
+predicted frame time, so an effect ending within a frame asks for zero)
+scheduled nothing after itself. The earliest deadline is now kept, and a
+"now" also schedules the next tick. Covered by
+`the_lane_flash_is_always_drawn_off` (fails on the previous logic).
+
 [273] rejected-hover reporting (`file_drop.rs`): a drag the editor refuses
 (target disabled, outside the rectangle, wrong file type) reports its hover
 position through `rejected_hover_position()` until it leaves or is accepted.

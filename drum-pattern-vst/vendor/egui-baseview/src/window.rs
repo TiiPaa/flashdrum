@@ -11,6 +11,40 @@ use raw_window_handle::HasRawWindowHandle;
 
 use crate::{renderer::Renderer, GraphicsConfig};
 
+/// FLASH-DRUM PATCH: whether the frame egui just ran is drawn, and when the next
+/// one must be. egui runs at every baseview tick but a frame is only drawn when
+/// egui asks for it now or when a repaint it asked for earlier falls due.
+///
+/// Every request is a promise to draw a later frame, and the promise must
+/// survive until it is kept. Upstream broke it two ways, and either left Flash
+/// Drum's lane-name flash lit on screen ([238]): the frame that turns it off was
+/// never drawn.
+/// - A frame that is not drawn replaced the pending deadline with its own
+///   request, even a later one (a lane meter asking for 33 ms pushed it back at
+///   every tick). The earliest deadline is kept.
+/// - A drawn frame forgot its request when egui shortened the delay to zero
+///   (egui subtracts the predicted frame time, so a flash ending within one
+///   frame asks for "now", which only means "this frame"). It now also asks for
+///   the next frame, the one that sees the effect over.
+fn repaint_schedule(
+    scheduled: Option<Instant>,
+    now: Instant,
+    requested_delay: std::time::Duration,
+) -> (bool, Option<Instant>) {
+    let due = scheduled.is_some_and(|t| now >= t);
+    // Duration::MAX (nothing requested) overflows to None.
+    let requested = now.checked_add(requested_delay);
+    if due || requested_delay.is_zero() {
+        (true, requested)
+    } else {
+        let next = match (scheduled, requested) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        (false, next)
+    }
+}
+
 pub struct Queue<'a> {
     bg_color: &'a mut Rgba,
     close_requested: &'a mut bool,
@@ -341,13 +375,9 @@ where
             }
         }
 
-        let now = Instant::now();
-        let requested_delay = viewport_output.repaint_delay;
-        let do_repaint_now = if let Some(t) = self.repaint_after {
-            now >= t || requested_delay.is_zero()
-        } else {
-            requested_delay.is_zero()
-        };
+        let (do_repaint_now, repaint_after) =
+            repaint_schedule(self.repaint_after, Instant::now(), viewport_output.repaint_delay);
+        self.repaint_after = repaint_after;
 
         if do_repaint_now {
             self.renderer.render(
@@ -360,21 +390,6 @@ where
                 &mut self.egui_ctx,
                 &mut full_output,
             );
-
-            // FLASH-DRUM PATCH: egui may have requested ANOTHER repaint during
-            // this very frame (Flash Drum's lane flash re-arms its countdown
-            // every frame until it expires). Clearing the schedule here
-            // discarded that request: when the last rendered frame still held
-            // a sliver of flash, the frame that turns it fully OFF was never
-            // scheduled and the lit pixels stayed on screen indefinitely.
-            self.repaint_after = if requested_delay.is_zero() {
-                None
-            } else {
-                now.checked_add(requested_delay)
-            };
-        } else if let Some(repaint_after) = now.checked_add(requested_delay) {
-            // Schedule to repaint after the requested time has elapsed.
-            self.repaint_after = Some(repaint_after);
         }
 
         for command in full_output.platform_output.commands {
@@ -703,4 +718,88 @@ fn calculate_screen_rect(physical_size: PhySize, points_per_pixel: f32) -> Rect 
         physical_size.height as f32 * points_per_pixel,
     );
     Rect::from_min_size(Pos2::new(0f32, 0f32), vec2(logical_size.0, logical_size.1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repaint_schedule;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_frame_that_is_not_drawn_keeps_the_earliest_deadline() {
+        let t0 = Instant::now();
+        let soon = t0 + Duration::from_millis(10);
+        let (draw, next) = repaint_schedule(Some(soon), t0, Duration::from_millis(33));
+        assert!(!draw);
+        assert_eq!(next, Some(soon), "a later request must not push the repaint back");
+        let (draw, next) = repaint_schedule(Some(soon), t0, Duration::from_millis(2));
+        assert!(!draw);
+        assert_eq!(next, Some(t0 + Duration::from_millis(2)));
+        let (draw, next) = repaint_schedule(Some(soon), t0, Duration::MAX);
+        assert!(!draw);
+        assert_eq!(next, Some(soon), "nothing requested keeps the pending repaint");
+    }
+
+    #[test]
+    fn a_drawn_frame_that_asked_for_now_also_gets_the_next_one() {
+        let t0 = Instant::now();
+        let (draw, next) = repaint_schedule(None, t0, Duration::ZERO);
+        assert!(draw);
+        assert_eq!(next, Some(t0), "the next tick must be drawn too");
+        let (draw, next) = repaint_schedule(next, t0 + Duration::from_millis(16), Duration::MAX);
+        assert!(draw);
+        assert_eq!(next, None, "then the window rests");
+        let (draw, next) = repaint_schedule(None, t0, Duration::MAX);
+        assert!(!draw && next.is_none(), "an idle window draws nothing");
+    }
+
+    /// The [238] lane-name flash: 120 ms long, it asks egui for a repaint when it
+    /// ends, and egui subtracts its predicted frame time from each request. Lane
+    /// meters may fall meanwhile and ask for 33 ms at every frame. Over irregular
+    /// ticks, the last frame drawn must show the flash over.
+    #[test]
+    fn the_lane_flash_is_always_drawn_off() {
+        let predicted_dt = Duration::from_secs_f64(1.0 / 60.0);
+        let egui_delay = |d: Duration| d.saturating_sub(predicted_dt);
+        for (case, ticks_ms) in [
+            [16u64, 15, 17, 16, 16, 31, 15, 16, 17, 16],
+            [15, 16, 16, 16, 16, 16, 16, 16, 16, 16],
+            [17, 17, 17, 17, 17, 17, 17, 17, 17, 17],
+            [16, 16, 16, 16, 10, 22, 16, 16, 16, 16],
+        ]
+        .iter()
+        .enumerate()
+        {
+            for (flash_start_ms, meters_ms) in (0..40u64).flat_map(|s| [(s, 0), (s, 600)]) {
+                let t0 = Instant::now();
+                let flash_end = t0 + Duration::from_millis(flash_start_ms + 120);
+                let meters_end = t0 + Duration::from_millis(meters_ms);
+                let mut scheduled = Some(t0);
+                let mut now = t0;
+                let mut drawn_lit = None;
+                for k in 0..200 {
+                    now += Duration::from_millis(ticks_ms[k % ticks_ms.len()]);
+                    let lit = now >= t0 + Duration::from_millis(flash_start_ms) && now < flash_end;
+                    let mut delay = Duration::MAX;
+                    if lit {
+                        let left = (flash_end - now).max(Duration::from_millis(10));
+                        delay = delay.min(egui_delay(left));
+                    }
+                    if now < meters_end {
+                        delay = delay.min(egui_delay(Duration::from_millis(33)));
+                    }
+                    let (draw, next) = repaint_schedule(scheduled, now, delay);
+                    scheduled = next;
+                    if draw {
+                        drawn_lit = Some(lit);
+                    }
+                }
+                assert_eq!(
+                    drawn_lit,
+                    Some(false),
+                    "case {case}, flash at {flash_start_ms} ms, meters {meters_ms} ms: the screen still shows the flash"
+                );
+            }
+        }
+    }
 }

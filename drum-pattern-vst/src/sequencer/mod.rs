@@ -818,6 +818,14 @@ impl Sequencer {
         self.mutes = mutes;
     }
 
+    /// The lanes silenced by Mute or by another lane's Solo, one bit per slot.
+    pub fn muted_mask(&self) -> u16 {
+        self.mutes
+            .iter()
+            .enumerate()
+            .fold(0, |mask, (slot, &muted)| if muted { mask | 1 << slot } else { mask })
+    }
+
     pub fn set_slot_voices(&mut self, slot_voices: [Option<usize>; MAX_TRACKS]) {
         self.slot_voices = slot_voices;
     }
@@ -888,6 +896,19 @@ mod tests {
             "Timing drift: {} samples over 10 bars",
             drift
         );
+    }
+
+    /// Ext MIDI mode reads the muted lanes from this mask (Mute and Solo).
+    #[test]
+    fn muted_mask_has_one_bit_per_silenced_lane() {
+        let mut seq = Sequencer::new(SharedPattern::new(&Pattern::empty()));
+        assert_eq!(seq.muted_mask(), 0);
+        let mut mutes = [false; MAX_TRACKS];
+        mutes[0] = true;
+        mutes[5] = true;
+        mutes[MAX_TRACKS - 1] = true;
+        seq.set_mutes(mutes);
+        assert_eq!(seq.muted_mask(), 1 | 1 << 5 | 1 << (MAX_TRACKS - 1));
     }
 
     /// [275] A lane with its own swing delays its odd steps while the others stay

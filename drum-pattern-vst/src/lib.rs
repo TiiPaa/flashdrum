@@ -3744,10 +3744,13 @@ impl DrumFlashVst {
                 // they all trigger.
                 // [241] A note caught by MIDI learn does not play.
                 let learned = velocity > 0.0 && self.sound_settings_state.catch_midi_learn(note);
+                // A lane silenced by Mute or Solo neither plays nor forwards its note,
+                // as with the internal sequencer.
                 let listening = if learned {
                     0
                 } else {
                     self.params.track_layout.state.slots_listening_to(note)
+                        & !self.sequencer.muted_mask()
                 };
                 if listening != 0 {
                     for slot_idx in 0..crate::track::MAX_TRACKS {

@@ -1454,6 +1454,8 @@ fn draw_track_tab(
                 }
             })
         });
+        // Swing and Groove belong to Own Swing: their labels step in.
+        set_sub_indent(SUB_INDENT_PX);
         help::zone(ui, "track_swing", help::TRACK_SWING, |ui| {
             ui.add_enabled_ui(own, |ui| {
                 let mut pct = slot.swing * 100.0;
@@ -1489,6 +1491,7 @@ fn draw_track_tab(
                 })
             });
         });
+        set_sub_indent(0.0);
     }
 
     if changed {
