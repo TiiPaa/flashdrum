@@ -181,6 +181,9 @@ pub struct Sequencer {
     /// Cached values for sync_to_host.
     swing: f32,
     groove_type: GrooveType,
+    /// [275] A lane's own swing, instead of the global one (`None` = the global).
+    /// Copied from the track layout once per buffer.
+    lane_swings: [Option<(f32, GrooveType)>; MAX_TRACKS],
     pattern: Arc<SharedPattern>,
     mutes: [bool; MAX_TRACKS],
     /// Global pattern length (1-64 steps). Controls master loop point.
@@ -264,6 +267,7 @@ impl Sequencer {
             tracks: [TrackState::default(); MAX_TRACKS],
             swing: 0.0,
             groove_type: GrooveType::Swing16,
+            lane_swings: [None; MAX_TRACKS],
             pattern,
             mutes: [false; MAX_TRACKS],
             master_length: 16,
@@ -304,8 +308,9 @@ impl Sequencer {
     /// Put every lane exactly where the master now is: boundary behind us,
     /// counter derived from the position, microtiming state dropped.
     fn realign_tracks_to_position(&mut self) {
-        let (swing, groove_type, bpm) = (self.swing, self.groove_type, self.bpm);
+        let bpm = self.bpm;
         for i in 0..MAX_TRACKS {
+            let (swing, groove_type) = self.groove_of(i);
             let push_pull_beats = self.tracks[i].push_pull_ms as f64 * bpm as f64 / (60.0 * 1000.0);
             let shifted_beat = self.fold_shifted(self.beat_position - push_pull_beats);
             let shifted_master = groove::beat_to_step(shifted_beat, swing, groove_type);
@@ -377,6 +382,16 @@ impl Sequencer {
         self.grid_slots = grid_slots;
     }
 
+    /// [275] Each lane's own swing (`None` = the global one). Call once per buffer.
+    pub fn set_lane_swings(&mut self, lane_swings: [Option<(f32, GrooveType)>; MAX_TRACKS]) {
+        self.lane_swings = lane_swings;
+    }
+
+    /// [275] The swing and groove `slot` plays with: its own, else the global ones.
+    fn groove_of(&self, slot: usize) -> (f32, GrooveType) {
+        self.lane_swings[slot].unwrap_or((self.swing, self.groove_type))
+    }
+
     /// Copy the per-cell microtiming (ms) from the seq-plock atomics. Call once
     /// per audio buffer, never per sample.
     pub fn set_microtimings(&mut self, microtimings: [[f32; SEQ_STEP_COUNT]; MAX_TRACKS]) {
@@ -445,6 +460,8 @@ impl Sequencer {
         // Master beat advances uniformly; each track derives its own step.
 
         for slot in 0..MAX_TRACKS {
+            // [275] A lane with its own swing steps on its own swung grid.
+            let (swing, groove_type) = self.lane_swings[slot].unwrap_or((swing, groove_type));
             let track = &mut self.tracks[slot];
 
             // Push/pull: convert ms to beats and subtract so positive = late.
@@ -661,8 +678,8 @@ impl Sequencer {
         // step conditions (1st loop, 2/2, etc.) work when driven by DAW transport.
         self.loop_count = (position_beats / self.loop_span_beats()).floor() as usize;
         let page_loop_on = self.page_loop().is_some();
-        let (swing, groove_type) = (self.swing, self.groove_type);
         for i in 0..MAX_TRACKS {
+            let (swing, groove_type) = self.groove_of(i);
             let push_pull_beats = self.tracks[i].push_pull_ms as f64 * bpm as f64 / (60.0 * 1000.0);
             let shifted_beat = self.fold_shifted(self.beat_position - push_pull_beats);
             let shifted_master = groove::beat_to_step(shifted_beat, swing, groove_type);
@@ -774,13 +791,16 @@ impl Sequencer {
     pub fn current_steps(&self) -> [usize; MAX_TRACKS] {
         let (start, end) = self.loop_bounds();
         let loop_steps = (((end - start) / 0.25).round() as i64).max(1);
-        let master = groove::beat_to_step(self.beat_position, self.swing, self.groove_type) as i64;
         let mut steps = [0usize; MAX_TRACKS];
         for (i, track) in self.tracks.iter().enumerate() {
+            // [275] Master and lane on the lane's own swung grid: only Push/Pull
+            // separates them.
+            let (swing, groove_type) = self.groove_of(i);
+            let master = groove::beat_to_step(self.beat_position, swing, groove_type) as i64;
             let len = track.track_length.max(1) as i64;
             let push_pull_beats = track.push_pull_ms as f64 * self.bpm as f64 / (60.0 * 1000.0);
             let shifted_beat = self.fold_shifted(self.beat_position - push_pull_beats);
-            let shifted = groove::beat_to_step(shifted_beat, self.swing, self.groove_type) as i64;
+            let shifted = groove::beat_to_step(shifted_beat, swing, groove_type) as i64;
             let mut ahead = (master - shifted).rem_euclid(loop_steps);
             if ahead > loop_steps / 2 {
                 ahead -= loop_steps;
@@ -868,6 +888,36 @@ mod tests {
             "Timing drift: {} samples over 10 bars",
             drift
         );
+    }
+
+    /// [275] A lane with its own swing delays its odd steps while the others stay
+    /// straight; its even steps stay on the grid.
+    #[test]
+    fn a_lane_with_its_own_swing_swings_alone() {
+        let shared_pattern = SharedPattern::new(&Pattern::empty());
+        for step in 0..16 {
+            shared_pattern.set_step_mask(step, 0b11);
+        }
+        let mut seq = Sequencer::new(shared_pattern);
+        let mut lane_swings = [None; MAX_TRACKS];
+        lane_swings[1] = Some((0.5, GrooveType::Swing16));
+        seq.set_lane_swings(lane_swings);
+        seq.play();
+        let mut hits: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+        for sample_idx in 0..44100 {
+            let triggers = seq.process_sample(120.0, 44100.0, 0.0, GrooveType::Swing16);
+            for (lane, hits) in hits.iter_mut().enumerate() {
+                if triggers[lane].should_trigger {
+                    hits.push(sample_idx);
+                }
+            }
+        }
+        // 16ths at 120 BPM: 5512.5 samples; Swing16 +50 % puts the odd step at 2/3 of
+        // the 8th, 7350 samples after the even one.
+        assert!((hits[0][1] as i64 - 5512).abs() <= 1, "global straight: {}", hits[0][1]);
+        assert!((hits[1][1] as i64 - 7350).abs() <= 1, "own swing: {}", hits[1][1]);
+        assert!((hits[1][2] as i64 - hits[0][2] as i64).abs() <= 1, "even steps stay");
+        assert_eq!(hits[0].len(), hits[1].len(), "same number of hits");
     }
 
     #[test]

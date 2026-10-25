@@ -564,6 +564,20 @@ pub struct TrackSlot {
     /// lane, a lane from a preset): the type's default applies.
     #[serde(default)]
     pub randomize_density: f32,
+    /// [275] The lane's own swing, instead of the header's Swing and Groove: on/off,
+    /// amount (-0.5..0.5, like the header's) and groove (`GrooveType` index).
+    /// `#[serde(default)]`: an older lane follows the header.
+    #[serde(default)]
+    pub own_swing: bool,
+    #[serde(default)]
+    pub swing: f32,
+    #[serde(default = "default_swing_groove")]
+    pub swing_groove: u8,
+}
+
+/// [275] A lane's groove until one is picked: the header's default, Swing 16th.
+pub fn default_swing_groove() -> u8 {
+    nih_plug::prelude::Enum::to_index(crate::groove::GrooveType::Swing16) as u8
 }
 
 impl TrackSlot {
@@ -580,6 +594,9 @@ impl TrackSlot {
             lfo_sync: [0; LFO_SYNC_SLOTS],
             inserts: Default::default(),
             randomize_density: 0.0,
+            own_swing: false,
+            swing: 0.0,
+            swing_groove: default_swing_groove(),
         }
     }
 
@@ -596,6 +613,9 @@ impl TrackSlot {
             lfo_sync: [0; LFO_SYNC_SLOTS],
             inserts: Default::default(),
             randomize_density: 0.0,
+            own_swing: false,
+            swing: 0.0,
+            swing_groove: default_swing_groove(),
         }
     }
 }
@@ -906,6 +926,9 @@ impl TrackLayoutState {
                 lfo_sync: [0; LFO_SYNC_SLOTS],
                 inserts: Default::default(),
                 randomize_density: 0.0,
+                own_swing: false,
+                swing: 0.0,
+                swing_groove: default_swing_groove(),
             };
             // Classic HH↔OH choke out of the box.
             if matches!(
@@ -1026,6 +1049,10 @@ pub struct AtomicTrackLayout {
     pub slot_lfo_sync: [[AtomicU8; LFO_SYNC_SLOTS]; MAX_TRACKS],
     /// [285] Randomize Lane density per lane (f32 bits, 0 = none stored).
     pub slot_randomize_density: [AtomicU32; MAX_TRACKS],
+    /// [275] The lane's own swing: on, amount (f32 bits), groove index.
+    pub slot_own_swing: [AtomicBool; MAX_TRACKS],
+    pub slot_swing: [AtomicU32; MAX_TRACKS],
+    pub slot_swing_groove: [AtomicU8; MAX_TRACKS],
     /// [303] The lane inserts: a bit per insert that is on, and every knob (f32 bits).
     pub slot_insert_on: [AtomicU8; MAX_TRACKS],
     /// [303] The chain order, 4 bits per position.
@@ -1048,6 +1075,9 @@ impl AtomicTrackLayout {
             slot_fx_send_mute: std::array::from_fn(|_| std::array::from_fn(|_| AtomicBool::new(false))),
             slot_lfo_sync: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU8::new(0))),
             slot_randomize_density: std::array::from_fn(|_| AtomicU32::new(0)),
+            slot_own_swing: std::array::from_fn(|_| AtomicBool::new(false)),
+            slot_swing: std::array::from_fn(|_| AtomicU32::new(0)),
+            slot_swing_groove: std::array::from_fn(|_| AtomicU8::new(default_swing_groove())),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
             slot_insert_values: std::array::from_fn(|_| {
@@ -1112,6 +1142,10 @@ impl AtomicTrackLayout {
                 0.0
             };
             self.slot_randomize_density[i].store(density.to_bits(), Ordering::Relaxed);
+            let swing = if slot.swing.is_finite() { slot.swing.clamp(-0.5, 0.5) } else { 0.0 };
+            self.slot_own_swing[i].store(slot.own_swing, Ordering::Relaxed);
+            self.slot_swing[i].store(swing.to_bits(), Ordering::Relaxed);
+            self.slot_swing_groove[i].store(slot.swing_groove, Ordering::Relaxed);
             let inserts = slot.inserts.sanitized();
             let on_bits = inserts
                 .on
@@ -1167,6 +1201,30 @@ impl AtomicTrackLayout {
                 })
             }),
         }
+    }
+
+    /// [275] The lane's own swing as set in its Track tab: (on, amount, groove index).
+    pub fn swing_setting(&self, slot: usize) -> (bool, f32, u8) {
+        if slot >= MAX_TRACKS {
+            return (false, 0.0, default_swing_groove());
+        }
+        (
+            self.slot_own_swing[slot].load(Ordering::Relaxed),
+            f32::from_bits(self.slot_swing[slot].load(Ordering::Relaxed)),
+            self.slot_swing_groove[slot].load(Ordering::Relaxed),
+        )
+    }
+
+    /// [275] The swing `slot` plays with when it has its own; `None` = the header's.
+    /// An effect bus plays no step, so never.
+    pub fn lane_swing(&self, slot: usize) -> Option<(f32, crate::groove::GrooveType)> {
+        use nih_plug::prelude::Enum;
+        let (on, swing, groove) = self.swing_setting(slot);
+        if !on || is_fx_slot(slot) {
+            return None;
+        }
+        let last = crate::groove::GrooveType::variants().len() - 1;
+        Some((swing, crate::groove::GrooveType::from_index((groove as usize).min(last))))
     }
 
     /// [285] The Randomize Lane density stored on `slot` (0 = none: use the type's default).
@@ -1270,6 +1328,9 @@ impl Default for AtomicTrackLayout {
             slot_fx_send_mute: std::array::from_fn(|_| std::array::from_fn(|_| AtomicBool::new(false))),
             slot_lfo_sync: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU8::new(0))),
             slot_randomize_density: std::array::from_fn(|_| AtomicU32::new(0)),
+            slot_own_swing: std::array::from_fn(|_| AtomicBool::new(false)),
+            slot_swing: std::array::from_fn(|_| AtomicU32::new(0)),
+            slot_swing_groove: std::array::from_fn(|_| AtomicU8::new(default_swing_groove())),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
             slot_insert_values: std::array::from_fn(|_| {
@@ -1376,6 +1437,9 @@ impl<'a> nih_plug::params::persist::PersistentField<'a, TrackLayoutState>
                 lfo_sync: std::array::from_fn(|k| self.state.lfo_sync(i, k)),
                 inserts: self.state.inserts(i),
                 randomize_density: self.state.randomize_density(i),
+                own_swing: self.state.swing_setting(i).0,
+                swing: self.state.swing_setting(i).1,
+                swing_groove: self.state.swing_setting(i).2,
             }
         });
         let state = TrackLayoutState {
@@ -1389,6 +1453,30 @@ impl<'a> nih_plug::params::persist::PersistentField<'a, TrackLayoutState>
 
 #[cfg(test)]
 mod tests {
+    /// [275] A lane's own swing survives the atomics and an older lane (no field)
+    /// follows the header.
+    #[test]
+    fn a_lane_swing_round_trips_and_older_lanes_follow_the_header() {
+        let mut state = TrackLayoutState::default_layout();
+        state.slots[2].own_swing = true;
+        state.slots[2].swing = 0.3;
+        state.slots[2].swing_groove = 3;
+        let atomic = AtomicTrackLayout::from_state(&state);
+        assert_eq!(atomic.swing_setting(2), (true, 0.3, 3));
+        assert_eq!(atomic.lane_swing(2), Some((0.3, crate::groove::GrooveType::Mpc)));
+        assert_eq!(atomic.lane_swing(1), None, "off: the header's");
+        let json = serde_json::to_string(&state.slots[2]).unwrap();
+        let back: TrackSlot = serde_json::from_str(&json).unwrap();
+        assert!(back.own_swing && back.swing == 0.3 && back.swing_groove == 3);
+        let mut old: serde_json::Value = serde_json::to_value(&state.slots[1]).unwrap();
+        for key in ["own_swing", "swing", "swing_groove"] {
+            old.as_object_mut().unwrap().remove(key);
+        }
+        let old: TrackSlot = serde_json::from_value(old).unwrap();
+        assert!(!old.own_swing);
+        assert_eq!(old.swing_groove, default_swing_groove());
+    }
+
     use super::*;
 
     /// External MIDI must reach a lane by ITS OWN note ([221]).

@@ -199,6 +199,13 @@ pub const LANE_STEPS: &str = "Steps of this lane.\n\
 - Right-click: this step's p-lock menu (sound or sequencer locks, fusion settings).\n\
 Colours: blue = on, green = sound p-lock, violet = sequencer p-lock, small dot in a corner = the other kind of p-lock, or a p-lock of a linked lane on that step. Dark dashed cells are beyond this lane's length.";
 
+pub const TRACK_OWN_SWING: &str = "On: this lane plays with its own Swing and Groove (below) instead of the header's. Off: it follows the header. Kept with the lane: copies, presets and the session.";
+pub const TRACK_SWING: &str = "This lane's swing, -50% to +50%: delays (or, below 0, advances) every second 16th note of this lane only. Needs Own Swing; no effect with Straight. Double-click to reset.";
+pub const TRACK_GROOVE: &str = "How this lane's Swing is applied (same choices as the header's groove). Needs Own Swing.\n\
+- Straight: no swing.\n\
+- Swing 16th: classic swing; +50% gives a triplet feel.\n\
+- Shuffle: a stronger swing.\n\
+- MPC Style: swing that bites harder in the middle of its range.";
 pub const LANE_HUM: &str = "Humanize: random velocity on every hit. 0% = all hits equal, 100% = from soft to full. The timing is never changed.";
 
 pub const LANE_PUSH: &str = "Push = Push/Pull: moves the whole lane in time, -50 to +50 ms. Positive = later (laid back), negative = earlier (rushing).";

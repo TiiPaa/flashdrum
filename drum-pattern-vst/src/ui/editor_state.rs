@@ -53,6 +53,8 @@ pub struct LaneClipboardData {
     pub inserts: crate::synthesis::inserts::InsertSettings,
     /// [285] The lane's Randomize Lane density (0 = none stored).
     pub randomize_density: f32,
+    /// [275] The lane's own swing (on, amount, groove index).
+    pub swing: (bool, f32, u8),
 }
 
 #[derive(Debug, Clone)]
@@ -690,6 +692,7 @@ impl EditorUIState {
         let fx_send_mute = std::array::from_fn(|bus| params.track_layout.state.fx_send_muted(slot, bus));
         let lfo_sync = std::array::from_fn(|k| params.track_layout.state.lfo_sync(slot, k));
         let randomize_density = params.track_layout.state.randomize_density(slot);
+        let swing = params.track_layout.state.swing_setting(slot);
 
         self.lane_clipboard = Some(LaneClipboardData {
             kind,
@@ -709,6 +712,7 @@ impl EditorUIState {
             lfo_sync,
             inserts,
             randomize_density,
+            swing,
         });
     }
 
@@ -751,6 +755,11 @@ impl EditorUIState {
         layout.slots[target_slot].fx_send_mute = clipboard.fx_send_mute;
         layout.slots[target_slot].lfo_sync = clipboard.lfo_sync;
         layout.slots[target_slot].randomize_density = clipboard.randomize_density;
+        (
+            layout.slots[target_slot].own_swing,
+            layout.slots[target_slot].swing,
+            layout.slots[target_slot].swing_groove,
+        ) = clipboard.swing;
         PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
 
         // Pasting onto an EMPTY lane also turns a slot into a new instrument,

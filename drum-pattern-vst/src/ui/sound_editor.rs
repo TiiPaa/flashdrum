@@ -1438,6 +1438,57 @@ fn draw_track_tab(
                 setter.end_set_parameter(hum_param);
             }
         });
+
+        // [275] The lane's own swing, instead of the header's Swing and Groove.
+        // Off, its two controls stay in place, greyed.
+        let own = slot.own_swing;
+        help::zone(ui, "track_own_swing", help::TRACK_OWN_SWING, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                editor_label(ui, "Own Swing");
+                let avail = ui.available_width();
+                ui.add_space((avail - 34.0).max(0.0));
+                if ui.add(ToggleSwitch::new(own)).clicked() {
+                    new_state.slots[slot_idx].own_swing = !own;
+                    changed = true;
+                }
+            })
+        });
+        help::zone(ui, "track_swing", help::TRACK_SWING, |ui| {
+            ui.add_enabled_ui(own, |ui| {
+                let mut pct = slot.swing * 100.0;
+                if draw_editor_slider_row(ui, "Swing", &mut pct, -50.0, 50.0, 0.0, false, Some("%"))
+                    .changed()
+                {
+                    new_state.slots[slot_idx].swing = (pct / 100.0).clamp(-0.5, 0.5);
+                    changed = true;
+                }
+            });
+        });
+        help::zone(ui, "track_groove", help::TRACK_GROOVE, |ui| {
+            ui.add_enabled_ui(own, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    editor_label(ui, "Groove");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let names = crate::groove::GrooveType::variants();
+                        let current = (slot.swing_groove as usize).min(names.len() - 1);
+                        if let (_, Some(i)) = crate::ui::widgets::styled_select(
+                            ui,
+                            "track_groove",
+                            current,
+                            names,
+                            146.0,
+                        ) {
+                            if i != current {
+                                new_state.slots[slot_idx].swing_groove = i as u8;
+                                changed = true;
+                            }
+                        }
+                    });
+                })
+            });
+        });
     }
 
     if changed {

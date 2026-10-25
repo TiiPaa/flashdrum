@@ -3188,6 +3188,10 @@ impl DrumFlashVst {
         // Per-cell microtiming (nudge): copied from the seq-plock atomics once
         // per buffer; the sequencer fires nudged cells early/late.
         let seq_plock_state = &self.params.seq_plock_state.state;
+        // [275] Each lane's own swing, if any.
+        self.sequencer.set_lane_swings(std::array::from_fn(|slot| {
+            self.params.track_layout.state.lane_swing(slot)
+        }));
         self.sequencer.set_microtimings(std::array::from_fn(|slot| {
             std::array::from_fn(|step| {
                 f32::from_bits(seq_plock_state.microtimings[slot][step].load(Ordering::Relaxed))
@@ -3626,8 +3630,13 @@ impl DrumFlashVst {
         context: &mut impl ProcessContext<Self>,
     ) {
         let pulse_count = trigger.fusion_pulse_count.max(1);
-        let swing = self.params.swing.value();
-        let groove_type = self.params.groove_type.value();
+        // [275] The pulses follow the lane's own swing when it has one.
+        let (swing, groove_type) = self
+            .params
+            .track_layout
+            .state
+            .lane_swing(slot_idx)
+            .unwrap_or((self.params.swing.value(), self.params.groove_type.value()));
         let morph_active = trigger.morph_count > 0;
         for k in 0..pulse_count {
             let mut settings = base_settings;

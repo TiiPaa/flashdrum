@@ -150,6 +150,8 @@ fn export_pattern_to_midi_data(
             continue;
         }
         let note = track_layout.midi_note_for_slot(slot);
+        // [275] A lane with its own swing is exported on it.
+        let (swing, groove_type) = track_layout.lane_swing(slot).unwrap_or((swing, groove_type));
         // A linked lane plays the steps + fusions of the lane it follows
         // (like the sequencer); microtiming and stutter stay its own.
         let grid = track_layout.grid_slot(slot);
@@ -565,6 +567,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// [275] A lane with its own swing is exported on its swing, not the global one.
+    #[test]
+    fn midi_export_uses_a_lanes_own_swing() {
+        let pattern = SharedPattern::new(&Pattern::empty());
+        pattern.set_step_mask(1, 1u16 << 0);
+        let mut state = TrackLayoutState::from_legacy_13();
+        state.slots[0].own_swing = true;
+        state.slots[0].swing = 0.5;
+        state.slots[0].swing_groove = 1;
+        let layout = AtomicTrackLayout::from_state(&state);
+        let bytes = export_pattern_to_midi_bytes(
+            &pattern,
+            &layout,
+            120.0,
+            16,
+            0.0,
+            GrooveType::Straight,
+            &SequencerPlockState::new(),
+        )
+        .expect("MIDI export should succeed");
+        let note_on_pos = bytes
+            .windows(3)
+            .position(|window| window == [0x99, 36, 100])
+            .expect("kick note-on");
+        let mut delta_start = note_on_pos - 1;
+        while delta_start > 0 && (bytes[delta_start - 1] & 0x80) != 0 {
+            delta_start -= 1;
+        }
+        let mut delta = 0u32;
+        for b in &bytes[delta_start..note_on_pos] {
+            delta = (delta << 7) | ((b & 0x7F) as u32);
+        }
+        assert_eq!(delta, 160, "the lane's Swing16 +50 % puts step 1 at tick 160");
     }
 
     #[test]
