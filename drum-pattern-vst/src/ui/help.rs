@@ -239,7 +239,7 @@ pub const MENU_CLEAR_LANE: &str = "Clears this lane's steps, fusions and p-locks
 pub const MENU_DELETE_LANE: &str = "Removes this lane: the slot becomes empty (+N) and can get a new instrument later. Click twice to confirm.";
 
 pub const MENU_DENSITY: &str =
-    "How full Randomize Lane makes the lane: left = a few steps, right = almost every step.";
+    "How full Randomize Lane makes this lane: left = a few steps, right = almost every step. Each lane keeps its own; a new lane starts with its instrument's default (Settings > Randomize Lane). Double-click: back to that default.";
 
 pub const MENU_RANDOMIZE: &str = "Fills this lane with random steps, at the Density above. The lane's fusions and p-locks are cleared.";
 
@@ -372,6 +372,10 @@ pub const SET_AUTO_EDIT: &str = "Auto-Edit on: clicking a step or a lane's M / S
 Off: only clicking the lane name selects it.";
 
 pub const SET_SKIN: &str = "Colour theme of the plugin. Saved for all your projects.";
+
+pub const SET_RANDOMIZE_KIND: &str = "The instrument whose Randomize Lane density you set below.";
+
+pub const SET_RANDOMIZE_DENSITY: &str = "The Randomize Lane density a new lane of this instrument starts with: left = a few steps, right = almost every step. Existing lanes keep theirs (right-click a lane name to change it). Saved for all your projects.";
 
 pub const SET_ZOOM: &str = "Size of the whole plugin window: text and controls grow with it. Saved for all your projects.\n\
 If the window keeps its size, your host refused the new size.";

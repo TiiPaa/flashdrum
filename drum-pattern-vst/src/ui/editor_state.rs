@@ -51,6 +51,8 @@ pub struct LaneClipboardData {
     pub lfo_sync: [u8; crate::track::LFO_SYNC_SLOTS],
     /// [303] The lane's inserts.
     pub inserts: crate::synthesis::inserts::InsertSettings,
+    /// [285] The lane's Randomize Lane density (0 = none stored).
+    pub randomize_density: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -298,9 +300,6 @@ pub struct EditorUIState {
     /// Preset browser modal (instruments / patterns / songs).
     #[serde(skip)]
     pub preset_browser: Option<PresetBrowserState>,
-    /// Density of Randomize Lane (fraction of steps turned on).
-    #[serde(default = "default_randomize_density")]
-    pub randomize_density: f32,
     /// Header "Clear All" armed (time of the first click): the next click
     /// wipes the whole program (grid + pattern bank + song + lanes). Disarms
     /// after 3 s or on a click elsewhere ([283]).
@@ -308,13 +307,6 @@ pub struct EditorUIState {
     pub clear_program_confirm: Option<f64>,
 }
 
-/// Randomize Lane density of a fresh state and of a double-click reset (user
-/// request: 80 %).
-pub const DEFAULT_RANDOMIZE_DENSITY: f32 = 0.8;
-
-fn default_randomize_density() -> f32 {
-    DEFAULT_RANDOMIZE_DENSITY
-}
 
 /// State of the Presets modal ([150]).
 pub struct PresetBrowserState {
@@ -624,14 +616,31 @@ pub enum SoundScratch {
 }
 
 impl EditorUIState {
-    /// Randomize Lane density; 0.0 means "unset" (fresh/legacy state) → the
-    /// 80 % default.
-    pub fn randomize_density(&self) -> f32 {
-        if self.randomize_density <= 0.0 {
-            DEFAULT_RANDOMIZE_DENSITY
-        } else {
-            self.randomize_density.clamp(0.05, 1.0)
+    /// [285] The Randomize Lane density of `slot`: the lane's own, else (an older lane,
+    /// a lane from a preset) its instrument type's default from the Settings.
+    pub fn lane_randomize_density(&self, params: &DrumFlashParams, slot: usize) -> f32 {
+        let own = params.track_layout.state.randomize_density(slot);
+        if own > 0.0 {
+            return own.clamp(0.05, 1.0);
         }
+        params
+            .track_layout
+            .state
+            .kind_for_slot(slot)
+            .map_or(crate::track::DEFAULT_RANDOMIZE_DENSITY, |kind| {
+                self.global_config.randomize_density_for(kind)
+            })
+    }
+
+    /// [285] Set the Randomize Lane density of `slot` (the lane menu's Density).
+    pub fn set_lane_randomize_density(params: &DrumFlashParams, slot: usize, value: f32) {
+        if slot >= crate::track::MAX_TRACKS {
+            return;
+        }
+        let mut layout =
+            PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());
+        layout.slots[slot].randomize_density = value.clamp(0.05, 1.0);
+        PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
     }
 
     /// Mark the current pattern as dirty so it will be auto-saved back to the
@@ -671,6 +680,7 @@ impl EditorUIState {
         let inserts = params.track_layout.state.inserts(slot);
         let fx_send_mute = std::array::from_fn(|bus| params.track_layout.state.fx_send_muted(slot, bus));
         let lfo_sync = std::array::from_fn(|k| params.track_layout.state.lfo_sync(slot, k));
+        let randomize_density = params.track_layout.state.randomize_density(slot);
 
         self.lane_clipboard = Some(LaneClipboardData {
             kind,
@@ -689,6 +699,7 @@ impl EditorUIState {
             fx_send_mute,
             lfo_sync,
             inserts,
+            randomize_density,
         });
     }
 
@@ -730,6 +741,7 @@ impl EditorUIState {
         layout.slots[target_slot].inserts = clipboard.inserts;
         layout.slots[target_slot].fx_send_mute = clipboard.fx_send_mute;
         layout.slots[target_slot].lfo_sync = clipboard.lfo_sync;
+        layout.slots[target_slot].randomize_density = clipboard.randomize_density;
         PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
 
         // Pasting onto an EMPTY lane also turns a slot into a new instrument,
@@ -859,7 +871,7 @@ impl EditorUIState {
         pattern.store_fusions(grid, &[]);
         clear_grid_sound_plocks(plock, slot);
         clear_grid_seq_plocks(&params.seq_plock_state.state, slot);
-        randomize_lane_steps(pattern, grid, self.randomize_density());
+        randomize_lane_steps(pattern, grid, self.lane_randomize_density(params, slot));
 
         self.fusion_selection_start[slot] = None;
         self.fusion_selection_start[grid] = None;
@@ -1078,7 +1090,7 @@ mod tests {
         assert_eq!(lane(0), 0, "clears the shown steps");
         assert_eq!(lane(1), 1, "the hidden steps are left alone");
 
-        state.randomize_density = 1.0;
+        EditorUIState::set_lane_randomize_density(&params, 1, 1.0);
         state.randomize_lane(&params, 1, &pattern, plock);
         assert_eq!(lane(0), STEP_COUNT, "randomizes the shown steps");
         assert_eq!(lane(1), 1);

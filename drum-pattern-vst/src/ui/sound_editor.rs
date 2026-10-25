@@ -1187,6 +1187,9 @@ fn draw_track_tab(
                         new_state.slots[slot_idx].name = label.to_string();
                         // [304] The LFO syncs belonged to the old instrument's LFOs.
                         new_state.slots[slot_idx].lfo_sync = [0; crate::track::LFO_SYNC_SLOTS];
+                        // [285] A new instrument: its type's Randomize density.
+                        new_state.slots[slot_idx].randomize_density =
+                            state.global_config.randomize_density_for(kind);
                         new_state.slots[slot_idx].midi_note = kind.default_midi_note();
                         state.track_name_input = label.to_string();
                         changed = true;

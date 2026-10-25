@@ -29,6 +29,11 @@ pub struct GlobalConfig {
     /// [282] Editor zoom in percent, one of `ZOOM_STEPS` (Settings → Zoom).
     #[serde(default = "default_zoom_percent")]
     pub zoom_percent: u16,
+    /// [285] Randomize Lane density per instrument type (Settings), keyed by the kind's
+    /// name; copied into a lane when it is created. A type not listed uses
+    /// `track::DEFAULT_RANDOMIZE_DENSITY`.
+    #[serde(default)]
+    pub randomize_density: std::collections::BTreeMap<String, f32>,
 }
 
 /// [282] The zoom levels offered in Settings.
@@ -51,11 +56,27 @@ impl Default for GlobalConfig {
             skin: default_skin(),
             help_mode: false,
             zoom_percent: default_zoom_percent(),
+            randomize_density: Default::default(),
         }
     }
 }
 
 impl GlobalConfig {
+    /// [285] The Randomize Lane density a new lane of `kind` starts with.
+    pub fn randomize_density_for(&self, kind: crate::track::TrackInstrumentKind) -> f32 {
+        self.randomize_density
+            .get(&format!("{kind:?}"))
+            .copied()
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map_or(crate::track::DEFAULT_RANDOMIZE_DENSITY, |v| v.clamp(0.05, 1.0))
+    }
+
+    /// [285] Set the Randomize Lane density new lanes of `kind` start with.
+    pub fn set_randomize_density_for(&mut self, kind: crate::track::TrackInstrumentKind, value: f32) {
+        self.randomize_density
+            .insert(format!("{kind:?}"), value.clamp(0.05, 1.0));
+    }
+
     /// Load the config from disk, creating a default file if it doesn't exist.
     pub fn load() -> Self {
         let path = Self::config_path();
@@ -112,6 +133,21 @@ impl GlobalConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [285] An older config (no Randomize densities) loads with every type at the
+    /// default; a type set in the Settings keeps its value through a save.
+    #[test]
+    fn randomize_density_per_type_round_trips() {
+        use crate::track::{TrackInstrumentKind, DEFAULT_RANDOMIZE_DENSITY};
+        let old = r#"{"default_analog":0.5,"global_midi_channel":10}"#;
+        let mut config: GlobalConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(config.randomize_density_for(TrackInstrumentKind::HiHat), DEFAULT_RANDOMIZE_DENSITY);
+        config.set_randomize_density_for(TrackInstrumentKind::HiHat, 0.35);
+        let json = serde_json::to_string(&config).unwrap();
+        let back: GlobalConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.randomize_density_for(TrackInstrumentKind::HiHat), 0.35);
+        assert_eq!(back.randomize_density_for(TrackInstrumentKind::Kick), DEFAULT_RANDOMIZE_DENSITY);
+    }
 
     #[test]
     fn config_dir_env_override_redirects_the_config() {

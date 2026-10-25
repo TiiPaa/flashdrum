@@ -427,6 +427,65 @@ pub fn draw_settings_popup_if_any(
 
                 ui.add_space(14.0);
 
+                // ---- [285] Randomize Lane: the density each instrument type starts with ----
+                ui.label(RichText::new("Randomize Lane").font(f_sans_sb(11.0)).color(BLUE()));
+                ui.add_space(6.0);
+                let kinds: Vec<crate::track::TrackInstrumentKind> = crate::track::TrackInstrumentKind::ALL
+                    .iter()
+                    .copied()
+                    .filter(|kind| !kind.is_effect())
+                    .collect();
+                let kind_names: Vec<&str> = kinds.iter().map(|kind| kind.default_name()).collect();
+                let kind_id = egui::Id::new("settings_randomize_kind");
+                let kind_idx = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<usize>(kind_id))
+                    .unwrap_or(0)
+                    .min(kinds.len().saturating_sub(1));
+                let kind_label = ui.label(
+                    RichText::new("Instrument")
+                        .font(f_sans_med(10.5))
+                        .color(INK3()),
+                );
+                ui.add_space(4.0);
+                let (response, picked) =
+                    styled_select(ui, "settings_randomize_kind_menu", kind_idx, &kind_names, 120.0);
+                help::rect(
+                    ui,
+                    kind_label.rect.union(response.rect),
+                    "set_randomize_kind",
+                    help::SET_RANDOMIZE_KIND,
+                );
+                let kind_idx = picked.map_or(kind_idx, |idx| idx.min(kinds.len().saturating_sub(1)));
+                if picked.is_some() {
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(kind_id, kind_idx));
+                }
+                ui.add_space(6.0);
+                let density_label = ui.label(
+                    RichText::new("Default Density")
+                        .font(f_sans_med(10.5))
+                        .color(INK3()),
+                );
+                ui.add_space(4.0);
+                let kind = kinds[kind_idx];
+                let mut density = state.global_config.randomize_density_for(kind);
+                let slider = ui.add(
+                    LocalParamSlider::new(&mut density, 0.05..=1.0)
+                        .reset_value(crate::track::DEFAULT_RANDOMIZE_DENSITY),
+                );
+                help::rect(
+                    ui,
+                    density_label.rect.union(slider.rect),
+                    "set_randomize_density",
+                    help::SET_RANDOMIZE_DENSITY,
+                );
+                if slider.changed() {
+                    state.global_config.set_randomize_density_for(kind, density);
+                    let _ = state.global_config.save();
+                }
+
+                ui.add_space(14.0);
+
                 // ---- Others ----
                 ui.label(RichText::new("Others").font(f_sans_sb(11.0)).color(BLUE()));
                 ui.add_space(6.0);

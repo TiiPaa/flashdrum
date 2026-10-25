@@ -580,9 +580,17 @@ fn draw_legacy_slot_lane_v2(
             }
             // [286] Nothing to randomize on an effect bus.
             if !is_fx {
-                // Randomize density (drives the Randomize Lane row below).
+                // Randomize density (drives the Randomize Lane row below). [285] The
+                // lane's own; double-click = its instrument type's default (Settings).
                 {
-                    let mut density = state.randomize_density();
+                    let mut density = state.lane_randomize_density(params, slot_idx);
+                    let type_default = params
+                        .track_layout
+                        .state
+                        .kind_for_slot(slot_idx)
+                        .map_or(crate::track::DEFAULT_RANDOMIZE_DENSITY, |kind| {
+                            state.global_config.randomize_density_for(kind)
+                        });
                     let response = ui.horizontal(|ui| {
                         ui.label(RichText::new("Density").font(f_sans_med(10.0)).color(INK3()));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -593,14 +601,14 @@ fn draw_legacy_slot_lane_v2(
                                 )
                                 .with_width(72.0)
                                 .without_value()
-                                .reset_value(crate::ui::editor_state::DEFAULT_RANDOMIZE_DENSITY),
+                                .reset_value(type_default),
                             )
                         })
                         .inner
                     });
                     help::rect(ui, response.response.rect, "menu_density", help::MENU_DENSITY);
                     if response.inner.changed() {
-                        state.randomize_density = density;
+                        EditorUIState::set_lane_randomize_density(params, slot_idx, density);
                     }
                 }
                 if context_menu_button(ui, "Randomize Lane", INK(), true)
@@ -1668,6 +1676,8 @@ pub fn change_slot_kind(
     slot.name = kind.default_name().to_string();
     // [304] The LFO syncs belonged to the old instrument's LFOs.
     slot.lfo_sync = [0; crate::track::LFO_SYNC_SLOTS];
+    // [285] A new instrument: its type's Randomize density.
+    slot.randomize_density = state.global_config.randomize_density_for(kind);
     slot.midi_note = kind.default_midi_note();
     PersistentField::<TrackLayoutState>::set(&params.track_layout, new_state);
     sound_settings.reset_slot_to_defaults(slot_idx, kind, state.global_config.default_analog);
@@ -1694,6 +1704,8 @@ pub fn activate_slot(
         return;
     }
     new_state.slots[slot_idx] = TrackSlot::active_with_kind(kind);
+    // [285] The lane starts with its instrument type's Randomize density (Settings).
+    new_state.slots[slot_idx].randomize_density = state.global_config.randomize_density_for(kind);
     // [298] An effect lane is named after its effect (Reverb, Delay, Rumble), like any lane
     // is named after its instrument: `active_with_kind` already did it.
     PersistentField::<TrackLayoutState>::set(&params.track_layout, new_state);
@@ -4055,6 +4067,41 @@ mod tests {
         // [270] Only a One-Shot lane takes a replacement file.
         assert!(!super::replace_oneshot_file(&params, settings, 0, &wav));
         assert!(params.user_textures.path(0).is_none());
+    }
+
+    /// [285] A new lane starts with its instrument type's Randomize density (Settings),
+    /// then keeps its own; a lane with none stored follows its type's default.
+    #[test]
+    fn a_new_lane_takes_its_type_randomize_density() {
+        use crate::ui::editor_state::EditorUIState;
+        use nih_plug::params::persist::PersistentField;
+        let params = crate::DrumFlashParams::default();
+        let layout = TrackLayoutState::modular_default_layout();
+        PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
+        let pattern = params.pattern_state.shared();
+        let plock = &params.plock_state.state;
+        let settings = &params.sound_settings.state;
+        let mut state = EditorUIState::default();
+        state.global_config.set_randomize_density_for(TrackInstrumentKind::HiHat, 0.3);
+        let slot = 5;
+        assert!(!params.track_layout.state.is_active(slot));
+        super::activate_slot(
+            &params, settings, &mut state, slot, TrackInstrumentKind::HiHat, &pattern, plock,
+        );
+        assert_eq!(state.lane_randomize_density(&params, slot), 0.3);
+        // A later Settings change leaves the existing lane alone.
+        state.global_config.set_randomize_density_for(TrackInstrumentKind::HiHat, 0.9);
+        assert_eq!(state.lane_randomize_density(&params, slot), 0.3);
+        EditorUIState::set_lane_randomize_density(&params, slot, 0.6);
+        assert_eq!(state.lane_randomize_density(&params, slot), 0.6);
+        // Slot 0 (the default layout's Kick) holds none: its type's default.
+        assert_eq!(params.track_layout.state.randomize_density(0), 0.0);
+        assert_eq!(
+            state.lane_randomize_density(&params, 0),
+            crate::track::DEFAULT_RANDOMIZE_DENSITY
+        );
+        state.global_config.set_randomize_density_for(TrackInstrumentKind::Kick, 0.5);
+        assert_eq!(state.lane_randomize_density(&params, 0), 0.5);
     }
 
     /// [270] A WAV dropped on a One-Shot lane replaces its file; its steps and locks stay.

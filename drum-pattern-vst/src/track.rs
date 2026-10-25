@@ -524,6 +524,10 @@ fn pack_insert_order(order: [u8; crate::synthesis::inserts::INSERT_COUNT]) -> u3
 /// [304] How many LFOs of a lane can follow the tempo (Rift has two).
 pub const LFO_SYNC_SLOTS: usize = 2;
 
+/// Randomize Lane density of an instrument type nobody tuned in the Settings, and of a
+/// lane that holds none (user request: 80 %).
+pub const DEFAULT_RANDOMIZE_DENSITY: f32 = 0.8;
+
 /// One internal track slot.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TrackSlot {
@@ -555,6 +559,11 @@ pub struct TrackSlot {
     /// `#[serde(default)]` so older `track-layout-v1` blobs load with every insert off.
     #[serde(default)]
     pub inserts: crate::synthesis::inserts::InsertSettings,
+    /// [285] The lane's Randomize Lane density (0.05..1), copied from its instrument
+    /// type's default (Settings) when the lane is created. 0 = none stored (an older
+    /// lane, a lane from a preset): the type's default applies.
+    #[serde(default)]
+    pub randomize_density: f32,
 }
 
 impl TrackSlot {
@@ -570,6 +579,7 @@ impl TrackSlot {
             fx_send_mute: [false; FX_SLOT_COUNT],
             lfo_sync: [0; LFO_SYNC_SLOTS],
             inserts: Default::default(),
+            randomize_density: 0.0,
         }
     }
 
@@ -585,6 +595,7 @@ impl TrackSlot {
             fx_send_mute: [false; FX_SLOT_COUNT],
             lfo_sync: [0; LFO_SYNC_SLOTS],
             inserts: Default::default(),
+            randomize_density: 0.0,
         }
     }
 }
@@ -894,6 +905,7 @@ impl TrackLayoutState {
                 fx_send_mute: [false; FX_SLOT_COUNT],
                 lfo_sync: [0; LFO_SYNC_SLOTS],
                 inserts: Default::default(),
+                randomize_density: 0.0,
             };
             // Classic HH↔OH choke out of the box.
             if matches!(
@@ -1012,6 +1024,8 @@ pub struct AtomicTrackLayout {
     pub slot_fx_send_mute: [[AtomicBool; FX_SLOT_COUNT]; MAX_TRACKS],
     /// [304] LFO tempo sync per lane.
     pub slot_lfo_sync: [[AtomicU8; LFO_SYNC_SLOTS]; MAX_TRACKS],
+    /// [285] Randomize Lane density per lane (f32 bits, 0 = none stored).
+    pub slot_randomize_density: [AtomicU32; MAX_TRACKS],
     /// [303] The lane inserts: a bit per insert that is on, and every knob (f32 bits).
     pub slot_insert_on: [AtomicU8; MAX_TRACKS],
     /// [303] The chain order, 4 bits per position.
@@ -1033,6 +1047,7 @@ impl AtomicTrackLayout {
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
             slot_fx_send_mute: std::array::from_fn(|_| std::array::from_fn(|_| AtomicBool::new(false))),
             slot_lfo_sync: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU8::new(0))),
+            slot_randomize_density: std::array::from_fn(|_| AtomicU32::new(0)),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
             slot_insert_values: std::array::from_fn(|_| {
@@ -1091,6 +1106,12 @@ impl AtomicTrackLayout {
             for (k, sync) in slot.lfo_sync.iter().enumerate() {
                 self.slot_lfo_sync[i][k].store(*sync, Ordering::Relaxed);
             }
+            let density = if slot.randomize_density.is_finite() && slot.randomize_density > 0.0 {
+                slot.randomize_density.clamp(0.05, 1.0)
+            } else {
+                0.0
+            };
+            self.slot_randomize_density[i].store(density.to_bits(), Ordering::Relaxed);
             let inserts = slot.inserts.sanitized();
             let on_bits = inserts
                 .on
@@ -1146,6 +1167,14 @@ impl AtomicTrackLayout {
                 })
             }),
         }
+    }
+
+    /// [285] The Randomize Lane density stored on `slot` (0 = none: use the type's default).
+    pub fn randomize_density(&self, slot: usize) -> f32 {
+        if slot >= MAX_TRACKS {
+            return 0.0;
+        }
+        f32::from_bits(self.slot_randomize_density[slot].load(Ordering::Relaxed))
     }
 
     /// [304] The tempo sync of LFO slot `k` of `slot` (0 = Free).
@@ -1240,6 +1269,7 @@ impl Default for AtomicTrackLayout {
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
             slot_fx_send_mute: std::array::from_fn(|_| std::array::from_fn(|_| AtomicBool::new(false))),
             slot_lfo_sync: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU8::new(0))),
+            slot_randomize_density: std::array::from_fn(|_| AtomicU32::new(0)),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
             slot_insert_values: std::array::from_fn(|_| {
@@ -1345,6 +1375,7 @@ impl<'a> nih_plug::params::persist::PersistentField<'a, TrackLayoutState>
                 fx_send_mute: std::array::from_fn(|bus| self.state.fx_send_muted(i, bus)),
                 lfo_sync: std::array::from_fn(|k| self.state.lfo_sync(i, k)),
                 inserts: self.state.inserts(i),
+                randomize_density: self.state.randomize_density(i),
             }
         });
         let state = TrackLayoutState {
