@@ -1390,6 +1390,27 @@ fn draw_track_tab(
                     {
                         new_state.slots[slot_idx].midi_note = note.clamp(0, 127) as u8;
                         changed = true;
+                        state.midi_learn_slot = None;
+                    }
+                    // [241] Learn: the next note from a MIDI controller becomes the
+                    // lane's note. A second click stops waiting.
+                    let learning = state.midi_learn_slot == Some(slot_idx);
+                    let learn = help::zone(ui, "track_note_learn", help::TRACK_NOTE_LEARN, |ui| {
+                        crate::ui::controls::keycap_button(
+                            ui,
+                            if learning { "Play a note" } else { "Learn" },
+                            56.0,
+                            if learning {
+                                crate::ui::widgets::KeycapState::PressedAmber
+                            } else {
+                                crate::ui::widgets::KeycapState::Rest
+                            },
+                            true,
+                            f_sans_sb(10.0),
+                        )
+                    });
+                    if learn.clicked() {
+                        state.midi_learn_slot = if learning { None } else { Some(slot_idx) };
                     }
                 });
             })
@@ -1422,6 +1443,45 @@ fn draw_track_tab(
     if changed {
         PersistentField::<TrackLayoutState>::set(&params.track_layout, new_state);
     }
+}
+
+/// [241] Once per frame: MIDI learn of a lane's note. While a lane waits, the audio
+/// thread keeps the next incoming note for it; the note becomes the lane's note and
+/// the lane flashes. Stops when the lane is removed or becomes an effect bus.
+pub fn poll_midi_learn(
+    ctx: &egui::Context,
+    params: &DrumFlashParams,
+    sound_settings: &SoundSettingsState,
+    state: &mut EditorUIState,
+) {
+    let Some(slot) = state.midi_learn_slot else {
+        // A wait left from a closed editor would swallow a note.
+        if sound_settings.midi_learn_pending() {
+            sound_settings.set_midi_learn(false);
+        }
+        return;
+    };
+    let layout = &params.track_layout.state;
+    if !layout.is_active(slot) || layout.kind_for_slot(slot).is_some_and(|k| k.is_effect()) {
+        state.midi_learn_slot = None;
+        sound_settings.set_midi_learn(false);
+        return;
+    }
+    if let Some(note) = sound_settings.take_learned_note() {
+        let mut new_state =
+            PersistentField::<TrackLayoutState>::map(&params.track_layout, |s| s.clone());
+        new_state.slots[slot].midi_note = note;
+        PersistentField::<TrackLayoutState>::set(&params.track_layout, new_state);
+        state.midi_learn_slot = None;
+        state.slot_flash_until[slot] = ctx.input(|i| i.time) + 0.5;
+        ctx.request_repaint();
+        return;
+    }
+    if !sound_settings.midi_learn_pending() {
+        sound_settings.set_midi_learn(true);
+    }
+    // The note comes from the audio thread: look for it without waiting for input.
+    ctx.request_repaint_after(std::time::Duration::from_millis(50));
 }
 
 pub fn apply_lane_layout_preset(

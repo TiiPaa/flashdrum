@@ -508,6 +508,7 @@ pub const TRACK_CHOKE: &str = "Choke group: when this lane plays, it cuts the ot
 pub const TRACK_CHANNEL: &str = "MIDI channel of the notes sent. It is shared by all lanes: change it in Settings > Global MIDI Channel.";
 
 pub const TRACK_NOTE: &str = "MIDI note of this lane: the note sent when it plays, written in MIDI exports, and the note that plays it in Ext MIDI mode.";
+pub const TRACK_NOTE_LEARN: &str = "Click, then play a note on your MIDI controller: it becomes this lane's note (that note does not play). Click again to stop waiting.";
 
 #[cfg(test)]
 mod tests {

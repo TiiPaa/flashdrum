@@ -280,6 +280,10 @@ pub struct EditorUIState {
     /// Visual flash timer for the Test (T) button when triggered by external MIDI.
     #[serde(skip)]
     pub slot_flash_until: [f64; crate::track::MAX_TRACKS],
+    /// [241] The lane whose MIDI note waits for the next incoming note (Track tab,
+    /// Learn).
+    #[serde(skip)]
+    pub midi_learn_slot: Option<usize>,
     /// The panel's notice strip was dismissed by hand ([184] ph. 3). Re-armed as
     /// soon as the situation it describes clears, so a dismissal hides the strip
     /// for this occurrence and not for good.

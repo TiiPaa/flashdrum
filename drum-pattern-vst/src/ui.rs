@@ -275,6 +275,14 @@ pub fn create_editor(
             // empty: one atomic load.
             params_for_ui.user_textures.pool.drain_retired();
 
+            // [241] MIDI learn of a lane's note (Track tab, Learn).
+            crate::ui::sound_editor::poll_midi_learn(
+                egui_ctx,
+                &params_for_ui,
+                &sound_settings_for_ui,
+                state,
+            );
+
             // Apply any pending pattern length update from a slot load.
             let pending_len = pending_pattern_length_for_ui.swap(0, Ordering::Relaxed);
             if pending_len >= 1 && pending_len <= 64 {

@@ -3475,9 +3475,12 @@ impl DrumFlashVst {
             if event.timing() != sample_idx as u32 {
                 break;
             }
-            if let NoteEvent::NoteOn { note, .. } = event {
+            if let NoteEvent::NoteOn { note, velocity, .. } = event {
                 const PATTERN_SWITCH_BASE: u8 = 60;
-                if self.params.midi_pattern_switch.value()
+                // [241] A note caught by MIDI learn does nothing else.
+                let learned = velocity > 0.0 && self.sound_settings_state.catch_midi_learn(note);
+                if !learned
+                    && self.params.midi_pattern_switch.value()
                     && !self.params.song_mode.value()
                     && note >= PATTERN_SWITCH_BASE
                     && note < PATTERN_SWITCH_BASE + pattern_bank::SLOT_COUNT as u8
@@ -3730,7 +3733,13 @@ impl DrumFlashVst {
                 // plugin also sends on — not the registry's factory
                 // note. Several lanes may share a note on purpose, and
                 // they all trigger.
-                let listening = self.params.track_layout.state.slots_listening_to(note);
+                // [241] A note caught by MIDI learn does not play.
+                let learned = velocity > 0.0 && self.sound_settings_state.catch_midi_learn(note);
+                let listening = if learned {
+                    0
+                } else {
+                    self.params.track_layout.state.slots_listening_to(note)
+                };
                 if listening != 0 {
                     for slot_idx in 0..crate::track::MAX_TRACKS {
                         if listening & (1 << slot_idx) == 0 {

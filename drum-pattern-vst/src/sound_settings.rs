@@ -1,5 +1,5 @@
 use nih_plug::params::persist::PersistentField;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Sound settings for a single instrument (used for clipboard).
@@ -321,11 +321,53 @@ pub struct SoundSettingsState {
     /// [302] Each lane's output peak (linear, f32 bits) since the editor last read it, for
     /// the meter at the end of the lane.
     pub lane_peak: [AtomicU32; crate::track::MAX_TRACKS],
+    /// [241] MIDI learn of a lane's note: 0 = off, `MIDI_LEARN_ARMED` = the editor
+    /// waits for a note, `MIDI_LEARN_GOT | note` = the audio thread caught one.
+    midi_learn: AtomicU16,
 }
 
 pub use crate::synthesis::FX_LIVE_FIELDS;
 
+const MIDI_LEARN_ARMED: u16 = 0x100;
+const MIDI_LEARN_GOT: u16 = 0x200;
+
 impl SoundSettingsState {
+    /// [241] Editor: wait for the next incoming note (or stop waiting).
+    pub fn set_midi_learn(&self, armed: bool) {
+        self.midi_learn
+            .store(if armed { MIDI_LEARN_ARMED } else { 0 }, Ordering::Relaxed);
+    }
+
+    /// [241] Editor: whether a note is awaited or caught but not yet taken.
+    pub fn midi_learn_pending(&self) -> bool {
+        self.midi_learn.load(Ordering::Relaxed) != 0
+    }
+
+    /// [241] Audio thread: an incoming note. True when the editor was waiting for one:
+    /// the note is kept for it and must not play or switch a pattern.
+    pub fn catch_midi_learn(&self, note: u8) -> bool {
+        self.midi_learn
+            .compare_exchange(
+                MIDI_LEARN_ARMED,
+                MIDI_LEARN_GOT | note as u16,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+    }
+
+    /// [241] Editor: the caught note, once; learning is then off.
+    pub fn take_learned_note(&self) -> Option<u8> {
+        let v = self.midi_learn.load(Ordering::Acquire);
+        if v & MIDI_LEARN_GOT == 0 {
+            return None;
+        }
+        self.midi_learn
+            .compare_exchange(v, 0, Ordering::AcqRel, Ordering::Relaxed)
+            .ok()
+            .map(|v| (v & 0x7F) as u8)
+    }
+
     /// [303] Audio thread: add a block's gain reduction (positive floats order like their
     /// bits, so `fetch_max` on the bits keeps the largest).
     pub fn publish_insert_gr(&self, slot: usize, gr_db: f32) {
@@ -412,6 +454,7 @@ impl SoundSettingsState {
             fx_live_on: std::array::from_fn(|_| AtomicBool::new(false)),
             insert_gr: std::array::from_fn(|_| AtomicU32::new(0)),
             lane_peak: std::array::from_fn(|_| AtomicU32::new(0)),
+            midi_learn: AtomicU16::new(0),
         })
     }
 
@@ -670,6 +713,25 @@ impl<'a> PersistentField<'a, Vec<f32>> for PersistentSoundSettings {
 mod tests {
     use super::*;
     use crate::track::{TrackInstrumentKind, TrackLayoutState, TrackSlot};
+
+    /// [241] A note is caught only while armed, taken once, and then learning is off.
+    #[test]
+    fn midi_learn_catches_one_note_while_armed() {
+        let state = SoundSettingsState::new(&TrackLayoutState::default_layout());
+        assert!(!state.catch_midi_learn(36), "not armed: the note plays");
+        assert_eq!(state.take_learned_note(), None);
+        state.set_midi_learn(true);
+        assert!(state.midi_learn_pending());
+        assert_eq!(state.take_learned_note(), None, "nothing caught yet");
+        assert!(state.catch_midi_learn(38));
+        assert!(!state.catch_midi_learn(40), "only the first note");
+        assert_eq!(state.take_learned_note(), Some(38));
+        assert_eq!(state.take_learned_note(), None);
+        assert!(!state.midi_learn_pending());
+        state.set_midi_learn(true);
+        state.set_midi_learn(false);
+        assert!(!state.catch_midi_learn(36), "cancelled");
+    }
 
     #[test]
     fn v3_roundtrip_preserves_specials_and_freq_mode() {
