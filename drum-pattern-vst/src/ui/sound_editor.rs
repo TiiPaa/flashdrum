@@ -3891,17 +3891,18 @@ fn draw_special_rows(
         // envelope's business. Greyed, not hidden. Keyed on the
         // names, so any instrument declaring a `*_loop` switch
         // beside `*_grain*` rows gets the same behaviour.
-        let grain_disabled = def.name.contains("_grain")
-            && instrument
-                .special_params
-                .iter()
-                .find(|d| d.name.ends_with("_loop"))
-                .map(|d| src.get(ParamId::Special(d.special_index)) < 0.5)
-                .unwrap_or(false);
+        let loop_switch = instrument
+            .special_params
+            .iter()
+            .find(|d| d.name.ends_with("_loop"));
+        // Grain and Grain Shape are sub-parameters of Loop: their labels step in.
+        let grain_sub = def.name.contains("_grain") && loop_switch.is_some();
+        let grain_disabled = grain_sub
+            && loop_switch.is_some_and(|d| src.get(ParamId::Special(d.special_index)) < 0.5);
         // [233] The saturation's sub-parameters (Amount, Mix,
         // Output Gain) step in under Saturation Type and grey
         // out on None. Pre-Filter, Crush and Decimate are not
-        // part of it. The only sub-parameter styling there is.
+        // part of it.
         let saturation_sub = def.name.ends_with("_saturation_amount")
             || def.name.ends_with("_saturation_mix")
             || def.name.ends_with("_saturation_output_gain");
@@ -3954,7 +3955,9 @@ fn draw_special_rows(
             }
         }
         let advance_disabled = advance_row && !advance_on;
-        if saturation_sub || gate_sub {
+        // Sub-parameters (a row that depends on the switch right above it) step their
+        // label in; the Advance switch drawn above stays at the margin.
+        if saturation_sub || gate_sub || grain_sub || advance_row {
             set_sub_indent(SUB_INDENT_PX);
         }
         // [304] Each LFO (its Rate, Sync and Depth) reads as its own group: a hairline
@@ -4139,11 +4142,17 @@ fn draw_special_rows(
             // Vertical inside the gutter row: a collapsing
             // header laid out horizontally would open its body
             // to the RIGHT of the header.
+            // A sub-parameter of Advance: the whole fold steps in (its rows are
+            // indented again by the fold itself).
             row_scoped(ui, false, None, |ui| {
                 ui.vertical(|ui| {
-                    ui.add_enabled_ui(advance_on, |ui| {
-                        draw_advance_options(ui, setter, advance_param, slot, advance_on);
-                    });
+                    egui::Frame::NONE
+                        .inner_margin(egui::Margin { left: SUB_INDENT_PX as i8, ..Default::default() })
+                        .show(ui, |ui| {
+                            ui.add_enabled_ui(advance_on, |ui| {
+                                draw_advance_options(ui, setter, advance_param, slot, advance_on);
+                            });
+                        });
                 });
             });
         }
