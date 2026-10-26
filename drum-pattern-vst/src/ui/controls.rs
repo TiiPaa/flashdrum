@@ -332,7 +332,8 @@ pub fn keycap_button_sized(
 
 /// The Generator's **Full random** key: a die, then the label, in amber, centred
 /// together on a rest keycap of `size`. `armed` = the pattern is unsaved and a
-/// first click asked for a second one: the key says so instead.
+/// first click asked for a second one: the key reads "Sure?", like every
+/// two-click button.
 pub fn full_random_button(ui: &mut egui::Ui, size: Vec2, armed: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     keycap_tex(ui, rect, KeycapState::Rest);
@@ -342,7 +343,7 @@ pub fn full_random_button(ui: &mut egui::Ui, size: Vec2, armed: bool) -> egui::R
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            "Not saved - click again",
+            "Sure?",
             font,
             AMBER(),
         );

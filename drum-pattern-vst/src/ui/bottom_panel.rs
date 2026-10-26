@@ -247,10 +247,10 @@ fn draw_generator_panel_content(
     divider(d2);
 
     // CREATE. Both actions replace the grid: on an unsaved pattern the first
-    // click turns the key into a warning, a second click on the SAME key goes
-    // ahead (no pointer travel); it disarms after a few seconds or on a click
-    // anywhere else.
-    const CONFIRM_TIMEOUT_S: f64 = 4.0;
+    // click turns the key into "Sure?", like every two-click button, and a second
+    // click on the SAME key goes ahead (no pointer travel); it disarms after
+    // `CONFIRM_TIMEOUT_S` or on a click anywhere else.
+    use crate::ui::controls::CONFIRM_TIMEOUT_S;
     let now = ui.input(|i| i.time);
     if let Some((_, armed_at)) = state.generate_confirm {
         if now - armed_at >= CONFIRM_TIMEOUT_S {
@@ -273,11 +273,11 @@ fn draw_generator_panel_content(
             if generate_armed {
                 crate::ui::controls::keycap_button_sized(
                     ui,
-                    "Pattern not saved\nClick again to generate",
+                    "Sure?",
                     gen_rect.size(),
                     crate::ui::widgets::KeycapState::PressedAmber,
                     true,
-                    f_sans_sb(11.5),
+                    f_sans_sb(13.0),
                 )
             } else {
                 crate::ui::controls::keycap_button_sized(
