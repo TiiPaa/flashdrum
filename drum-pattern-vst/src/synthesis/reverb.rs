@@ -23,9 +23,10 @@
 //! first reflections of a room are heard. **Gate** cuts the tail a fixed time after
 //! each hit, the gated-snare sound, on any type.
 //!
-//! **Warp** ([294]) links Decay to the length of the lines: a long Decay stretches them
-//! (up to twice), a short one shrinks them (down to half). Moving Decay then moves the
-//! lines under the ringing tail, which bends its pitch, as Size does.
+//! **Warp** ([294]) links Decay to the length of the delays (the lines and the diffuser):
+//! a long Decay stretches them (up to 4 times), a short one shrinks them (down to a
+//! quarter). Moving Decay then moves the delays under the ringing tail, which bends its
+//! pitch, as Size does.
 //!
 //! The effect is NOT a `Voice`: a voice makes sound on a trigger from nothing,
 //! a reverb makes it from a bus input. [`ReverbVoice`] is the do-nothing voice
@@ -78,13 +79,13 @@ const GATE_OPEN_MS: f32 = 1.0;
 /// Gate release range, in ms.
 pub const MIN_GATE_RELEASE_MS: f32 = 2.0;
 pub const MAX_GATE_RELEASE_MS: f32 = 500.0;
-/// Warp: the Decay at which the lines keep their length, and the Decay range it maps
-/// onto one octave of line length each way.
+/// Warp: the Decay at which the delays keep their length, and the Decay range it maps
+/// onto two octaves of delay length each way.
 const WARP_REF_DECAY_S: f32 = 2.5;
 const MIN_DECAY_S: f32 = 0.2;
 const MAX_DECAY_S: f32 = 12.0;
-/// The most Warp stretches a line (sizes the line buffers).
-const MAX_WARP: f32 = 2.0;
+/// The most Warp stretches a delay (sizes the line and diffuser buffers).
+const MAX_WARP: f32 = 4.0;
 /// The longest wobble any type asks for (sizes the line buffers).
 const MOD_DEPTH_MS: f32 = 3.0;
 /// Samples between two control-rate updates.
@@ -203,7 +204,7 @@ struct Character {
     diffuse_out: f32,
 }
 
-/// Warp: how much Decay stretches the lines. 1 at `WARP_REF_DECAY_S`, `MAX_WARP` at the
+/// Warp: how much Decay stretches the delays. 1 at `WARP_REF_DECAY_S`, `MAX_WARP` at the
 /// longest Decay, its inverse at the shortest; even in octaves of Decay on each side.
 fn warp_scale(decay_s: f32) -> f32 {
     let octaves = if decay_s >= WARP_REF_DECAY_S {
@@ -456,7 +457,7 @@ impl ReverbCore {
             hp_out: [Biquad::new(); 2],
             lp_out: [Biquad::new(); 2],
             diff: std::array::from_fn(|st| {
-                std::array::from_fn(|_| vec![0.0; ms(DIFF_MAX_MS[st]) + 8].into_boxed_slice())
+                std::array::from_fn(|_| vec![0.0; ms(DIFF_MAX_MS[st] * MAX_WARP) + 8].into_boxed_slice())
             }),
             diff_pos: [[0; LINES]; DIFF_STEPS],
             diff_len: [[1.0; LINES]; DIFF_STEPS],
@@ -586,7 +587,7 @@ impl ReverbCore {
         // Diffuser delays: each channel in its own eighth of the step's range.
         for st in 0..DIFF_STEPS {
             for i in 0..LINES {
-                let ms = DIFF_MAX_MS[st] * (i as f32 + DIFF_FRAC[st][i]) / LINES as f32 * ch.diff_scale;
+                let ms = DIFF_MAX_MS[st] * (i as f32 + DIFF_FRAC[st][i]) / LINES as f32 * ch.diff_scale * warp;
                 self.diff_len_target[st][i] = (ms * 0.001 * sr).max(2.0);
                 if snap {
                     self.diff_len[st][i] = self.diff_len_target[st][i];
@@ -929,8 +930,8 @@ mod tests {
         }
     }
 
-    /// With Warp, the lines follow Decay: unchanged at 2.5 s, twice as long at the longest
-    /// Decay, half as long at the shortest; and they always fit their buffers.
+    /// With Warp, the lines follow Decay: unchanged at 2.5 s, 4 times as long at the longest
+    /// Decay, a quarter as long at the shortest; and they always fit their buffers.
     #[test]
     fn warp_makes_the_lines_follow_the_decay() {
         let warped = |decay_s: f32, size: f32| {
@@ -942,13 +943,23 @@ mod tests {
         let shortest = warped(MIN_DECAY_S, 1.0);
         for i in 0..LINES {
             assert!((at_ref[i] / plain[i] - 1.0).abs() < 0.01, "line {i} at the reference");
-            assert!((longest[i] / plain[i] - 2.0).abs() < 0.02, "line {i} at the longest decay");
-            assert!((shortest[i] / plain[i] - 0.5).abs() < 0.01, "line {i} at the shortest decay");
+            assert!((longest[i] / plain[i] - MAX_WARP).abs() < 0.04, "line {i} at the longest decay");
+            assert!((shortest[i] / plain[i] - 1.0 / MAX_WARP).abs() < 0.01, "line {i} at the shortest decay");
         }
         let core = ReverbCore::new(SR);
         let biggest = warped(MAX_DECAY_S, 2.0);
         let wobble = MOD_DEPTH_MS * 0.001 * SR;
         assert!(biggest.iter().all(|l| l + wobble + 2.0 < core.lines[0].len() as f32));
+        let mut widest = ReverbCore::new(SR);
+        widest.set_params(ReverbParams { decay_s: MAX_DECAY_S, warp: true, ..ReverbParams::default() });
+        for _ in 0..(SR as usize) {
+            widest.process(0.0, 0.0);
+        }
+        for st in 0..DIFF_STEPS {
+            for i in 0..LINES {
+                assert!(widest.diff_len[st][i] + 2.0 < widest.diff[st][i].len() as f32, "diffuser {st}/{i}");
+            }
+        }
         assert!(warp_scale(0.25) < warp_scale(1.0) && warp_scale(1.0) < warp_scale(4.0));
     }
 

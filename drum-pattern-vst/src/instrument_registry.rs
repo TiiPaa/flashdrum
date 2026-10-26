@@ -5143,8 +5143,6 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
         special_params: &[
             sp("reverb_size", "Size", 1.0, 0.5, 2.0, 0, ParamFamily::Osc),
             sp_unit("reverb_decay", "Decay", 2.5, 0.2, 12.0, 1, ParamFamily::Osc, " s"),
-            // [294] Warp: Decay also sets the length of the lines (a lane setting, never locked).
-            sp_discrete("reverb_warp", "Warp", 0.0, 0.0, 1.0, 14, ParamFamily::Osc),
             sp("reverb_damping", "Damping", 0.5, 0.0, 1.0, 2, ParamFamily::Osc),
             sp_unit("reverb_predelay", "Pre-delay", 20.0, 0.0, 250.0, 3, ParamFamily::Osc, " ms"),
             sp_unit("reverb_lowcut", "Low Cut", 120.0, 20.0, 1000.0, 5, ParamFamily::Osc, " Hz"),
@@ -5156,6 +5154,9 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
             // Loop restart (shown as an ON switch; stored inverted so older lanes, which
             // hold 0 here, keep restarting).
             sp_discrete("reverb_norestart", "Loop Restart", 0.0, 0.0, 1.0, 8, ParamFamily::Osc),
+            // [294] Warp: Decay also sets the length of the delays (a lane setting, never
+            // locked; shown in the lane's Sequencer module).
+            sp_discrete("reverb_warp", "Warp", 0.0, 0.0, 1.0, 14, ParamFamily::Osc),
             // The lane's character (a lane setting, never locked): Hall is the original sound.
             sp_options(
                 "reverb_type",

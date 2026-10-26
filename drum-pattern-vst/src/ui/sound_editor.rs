@@ -3767,6 +3767,7 @@ fn is_fx_sequencer_param(name: &str) -> bool {
     matches!(
         name,
         "reverb_glide" | "delay_glide" | "rumble_glide" | "reverb_norestart" | "delay_norestart" | "rumble_norestart"
+            | "reverb_warp"
     )
 }
 
