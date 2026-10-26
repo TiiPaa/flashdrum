@@ -258,47 +258,6 @@ pub fn enum_combo_compact<E: nih_plug::prelude::Enum + PartialEq + 'static>(
     }
 }
 
-pub fn compact_chip(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
-    compact_chip_colored(ui, label, active, BLUE())
-}
-
-pub fn compact_chip_colored(
-    ui: &mut egui::Ui,
-    label: &str,
-    active: bool,
-    accent: Color32,
-) -> egui::Response {
-    let font = f_sans(10.5);
-    let tw = ui.fonts(|f| {
-        f.layout_no_wrap(label.to_string(), font.clone(), Color32::WHITE)
-            .size()
-            .x
-    });
-    let w = (tw + 18.0).max(42.0);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, CTL_HEIGHT), egui::Sense::click());
-    let _ = accent; // active state uses the baked blue keycap; accent kept for API
-    let state = if active {
-        KeycapState::PressedBlue
-    } else {
-        KeycapState::Rest
-    };
-    keycap_tex(ui, rect, state);
-    keycap_feedback(ui.painter(), rect, &resp);
-    let text_color = if active {
-        Color32::from_rgb(234, 246, 255)
-    } else {
-        INK_KEYCAP
-    };
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        font,
-        text_color,
-    );
-    resp
-}
-
 /// Hover/press feedback overlay for custom-painted keycaps (egui::Button gives
 /// this for free; our hand-painted keycaps need it explicitly).
 fn keycap_feedback(painter: &egui::Painter, rect: egui::Rect, resp: &egui::Response) {

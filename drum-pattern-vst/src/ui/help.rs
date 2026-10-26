@@ -427,10 +427,6 @@ pub const BOTTOM_TABS: &str =
     "Generator: create patterns automatically.\nSong: chain the saved patterns into a song.\n\
 This only changes the view: Song playback is turned on by the Song Mode box in the Song tab.";
 
-pub const PRESET_CHIPS_BASIC: &str = "Loads a ready-made groove on the first 3 lanes (kick, snare, hats by position), whatever instruments they hold. The lanes and sounds stay; p-locks and fusions are cleared. The saved patterns are not touched.";
-
-pub const PRESET_CHIPS_KIT: &str = "Loads a ready-made groove AND its kit: the lanes are replaced by the style's instruments, with their default sounds. Mutes, solos, p-locks and fusions are cleared. The saved patterns are not touched.";
-
 pub const PRESET_RANDOM: &str = "Fills the grid with random steps (about 1 in 3), ignoring the generator settings. Lanes and sounds stay; p-locks and fusions are cleared.";
 
 // --- Song tab ----------------------------------------------------------------------
