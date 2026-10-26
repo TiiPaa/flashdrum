@@ -515,7 +515,7 @@ pub fn param_is_lane_global(voice_idx: usize, id: crate::param_id::ParamId) -> b
             .iter()
             .any(|def| def.special_index == index && matches!(
                 def.name,
-                "reverb_glide" | "reverb_type" | "reverb_gate_on" | "delay_glide" | "reverb_norestart" | "delay_norestart" | "delay_sync"
+                "reverb_glide" | "reverb_type" | "reverb_gate_on" | "reverb_warp" | "delay_glide" | "reverb_norestart" | "delay_norestart" | "delay_sync"
                     | "rumble_glide" | "rumble_norestart" | "rumble_echo_sync" | "rumble_duck_source"
             ))
     })
@@ -5143,6 +5143,8 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
         special_params: &[
             sp("reverb_size", "Size", 1.0, 0.5, 2.0, 0, ParamFamily::Osc),
             sp_unit("reverb_decay", "Decay", 2.5, 0.2, 12.0, 1, ParamFamily::Osc, " s"),
+            // [294] Warp: Decay also sets the length of the lines (a lane setting, never locked).
+            sp_discrete("reverb_warp", "Warp", 0.0, 0.0, 1.0, 14, ParamFamily::Osc),
             sp("reverb_damping", "Damping", 0.5, 0.0, 1.0, 2, ParamFamily::Osc),
             sp_unit("reverb_predelay", "Pre-delay", 20.0, 0.0, 250.0, 3, ParamFamily::Osc, " ms"),
             sp_unit("reverb_lowcut", "Low Cut", 120.0, 20.0, 1000.0, 5, ParamFamily::Osc, " Hz"),

@@ -23,6 +23,10 @@
 //! first reflections of a room are heard. **Gate** cuts the tail a fixed time after
 //! each hit, the gated-snare sound, on any type.
 //!
+//! **Warp** ([294]) links Decay to the length of the lines: a long Decay stretches them
+//! (up to twice), a short one shrinks them (down to half). Moving Decay then moves the
+//! lines under the ringing tail, which bends its pitch, as Size does.
+//!
 //! The effect is NOT a `Voice`: a voice makes sound on a trigger from nothing,
 //! a reverb makes it from a bus input. [`ReverbVoice`] is the do-nothing voice
 //! the effect slot carries so the generic per-slot machinery (settings push,
@@ -74,6 +78,13 @@ const GATE_OPEN_MS: f32 = 1.0;
 /// Gate release range, in ms.
 pub const MIN_GATE_RELEASE_MS: f32 = 2.0;
 pub const MAX_GATE_RELEASE_MS: f32 = 500.0;
+/// Warp: the Decay at which the lines keep their length, and the Decay range it maps
+/// onto one octave of line length each way.
+const WARP_REF_DECAY_S: f32 = 2.5;
+const MIN_DECAY_S: f32 = 0.2;
+const MAX_DECAY_S: f32 = 12.0;
+/// The most Warp stretches a line (sizes the line buffers).
+const MAX_WARP: f32 = 2.0;
 /// The longest wobble any type asks for (sizes the line buffers).
 const MOD_DEPTH_MS: f32 = 3.0;
 /// Samples between two control-rate updates.
@@ -106,6 +117,8 @@ pub mod sp {
     pub const GATE_ON: usize = 12;
     /// How fast the gate closes, in ms.
     pub const GATE_RELEASE: usize = 13;
+    /// 1 = Decay also sets the length of the lines (Warp, a lane setting, never locked).
+    pub const WARP: usize = 14;
 }
 
 /// The three characters of the reverb.
@@ -190,6 +203,17 @@ struct Character {
     diffuse_out: f32,
 }
 
+/// Warp: how much Decay stretches the lines. 1 at `WARP_REF_DECAY_S`, `MAX_WARP` at the
+/// longest Decay, its inverse at the shortest; even in octaves of Decay on each side.
+fn warp_scale(decay_s: f32) -> f32 {
+    let octaves = if decay_s >= WARP_REF_DECAY_S {
+        (decay_s / WARP_REF_DECAY_S).log2() / (MAX_DECAY_S / WARP_REF_DECAY_S).log2()
+    } else {
+        -(WARP_REF_DECAY_S / decay_s).log2() / (WARP_REF_DECAY_S / MIN_DECAY_S).log2()
+    };
+    MAX_WARP.powf(octaves.clamp(-1.0, 1.0))
+}
+
 /// Early reflections of the Room: `(left ms, right ms, gain)`, read from the dry input.
 const EARLY_TAPS: [(f32, f32, f32); 5] = [
     (6.3, 8.1, 0.70),
@@ -223,6 +247,8 @@ pub struct ReverbParams {
     pub gate_ms: f32,
     /// How fast the gate closes, in ms.
     pub gate_release_ms: f32,
+    /// Decay also sets the length of the lines.
+    pub warp: bool,
     /// Depth of the slow wobble of the lines, in ms. Negative = the type's own (the Type
     /// menu); the Rumble sets it.
     pub mod_override: f32,
@@ -246,6 +272,7 @@ impl Default for ReverbParams {
             gate_on: false,
             gate_ms: 250.0,
             gate_release_ms: 30.0,
+            warp: false,
             mod_override: -1.0,
             diff_override: -1.0,
         }
@@ -258,7 +285,7 @@ impl ReverbParams {
         let d = Self::default();
         Self {
             size: fin(self.size, d.size).clamp(0.5, 2.0),
-            decay_s: fin(self.decay_s, d.decay_s).clamp(0.2, 12.0),
+            decay_s: fin(self.decay_s, d.decay_s).clamp(MIN_DECAY_S, MAX_DECAY_S),
             damping: fin(self.damping, d.damping).clamp(0.0, 1.0),
             predelay_ms: fin(self.predelay_ms, d.predelay_ms).clamp(0.0, MAX_PREDELAY_MS),
             low_cut_hz: fin(self.low_cut_hz, d.low_cut_hz).clamp(20.0, 1000.0),
@@ -270,6 +297,7 @@ impl ReverbParams {
             gate_ms: fin(self.gate_ms, d.gate_ms).clamp(10.0, MAX_GATE_MS),
             gate_release_ms: fin(self.gate_release_ms, d.gate_release_ms)
                 .clamp(MIN_GATE_RELEASE_MS, MAX_GATE_RELEASE_MS),
+            warp: self.warp,
             mod_override: fin(self.mod_override, -1.0).clamp(-1.0, MOD_DEPTH_MS),
             diff_override: fin(self.diff_override, -1.0).clamp(-1.0, 1.0),
         }
@@ -291,6 +319,7 @@ impl From<&VoiceSettings> for ReverbParams {
             gate_on: v.special[sp::GATE_ON] >= 0.5,
             gate_ms: v.special[sp::GATE],
             gate_release_ms: v.special[sp::GATE_RELEASE],
+            warp: v.special[sp::WARP] >= 0.5,
             mod_override: -1.0,
             diff_override: -1.0,
         }
@@ -390,6 +419,8 @@ pub struct ReverbCore {
     gate_timer: f32,
     gate_gain: f32,
     gate_mix: f32,
+    /// 0..1: how much Warp is in (switching it slides the lines, it never jumps).
+    warp_mix: f32,
     damp_state: [f32; LINES],
     damp_coef: f32,
     gain: [f32; LINES],
@@ -408,7 +439,7 @@ impl ReverbCore {
             44_100.0
         };
         let ms = |m: f32| (m * 0.001 * sr).ceil() as usize;
-        let line_cap = ms(BASE_MS[LINES - 1] * 2.0 + MOD_DEPTH_MS + 2.0) + 8;
+        let line_cap = ms(BASE_MS[LINES - 1] * 2.0 * MAX_WARP + MOD_DEPTH_MS + 2.0) + 8;
         let pre_cap = ms(MAX_PREDELAY_MS + MAX_EARLY_MS) + 8;
         let params = ReverbParams::default();
         let mut core = Self {
@@ -442,6 +473,7 @@ impl ReverbCore {
             gate_timer: 0.0,
             gate_gain: 1.0,
             gate_mix: 0.0,
+            warp_mix: 0.0,
             damp_state: [0.0; LINES],
             damp_coef: 1.0,
             gain: [0.0; LINES],
@@ -510,6 +542,7 @@ impl ReverbCore {
         c.gate_on = t.gate_on;
         c.gate_ms = t.gate_ms;
         c.gate_release_ms = t.gate_release_ms;
+        c.warp = t.warp;
 
         // Slide the character towards the type's (a type change glides, it never jumps).
         let want = t.kind.character();
@@ -533,9 +566,16 @@ impl ReverbCore {
             self.gate_mix = gate_target;
         }
 
+        let warp_target = if c.warp { 1.0 } else { 0.0 };
+        self.warp_mix += (warp_target - self.warp_mix) * k;
+        if snap {
+            self.warp_mix = warp_target;
+        }
+        let warp = warp_scale(c.decay_s).powf(self.warp_mix);
+
         let sr = self.sample_rate;
         for i in 0..LINES {
-            let seconds = BASE_MS[i] * 0.001 * c.size * ch.len_scale;
+            let seconds = BASE_MS[i] * 0.001 * c.size * ch.len_scale * warp;
             self.length_target[i] = seconds * sr;
             if snap {
                 self.length[i] = self.length_target[i];
@@ -815,6 +855,7 @@ mod tests {
                 gate_on: true,
                 gate_ms: 1500.0,
                 gate_release_ms: 500.0,
+                warp: true,
                 mod_override: -1.0,
                 diff_override: -1.0,
             },
@@ -831,6 +872,7 @@ mod tests {
                 gate_on: false,
                 gate_ms: 10.0,
                 gate_release_ms: 2.0,
+                warp: true,
                 mod_override: 3.0,
                 diff_override: 0.0,
             },
@@ -860,10 +902,65 @@ mod tests {
             gate_on: false,
             gate_ms: f32::NAN,
             gate_release_ms: f32::NAN,
+            warp: false,
             mod_override: f32::NAN,
             diff_override: f32::NAN,
         };
         assert_eq!(bad.sanitized(), ReverbParams::default());
+    }
+
+    /// The lines' settled length with these params.
+    fn line_lengths(params: ReverbParams) -> [f32; LINES] {
+        let mut core = ReverbCore::new(SR);
+        core.set_params(params);
+        for _ in 0..(SR as usize) {
+            core.process(0.0, 0.0);
+        }
+        core.length
+    }
+
+    /// Without Warp, Decay never touches the lines (the tail keeps its pitch).
+    #[test]
+    fn without_warp_decay_leaves_the_lines_alone() {
+        let short = line_lengths(ReverbParams { decay_s: 0.3, ..ReverbParams::default() });
+        let long = line_lengths(ReverbParams { decay_s: 10.0, ..ReverbParams::default() });
+        for i in 0..LINES {
+            assert!((short[i] - long[i]).abs() < 0.01, "line {i}: {} vs {}", short[i], long[i]);
+        }
+    }
+
+    /// With Warp, the lines follow Decay: unchanged at 2.5 s, twice as long at the longest
+    /// Decay, half as long at the shortest; and they always fit their buffers.
+    #[test]
+    fn warp_makes_the_lines_follow_the_decay() {
+        let warped = |decay_s: f32, size: f32| {
+            line_lengths(ReverbParams { decay_s, size, warp: true, ..ReverbParams::default() })
+        };
+        let plain = line_lengths(ReverbParams::default());
+        let at_ref = warped(WARP_REF_DECAY_S, 1.0);
+        let longest = warped(MAX_DECAY_S, 1.0);
+        let shortest = warped(MIN_DECAY_S, 1.0);
+        for i in 0..LINES {
+            assert!((at_ref[i] / plain[i] - 1.0).abs() < 0.01, "line {i} at the reference");
+            assert!((longest[i] / plain[i] - 2.0).abs() < 0.02, "line {i} at the longest decay");
+            assert!((shortest[i] / plain[i] - 0.5).abs() < 0.01, "line {i} at the shortest decay");
+        }
+        let core = ReverbCore::new(SR);
+        let biggest = warped(MAX_DECAY_S, 2.0);
+        let wobble = MOD_DEPTH_MS * 0.001 * SR;
+        assert!(biggest.iter().all(|l| l + wobble + 2.0 < core.lines[0].len() as f32));
+        assert!(warp_scale(0.25) < warp_scale(1.0) && warp_scale(1.0) < warp_scale(4.0));
+    }
+
+    /// With Warp the tail still falls 60 dB over Decay: the feedback follows the longer lines.
+    #[test]
+    fn a_warped_tail_still_decays_by_its_decay_time() {
+        let ir = impulse_response(ReverbParams { decay_s: 1.0, warp: true, ..ReverbParams::default() }, 2.0);
+        let at = |from: f32, to: f32| energy(&ir[(from * SR) as usize..(to * SR) as usize]);
+        // 60 dB per second of energy = a factor 1e6 per second, 1e3 per half second.
+        let drop_db = 10.0 * (at(0.5, 0.75) / at(1.0, 1.25)).log10();
+        println!("warped tail drop over 0.5 s: {drop_db:.1} dB");
+        assert!((drop_db - 30.0).abs() < 6.0, "{drop_db}");
     }
 
     #[test]

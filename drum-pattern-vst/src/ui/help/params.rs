@@ -250,6 +250,7 @@ Off: every hit plays the Sample chosen below.";
         "delay_sync" => "Sync: Free = the delay time is the Time knob, in milliseconds. A note value (1/4, 1/8, dotted, triplet...) locks the time to the host tempo and greys the Time knob.",
         "reverb_size" => "Size: the room. Larger = a longer build-up of echoes and a wider, slower tail.",
         "reverb_decay" => "Decay: how long the tail takes to fade out (60 dB), in seconds.",
+        "reverb_warp" => "Warp: links Decay to the size of the reverb. On = a longer Decay also makes the room bigger, a shorter one smaller, so moving Decay (by hand, or gliding between p-locks) bends the pitch of the ringing tail: down as Decay grows, up as it shrinks. Off = Decay only sets how long the tail lasts. A lane setting: it is never locked per step.",
         "reverb_damping" => "Damping: how fast the tail loses its highs. Higher = darker, softer tail.",
         "reverb_predelay" => "Pre-delay: a gap between the dry sound and the start of the reverb, in milliseconds.",
         "reverb_lowcut" => "Low Cut: removes the lows from what enters the reverb, so kicks do not muddy the tail.",
