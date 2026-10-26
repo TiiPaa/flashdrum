@@ -216,11 +216,6 @@ pub struct EditorUIState {
     /// When true, request focus on the Track tab Name field the next time it is drawn.
     #[serde(skip)]
     pub track_name_focus_request: bool,
-    /// When set, the current pattern has been edited by the user and should be saved
-    /// back to the given pattern-bank slot at the end of the UI frame. Used to keep
-    /// edits made while Song Mode is active from being lost when the song advances.
-    #[serde(skip)]
-    pub pattern_dirty_slot: Option<usize>,
     /// Current value being edited in the Step Fusion step-count field.
     #[serde(skip)]
     pub fusion_edit_steps: u8,
@@ -666,12 +661,6 @@ impl EditorUIState {
         PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
     }
 
-    /// Mark the current pattern as dirty so it will be auto-saved back to the
-    /// currently loaded pattern-bank slot at the end of the frame when Song Mode
-    /// is active. This prevents edits from being lost when the song advances.
-    pub fn mark_pattern_dirty(&mut self) {
-        self.pattern_dirty_slot = self.last_loaded_slot;
-    }
 
     /// Copy the current lane (instrument + settings + sequence) to the clipboard.
     pub fn copy_lane(
@@ -812,7 +801,6 @@ impl EditorUIState {
         set_lane_length_lock_for_slot(params, target_slot, clipboard.length_locked);
 
         select_legacy_track(self, target_slot);
-        self.mark_pattern_dirty();
         true
     }
 
@@ -844,7 +832,6 @@ impl EditorUIState {
             &clipboard.steps,
         );
         select_legacy_track(self, target_slot);
-        self.mark_pattern_dirty();
         true
     }
 
@@ -878,7 +865,6 @@ impl EditorUIState {
         self.sound_edit_target = self.sound_edit_target.filter(|cell| cell.slot != slot);
         self.lane_clear_grid_confirm = None;
         self.lane_delete_confirm = None;
-        self.mark_pattern_dirty();
         true
     }
 
@@ -913,7 +899,6 @@ impl EditorUIState {
         self.sound_edit_target = self.sound_edit_target.filter(|cell| cell.slot != slot);
         self.lane_clear_grid_confirm = None;
         self.lane_delete_confirm = None;
-        self.mark_pattern_dirty();
         true
     }
 }

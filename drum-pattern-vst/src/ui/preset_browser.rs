@@ -782,7 +782,6 @@ pub fn apply_starting_pattern(
         return;
     };
     apply_pattern(params, pattern, sound_settings, state, setter, &preset);
-    state.mark_pattern_dirty();
 }
 
 /// Apply a pattern preset; optionally installs the captured lane kit first.

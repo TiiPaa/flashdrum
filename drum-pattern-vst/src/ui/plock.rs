@@ -31,7 +31,7 @@ fn draw_plock_menu(
     let inst_def = &crate::instrument_registry::INSTRUMENTS[voice_idx];
     let title = format!("Plock {}", inst_def.label);
 
-    preserve_step_active_from_plock_popup(pattern, state, instrument, step, step_was_active);
+    preserve_step_active_from_plock_popup(pattern, instrument, step, step_was_active);
 
     // Copy and Paste finish the gesture, so the menu closes afterwards. Set
     // inside the frame closure and applied once it returns: the paste branches
@@ -234,7 +234,6 @@ fn draw_fusion_group_menu(
                 new_fusions.remove(idx);
                 pattern.store_fusions(grid, &new_fusions);
             }
-            state.mark_pattern_dirty();
             state.plock_popup = None;
         }
     });
@@ -502,7 +501,7 @@ fn draw_sequencer_plock_menu(
     let inst_def = &crate::instrument_registry::INSTRUMENTS[schema_voice_idx(params, instrument)];
     let title = format!("Seq Plock {}", inst_def.label);
 
-    preserve_step_active_from_plock_popup(pattern, state, instrument, step, step_was_active);
+    preserve_step_active_from_plock_popup(pattern, instrument, step, step_was_active);
 
     plock_menu_frame(ui, ACCENT, |ui| {
         if plock_menu_header(ui, &title, step, ACCENT) {

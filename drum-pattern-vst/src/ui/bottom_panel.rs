@@ -311,7 +311,11 @@ fn draw_generator_panel_content(
     };
     match clicked {
         Some((action, was_armed)) => {
-            if !was_armed && crate::ui::pattern_bank::pattern_is_dirty(params, pattern, state) {
+            // [309] In Song mode the result is kept in the playing pattern's slot
+            // at the next switch: always ask first.
+            let replaces_work = params.song_mode.value()
+                || crate::ui::pattern_bank::pattern_is_dirty(params, pattern, state);
+            if !was_armed && replaces_work {
                 state.generate_confirm = Some((action, now));
             } else {
                 state.generate_confirm = None;

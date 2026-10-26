@@ -3824,20 +3824,23 @@ impl DrumFlashVst {
         }
     }
 
-    /// [283] MIDI Pat switches at once, without the UI's unsaved-changes
-    /// warning: the grid's edits are first saved into the slot it came from,
-    /// as Song mode does, so nothing is lost. Nothing is saved when the grid
-    /// already matches that slot, when it comes from no slot, or when the
-    /// target slot is empty (the switch will not happen). RT-safe: `try_lock`
-    /// and `capture` into the slot's preallocated buffers.
-    fn keep_edits_before_midi_switch(&mut self, target: usize) -> PatternBankActionResult {
+    /// [283] [309] MIDI Pat and Song mode switch the grid at once, without the
+    /// UI's unsaved-changes warning: the grid's edits are first saved into the
+    /// slot it came from, so nothing is lost, whatever made them (a click, the
+    /// Lane Editor's p-locks, the cell menu, GENERATE, the length...). Nothing
+    /// is saved when the grid already matches that slot, when it comes from no
+    /// slot, or when the target slot is empty (the switch will not happen).
+    /// The length is the audio side's: right after a load the UI's param lags
+    /// a frame, and with the editor closed it never catches up. RT-safe:
+    /// `try_lock` and `capture` into the slot's preallocated buffers.
+    fn keep_edits_before_switch(&mut self, target: usize) -> PatternBankActionResult {
         let current = self.audio_last_loaded_slot.load(Ordering::Relaxed) as usize;
         if current >= pattern_bank::SLOT_COUNT || target >= pattern_bank::SLOT_COUNT {
             return PatternBankActionResult::Skipped;
         }
         let plock = &self.params.plock_state.state;
         let seq_plock = &self.params.seq_plock_state.state;
-        let length = self.params.pattern_length.value() as u8;
+        let length = self.audio_master_length.clamp(1, 64) as u8;
         let mut bank = match self.params.pattern_bank.bank.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::WouldBlock) => return PatternBankActionResult::Busy,
@@ -3874,7 +3877,7 @@ impl DrumFlashVst {
         // pattern (page 1 for a 1-page pattern).
         if self.params.midi_pattern_switch.value() && !self.params.song_mode.value() {
             if let Some(slot) = self.pending_midi_pattern_slot.take() {
-                if let PatternBankActionResult::Busy = self.keep_edits_before_midi_switch(slot) {
+                if let PatternBankActionResult::Busy = self.keep_edits_before_switch(slot) {
                     self.pending_midi_pattern_slot = Some(slot);
                     return;
                 }
@@ -3914,6 +3917,11 @@ impl DrumFlashVst {
                 self.last_loop_count = current_loop_count;
                 let first_slot = self.song_state.slot_at(0);
                 match first_slot {
+                    // [309] The grid's edits go back into their slot first.
+                    Some(slot) if matches!(self.keep_edits_before_switch(slot), PatternBankActionResult::Busy) => {
+                        // Bank was locked; try again next block.
+                        self.song_needs_init = true;
+                    }
                     Some(slot) => {
                         match self.load_pattern_from_slot(slot) {
                             PatternBankActionResult::Loaded(_)
@@ -3973,13 +3981,19 @@ impl DrumFlashVst {
                 if let Some((next_slot, next_pos)) = song_advance {
                     let mut advance_song = true;
                     if let Some(slot) = next_slot {
-                        match self.load_pattern_from_slot(slot) {
-                            PatternBankActionResult::Loaded(_)
-                            | PatternBankActionResult::Applied => {
-                                self.pending_song_pattern_restart = true;
+                        // [309] Before the grid leaves its pattern, every edit made
+                        // to it (not only the grid clicks) goes back into its slot.
+                        if let PatternBankActionResult::Busy = self.keep_edits_before_switch(slot) {
+                            advance_song = false;
+                        } else {
+                            match self.load_pattern_from_slot(slot) {
+                                PatternBankActionResult::Loaded(_)
+                                | PatternBankActionResult::Applied => {
+                                    self.pending_song_pattern_restart = true;
+                                }
+                                PatternBankActionResult::Busy => advance_song = false,
+                                PatternBankActionResult::Skipped => {}
                             }
-                            PatternBankActionResult::Busy => advance_song = false,
-                            PatternBankActionResult::Skipped => {}
                         }
                     }
 
@@ -4474,7 +4488,7 @@ mod tests {
 
         // No change: nothing to save.
         assert!(matches!(
-            plugin.keep_edits_before_midi_switch(1),
+            plugin.keep_edits_before_switch(1),
             PatternBankActionResult::Skipped
         ));
 
@@ -4484,11 +4498,11 @@ mod tests {
         plock.values.set(0, 0, 0, 0.42);
         // Target empty: the switch will not happen, so nothing is saved.
         assert!(matches!(
-            plugin.keep_edits_before_midi_switch(5),
+            plugin.keep_edits_before_switch(5),
             PatternBankActionResult::Skipped
         ));
         assert!(matches!(
-            plugin.keep_edits_before_midi_switch(1),
+            plugin.keep_edits_before_switch(1),
             PatternBankActionResult::Applied
         ));
         let plock = &params.plock_state.state;
@@ -4496,6 +4510,34 @@ mod tests {
         let bank = params.pattern_bank.bank.lock().unwrap();
         assert!(bank.slots[0].matches_live(&plugin.pattern, plock, seq, length));
         assert!(!bank.slots[1].matches_live(&plugin.pattern, plock, seq, length));
+    }
+
+    /// [309] The edits are saved with the length the audio plays, not the UI's
+    /// param, which lags a load by a frame (and never catches up with the editor
+    /// closed): a stale param must not rewrite the slot's length.
+    #[test]
+    fn edits_kept_before_a_switch_use_the_audio_length() {
+        let mut plugin = DrumFlashVst::default();
+        let params = plugin.params.clone();
+        let plock = &params.plock_state.state;
+        let seq = &params.seq_plock_state.state;
+        plugin.pattern.set_step_mask(0, 0b1);
+        {
+            let mut bank = params.pattern_bank.bank.lock().unwrap();
+            bank.slots[0].capture(&plugin.pattern, plock, seq, 32);
+            bank.slots[1].capture(&plugin.pattern, plock, seq, 32);
+        }
+        plugin.audio_last_loaded_slot.store(0, Ordering::Relaxed);
+        plugin.audio_master_length = 32;
+        assert_ne!(params.pattern_length.value(), 32, "the UI param lags here");
+
+        // Nothing changed at the audio length: nothing to save.
+        assert!(matches!(plugin.keep_edits_before_switch(1), PatternBankActionResult::Skipped));
+
+        plugin.pattern.set_step_mask(3, 0b10);
+        assert!(matches!(plugin.keep_edits_before_switch(1), PatternBankActionResult::Applied));
+        let bank = params.pattern_bank.bank.lock().unwrap();
+        assert!(bank.slots[0].matches_live(&plugin.pattern, plock, seq, 32));
     }
 
     use super::*;

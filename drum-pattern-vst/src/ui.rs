@@ -42,7 +42,7 @@ use bottom_panel::draw_bottom_panel;
 use editor_state::*;
 use grid::draw_grid_v2;
 use header::draw_header_bar;
-use pattern_bank::{draw_pattern_bank, save_current_pattern_to_bank_slot};
+use pattern_bank::draw_pattern_bank;
 use plock::draw_plock_popup;
 use popups::*;
 use sound_editor::draw_sound_panel;
@@ -470,19 +470,11 @@ pub fn create_editor(
                     // [242] Macros assignment modal (CC -> lane sound param).
                     macros_panel::draw_macros_modal_if_any(ui, setter, &params_for_ui, state);
 
-                    // Auto-save pattern edits to the current bank slot when Song Mode is active.
-                    // This prevents edits from being lost when the song advances to the next pattern.
-                    if params_for_ui.song_mode.value() {
-                        if let Some(slot) = state.pattern_dirty_slot.take() {
-                            save_current_pattern_to_bank_slot(
-                                &params_for_ui,
-                                &pattern_for_ui,
-                                slot,
-                            );
-                        }
-                    } else {
-                        state.pattern_dirty_slot = None;
-                    }
+                    // [309] Song mode keeps the grid's edits: the audio thread saves
+                    // them into their slot right before it switches the pattern
+                    // (`keep_edits_before_switch`). The UI saved only the grid clicks,
+                    // and could save the next pattern into the previous slot when the
+                    // song switched during the frame.
                 });
         },
     )

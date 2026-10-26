@@ -33,18 +33,27 @@ pub fn draw_song_editor(
 
     let selected = state.song_selected_step.min(SONG_BLOCKS - 1);
 
-    // Header: Song Mode checkbox, Clear All
+    // Header: Song Mode key, Clear All
     ui.horizontal(|ui| {
         ui.set_height(26.0);
         ui.spacing_mut().item_spacing.x = 6.0;
 
-        let mut song_enabled = params.song_mode.value();
-        if ui
-            .checkbox(&mut song_enabled, "Song Mode")
+        // A mode key, like Follow ON / OFF over the grid (it was egui's
+        // checkbox, the only one in the editor): blue and "ON" while it plays
+        // the chain.
+        let song_enabled = params.song_mode.value();
+        let (label, key_state) = if song_enabled {
+            ("Song Mode ON", crate::ui::widgets::KeycapState::PressedBlue)
+        } else {
+            ("Song Mode OFF", crate::ui::widgets::KeycapState::Rest)
+        };
+        if crate::ui::controls::keycap_button(ui, label, 128.0, key_state, true, f_sans_sb(11.0))
             .help(help::SONG_MODE)
-            .changed()
+            .clicked()
         {
-            setter.set_parameter(&params.song_mode, song_enabled);
+            setter.begin_set_parameter(&params.song_mode);
+            setter.set_parameter(&params.song_mode, !song_enabled);
+            setter.end_set_parameter(&params.song_mode);
         }
 
         ui.add_space(8.0);

@@ -735,7 +735,6 @@ fn draw_legacy_slot_lane_v2(
                                 move_step_with_plocks(
                                     pattern, plock, params, slot_idx, grid_idx, from, to,
                                 );
-                                state.mark_pattern_dirty();
                             }
                             drag_just_completed = true;
                         }
@@ -1077,7 +1076,6 @@ fn draw_legacy_slot_lane_v2(
                     } else {
                         toggle_step_for_ui(pattern, global_step, grid_idx);
                     }
-                    state.mark_pattern_dirty();
                     // Reactive editor: force a redraw so the toggle (esp. the
                     // fused-block on/off dim) shows immediately when stopped.
                     ui.ctx().request_repaint();
@@ -2072,7 +2070,7 @@ fn draw_seq_header_v2(
             if resp.clicked() {
                 let len = master_length.clamp(1, 64);
                 if straddling_fusions(pattern, len, delta).is_empty() {
-                    shift_grid(params, pattern, plock, state, master_length, delta);
+                    shift_grid(params, pattern, plock, master_length, delta);
                 } else {
                     // A fusion sits at the edge we push toward: ask
                     // before breaking it (reduced to its first cell).
@@ -2913,14 +2911,12 @@ fn set_step_active_for_ui(
 
 pub fn preserve_step_active_from_plock_popup(
     pattern_for_ui: &SharedPattern,
-    state: &mut EditorUIState,
     instrument: usize,
     step: usize,
     step_was_active: bool,
 ) {
     if step_was_active && !pattern_for_ui.is_active(step, instrument) {
         set_step_active_for_ui(pattern_for_ui, step, instrument, true);
-        state.mark_pattern_dirty();
     }
 }
 
@@ -3018,7 +3014,7 @@ pub fn draw_shift_grid_warning_if_any(
                         )
                         .clicked()
                         {
-                            shift_grid(params, pattern, plock, state, master_length, delta);
+                            shift_grid(params, pattern, plock, master_length, delta);
                             state.shift_grid_confirm = None;
                         }
                         if crate::ui::controls::chip_button(
@@ -3052,7 +3048,6 @@ fn shift_grid(
     params: &DrumFlashParams,
     pattern: &SharedPattern,
     plock: &PlockState,
-    state: &mut EditorUIState,
     master_length: usize,
     delta: isize,
 ) {
@@ -3126,7 +3121,6 @@ fn shift_grid(
         }
     }
 
-    state.mark_pattern_dirty();
 }
 
 /// Move a single step (with its sound and sequencer plocks) from `source` to
@@ -3252,7 +3246,6 @@ fn finish_fusion_editing_for_ui(pattern_for_ui: &SharedPattern, state: &mut Edit
     if let Some((instrument, _, group)) = edited_fusion_for_ui(pattern_for_ui, state) {
         set_step_active_for_ui(pattern_for_ui, group.start_cell as usize, instrument, true);
     }
-    state.mark_pattern_dirty();
     state.fusion_editing = None;
 }
 
@@ -3441,7 +3434,6 @@ fn draw_fusion_edit_box(
                         pattern_for_ui.store_fusions(instrument, &new_fusions);
                     }
                     state.fusion_editing = None;
-                    state.mark_pattern_dirty();
                     // Reactive editor: force a redraw so the cell (which was drawn
                     // earlier this frame with the now-deleted fusion) refreshes.
                     ui.ctx().request_repaint();
@@ -3951,7 +3943,6 @@ mod tests {
         );
         let pattern = params.pattern_state.shared();
         let plock = &params.plock_state.state;
-        let mut state = crate::ui::editor_state::EditorUIState::default();
         let master_length = 16;
 
         // Start from an empty grid (the default params carry the rock pattern).
@@ -3973,7 +3964,7 @@ mod tests {
         );
 
         // Right by one: 0→1, 15→0 (wrap), fusion 4-6 → 5-7.
-        super::shift_grid(&params, &pattern, plock, &mut state, master_length, 1);
+        super::shift_grid(&params, &pattern, plock, master_length, 1);
         assert_eq!(pattern.step_masks()[1], 0b0001);
         assert_eq!(pattern.step_masks()[0], 0b0101, "step 15 wrapped to 0");
         assert_eq!(
@@ -3993,7 +3984,7 @@ mod tests {
         assert_eq!((fusions[0].start_cell, fusions[0].end_cell), (5, 7));
 
         // Left by one restores the original layout.
-        super::shift_grid(&params, &pattern, plock, &mut state, master_length, -1);
+        super::shift_grid(&params, &pattern, plock, master_length, -1);
         assert_eq!(pattern.step_masks()[0], 0b0001);
         assert_eq!(pattern.step_masks()[15], 0b0101);
         assert_eq!(plock.values.get(0, 0, 2), 0.42);
@@ -4051,7 +4042,6 @@ mod tests {
         let params = crate::DrumFlashParams::default();
         let pattern = params.pattern_state.shared();
         let plock = &params.plock_state.state;
-        let mut state = crate::ui::editor_state::EditorUIState::default();
         // Fusion 14-15 shifted right by one would become 15-0 (start > end):
         // unrepresentable, so it is dropped.
         pattern.store_fusions(
@@ -4063,7 +4053,7 @@ mod tests {
                 ..Default::default()
             }],
         );
-        super::shift_grid(&params, &pattern, plock, &mut state, 16, 1);
+        super::shift_grid(&params, &pattern, plock, 16, 1);
         assert!(
             pattern.load_fusions(0).is_empty(),
             "a fusion straddling the wrap must be dropped"
