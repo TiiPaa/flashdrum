@@ -567,8 +567,11 @@ const DEFAULT_USER_PRESETS: &[(&str, &str, &[u8])] =
     include!(concat!(env!("OUT_DIR"), "/default_user_presets.rs"));
 
 /// Written once the starter presets are in place, so a preset the user
-/// deletes does not come back at the next editor open.
-const DEFAULT_USER_PRESETS_MARKER: &str = ".default-presets-v1";
+/// deletes does not come back at the next editor open. Bump its version when
+/// new starter presets ship: every install then gets the missing ones once
+/// (v2, 2026-10-26: Apollo, Battlestar, LastWinterV2, Wire; a starter preset the
+/// user had deleted comes back that one time, a file already there never moves).
+const DEFAULT_USER_PRESETS_MARKER: &str = ".default-presets-v2";
 
 /// Copy the starter presets into `Documents/Flash Drum/presets/` the first
 /// time the editor opens. UI thread only (file I/O).
@@ -1047,6 +1050,26 @@ mod tests {
         std::fs::remove_file(&copied).unwrap();
         assert_eq!(seed_default_user_presets_into(&root).unwrap(), 0);
         assert!(!copied.exists());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// An install seeded by an older marker gets the starter presets it lacks,
+    /// once, without touching the files it has.
+    #[test]
+    fn an_older_seeding_gets_the_new_starter_presets_once() {
+        let root = std::env::temp_dir().join(format!("fd_seed_v1_{:?}", std::thread::current().id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".default-presets-v1"), "").unwrap();
+        let (subdir, name, _) = DEFAULT_USER_PRESETS[0];
+        let kept = root.join(subdir).join(name);
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(&kept, "edited by the user").unwrap();
+
+        assert_eq!(seed_default_user_presets_into(&root).unwrap(), DEFAULT_USER_PRESETS.len() - 1);
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "edited by the user");
+        assert_eq!(seed_default_user_presets_into(&root).unwrap(), 0);
 
         std::fs::remove_dir_all(&root).ok();
     }
