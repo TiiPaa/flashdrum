@@ -715,4 +715,45 @@ mod tests {
             );
         }
     }
+    /// Density acts over the whole slider in Probabilistic, even for the
+    /// anchor-heavy styles: halfway to the default already thins the groove
+    /// clearly (its off-beat anchors go), and 0 leaves the beats only. It used
+    /// to move Techno / Disco by 3 % between 0 and the default.
+    #[test]
+    fn probabilistic_density_thins_the_anchor_heavy_styles() {
+        let layout = layout_from_kinds(&[
+            TrackInstrumentKind::Kick,
+            TrackInstrumentKind::Snare,
+            TrackInstrumentKind::HiHat,
+            TrackInstrumentKind::OpenHiHat,
+        ]);
+        for style in [Style::Techno, Style::Disco, Style::Rock] {
+            let mean_hits = |density| {
+                let mut total = 0;
+                for seed in 0..40u64 {
+                    let params = GeneratorParams {
+                        generator_type: GeneratorType::Probabilistic,
+                        style_primary: style,
+                        style_secondary: style,
+                        style_mix: 0.0,
+                        density,
+                        variation: 0.0,
+                        seed: seed * 7919 + 1,
+                    };
+                    total += generate(&params, layout.as_ref())
+                        .steps
+                        .iter()
+                        .map(|s| s.instruments.iter().filter(|&&on| on).count())
+                        .sum::<usize>();
+                }
+                total as f32 / 40.0
+            };
+            let (sparse, half, default) = (mean_hits(0.0), mean_hits(0.35), mean_hits(0.7));
+            assert!(
+                sparse < 0.7 * default && half < 0.85 * default,
+                "{style:?}: {sparse} / {half} / {default} hits at density 0 / 0.35 / 0.7"
+            );
+        }
+    }
+
 }

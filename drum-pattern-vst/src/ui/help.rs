@@ -134,7 +134,7 @@ pub const GEN_STYLE_B: &str =
 /// Short tooltip of B and Mix A/B when greyed, outside help mode.
 
 pub const GEN_DENSITY: &str = "Density: how many hits, with every type.\n\
-- Fully left: sparse, the style's key hits and a few more (with Classic, mostly the groove's hits on the beats).\n\
+- Fully left: a skeleton, the hits on the beats and a few more (Probabilistic and Classic drop the style's off-beat hits).\n\
 - Default (70 %): a usual groove.\n\
 - Fully right: very busy.";
 

@@ -1759,17 +1759,27 @@ pub const DEFAULT_DENSITY: f32 = 0.7;
 /// [283] Density → multiplier of a role's candidate odds: 0 keeps a few
 /// candidates (sparse, but each GENERATE still differs), the 0.7 default keeps
 /// the former feel, 1 makes the candidates about three times likelier.
+/// Geometric on each side of the default, so every part of the slider moves
+/// the pattern (it used to go 0.35 → 0.79 over the first 70 % of the slider
+/// and 0.79 → 3 over the last 30 %: the left two thirds did almost nothing).
 pub fn density_gain(density: f32) -> f32 {
     const DEFAULT: f32 = DEFAULT_DENSITY;
     const GAIN_AT_DEFAULT: f32 = 0.79; // former 0.3 + 0.7 × density, at 0.7
-    const GAIN_MIN: f32 = 0.35;
+    const GAIN_MIN: f32 = 0.1;
     const GAIN_MAX: f32 = 3.0;
     let d = density.clamp(0.0, 1.0);
     if d <= DEFAULT {
-        GAIN_MIN + (GAIN_AT_DEFAULT - GAIN_MIN) * d / DEFAULT
+        GAIN_MIN * (GAIN_AT_DEFAULT / GAIN_MIN).powf(d / DEFAULT)
     } else {
-        GAIN_AT_DEFAULT + (GAIN_MAX - GAIN_AT_DEFAULT) * (d - DEFAULT) / (1.0 - DEFAULT)
+        GAIN_AT_DEFAULT * (GAIN_MAX / GAIN_AT_DEFAULT).powf((d - DEFAULT) / (1.0 - DEFAULT))
     }
+}
+
+/// Below the default Density, the share of a style's off-beat anchors kept (the
+/// anchors on the beats always stay): 1 at the default and above, 0 at Density 0,
+/// so the slider's low end thins the groove down to its skeleton.
+pub fn anchor_keep(density: f32) -> f32 {
+    (density.clamp(0.0, 1.0) / DEFAULT_DENSITY).min(1.0)
 }
 
 /// Odds that a candidate step plays at this density (capped so a busy pattern
@@ -1797,8 +1807,13 @@ pub fn generate_from_template(
     for inst in 0..INSTRUMENT_COUNT {
         let role = &template.roles[inst];
 
-        // Pass 1: anchors are always placed (foundational hits)
+        // Pass 1: anchors (foundational hits). Below the default Density the
+        // off-beat ones thin out; the ones on the beats always stay.
+        let keep = anchor_keep(d);
         for &step in role.anchors {
+            if step % 4 != 0 && keep < 1.0 && rng() >= keep {
+                continue;
+            }
             pattern.steps[step].instruments[inst] = true;
             is_anchor[inst][step] = true;
         }
