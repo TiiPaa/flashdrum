@@ -331,12 +331,23 @@ pub fn keycap_button_sized(
 }
 
 /// The Generator's **Full random** key: a die, then the label, in amber, centred
-/// together on a rest keycap of `size`.
-pub fn full_random_button(ui: &mut egui::Ui, size: Vec2) -> egui::Response {
+/// together on a rest keycap of `size`. `armed` = the pattern is unsaved and a
+/// first click asked for a second one: the key says so instead.
+pub fn full_random_button(ui: &mut egui::Ui, size: Vec2, armed: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     keycap_tex(ui, rect, KeycapState::Rest);
     keycap_feedback(ui.painter(), rect, &resp);
     let font = f_sans_sb(11.0);
+    if armed {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Not saved - click again",
+            font,
+            AMBER(),
+        );
+        return resp;
+    }
     let label = "Full random";
     let tw = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font.clone(), AMBER()).size().x);
     let (icon, gap) = (13.0, 6.0);

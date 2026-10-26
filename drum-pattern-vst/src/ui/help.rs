@@ -144,7 +144,7 @@ pub const GEN_VARIATION: &str = "Variation:\n\
 - Every type: how differently several lanes of the same instrument (two kicks, two snares...) play.";
 
 pub const GEN_GENERATE: &str = "Writes a new pattern over the whole grid with the settings above. Each click gives a different result.\n\
-Replaces the current steps, fused cells and parameter locks. The pattern bank is not touched.";
+Replaces the current steps, fused cells and parameter locks. The pattern bank is not touched. If the pattern is not saved, the key first warns you: click it again to go ahead.";
 
 // --- Grid: page bar ---------------------------------------------------------
 
@@ -427,7 +427,7 @@ pub const BOTTOM_TABS: &str =
     "Generator: create patterns automatically.\nSong: chain the saved patterns into a song.\n\
 This only changes the view: Song playback is turned on by the Song Mode box in the Song tab.";
 
-pub const PRESET_RANDOM: &str = "Full random: fills the grid with random steps (about 1 in 3), ignoring the generator settings. Lanes and sounds stay; p-locks and fusions are cleared.";
+pub const PRESET_RANDOM: &str = "Full random: fills the grid with random steps (about 1 in 3), ignoring the generator settings. Lanes and sounds stay; p-locks and fusions are cleared. If the pattern is not saved, the key first warns you: click it again to go ahead.";
 
 // --- Song tab ----------------------------------------------------------------------
 

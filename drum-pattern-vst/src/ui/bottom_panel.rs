@@ -4,7 +4,7 @@ use crate::generator::{self, GeneratorType, Style};
 use crate::pattern_bank::SONG_BLOCKS;
 use crate::sequencer::{Pattern, SharedPattern};
 use crate::ui::controls::{enum_combo_compact, generator_song_segmented};
-use crate::ui::editor_state::EditorUIState;
+use crate::ui::editor_state::{EditorUIState, GenAction};
 use crate::ui::header::header_param_slider_col;
 use crate::ui::help;
 use crate::ui::pattern_bank::load_pattern_for_ui_with_length;
@@ -90,12 +90,16 @@ pub fn draw_bottom_panel(
             "Song chain".to_string()
         }
     } else {
-        format!(
-            "{} · {} -> {}",
-            GeneratorType::variants()[params.generator_type.value().to_index()],
-            Style::variants()[params.style_primary.value().to_index()],
-            Style::variants()[params.style_secondary.value().to_index()]
-        )
+        let gen_type = params.generator_type.value();
+        let type_name = GeneratorType::variants()[gen_type.to_index()];
+        let style_a = Style::variants()[params.style_primary.value().to_index()];
+        // Only Probabilistic blends A into B: the others never hear B.
+        if gen_type == GeneratorType::Probabilistic {
+            let style_b = Style::variants()[params.style_secondary.value().to_index()];
+            format!("{type_name} · {style_a} -> {style_b}")
+        } else {
+            format!("{type_name} · {style_a}")
+        }
     };
     painter.text(
         // [282] After the switch's real width: a fixed x (142) let the
@@ -122,7 +126,7 @@ pub fn draw_bottom_panel(
             if state.bottom_panel_tab == 1 {
                 draw_song_editor(ui, setter, params, state, song_position);
             } else {
-                draw_generator_panel_content(ui, setter, params, pattern);
+                draw_generator_panel_content(ui, setter, params, pattern, state);
             }
         },
     );
@@ -162,6 +166,7 @@ fn draw_generator_panel_content(
     setter: &ParamSetter,
     params: &DrumFlashParams,
     pattern: &SharedPattern,
+    state: &mut EditorUIState,
 ) {
     const LABEL_W: f32 = 64.0;
     const PATTERN_W: f32 = 268.0;
@@ -241,38 +246,94 @@ fn draw_generator_panel_content(
     let d2 = g2 + STYLE_W + GROUP_GAP;
     divider(d2);
 
-    // CREATE
+    // CREATE. Both actions replace the grid: on an unsaved pattern the first
+    // click turns the key into a warning, a second click on the SAME key goes
+    // ahead (no pointer travel); it disarms after a few seconds or on a click
+    // anywhere else.
+    const CONFIRM_TIMEOUT_S: f64 = 4.0;
+    let now = ui.input(|i| i.time);
+    if let Some((_, armed_at)) = state.generate_confirm {
+        if now - armed_at >= CONFIRM_TIMEOUT_S {
+            state.generate_confirm = None;
+        }
+    }
+    let armed = |action: GenAction| matches!(state.generate_confirm, Some((a, _)) if a == action);
+    let generate_armed = armed(GenAction::Generate);
+    let random_armed = armed(GenAction::FullRandom);
+    if generate_armed || random_armed {
+        // So the key reverts on its own.
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(CONFIRM_TIMEOUT_S));
+    }
     let g3 = d2 + GROUP_GAP;
     let g3w = (body.right() - 2.0 - g3).max(80.0);
     crate::ui::skeuo::group_title(&painter, egui::pos2(g3, title_y), "CREATE");
     let gen_rect = egui::Rect::from_min_max(egui::pos2(g3, row(0.0)), egui::pos2(g3 + g3w, row(1.0) + CTL_HEIGHT));
     let generate = at(ui, gen_rect, |ui| {
         help::zone(ui, "generate", help::GEN_GENERATE, |ui| {
-            crate::ui::controls::keycap_button_sized(
-                ui,
-                "GENERATE",
-                gen_rect.size(),
-                crate::ui::widgets::KeycapState::PressedAmber,
-                true,
-                f_sans_sb(13.0),
-            )
+            if generate_armed {
+                crate::ui::controls::keycap_button_sized(
+                    ui,
+                    "Pattern not saved\nClick again to generate",
+                    gen_rect.size(),
+                    crate::ui::widgets::KeycapState::PressedAmber,
+                    true,
+                    f_sans_sb(11.5),
+                )
+            } else {
+                crate::ui::controls::keycap_button_sized(
+                    ui,
+                    "GENERATE",
+                    gen_rect.size(),
+                    crate::ui::widgets::KeycapState::PressedAmber,
+                    true,
+                    f_sans_sb(13.0),
+                )
+            }
         })
     });
-    if generate.clicked() {
-        generate_pattern(params, pattern);
-    }
     let random_rect = egui::Rect::from_min_size(egui::pos2(g3, row(2.0)), Vec2::new(g3w, CTL_HEIGHT));
     let random = at(ui, random_rect, |ui| {
         help::zone(ui, "full_random", help::PRESET_RANDOM, |ui| {
-            crate::ui::controls::full_random_button(ui, random_rect.size())
+            crate::ui::controls::full_random_button(ui, random_rect.size(), random_armed)
         })
     });
-    if random.clicked() {
-        params.plock_state.state.clear_all();
-        params.seq_plock_state.state.clear_all();
-        crate::ui::grid::clear_all_fusions(pattern);
-        let pattern_length = params.pattern_length.value() as usize;
-        load_pattern_for_ui_with_length(pattern, &Pattern::random_pattern(), pattern_length);
+    let clicked = if generate.clicked() {
+        Some((GenAction::Generate, generate_armed))
+    } else if random.clicked() {
+        Some((GenAction::FullRandom, random_armed))
+    } else {
+        None
+    };
+    match clicked {
+        Some((action, was_armed)) => {
+            if !was_armed && crate::ui::pattern_bank::pattern_is_dirty(params, pattern, state) {
+                state.generate_confirm = Some((action, now));
+            } else {
+                state.generate_confirm = None;
+                match action {
+                    GenAction::Generate => generate_pattern(params, pattern),
+                    GenAction::FullRandom => {
+                        params.plock_state.state.clear_all();
+                        params.seq_plock_state.state.clear_all();
+                        crate::ui::grid::clear_all_fusions(pattern);
+                        let pattern_length = params.pattern_length.value() as usize;
+                        load_pattern_for_ui_with_length(pattern, &Pattern::random_pattern(), pattern_length);
+                    }
+                }
+            }
+        }
+        None => {
+            // (The press of the confirming click lands on the key itself: only a
+            // press elsewhere cancels.)
+            if state.generate_confirm.is_some()
+                && ui.input(|i| i.pointer.any_pressed())
+                && !generate.hovered()
+                && !random.hovered()
+            {
+                // Clicked anywhere else while armed: cancel.
+                state.generate_confirm = None;
+            }
+        }
     }
 }
 

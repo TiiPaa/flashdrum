@@ -136,6 +136,13 @@ pub struct DragStepState {
     pub current_target: usize,
 }
 
+/// The Generator's two actions that replace the grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GenAction {
+    Generate,
+    FullRandom,
+}
+
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct EditorUIState {
     pub selected_instrument: usize,
@@ -253,6 +260,11 @@ pub struct EditorUIState {
     /// pattern has unsaved changes. Requires explicit confirmation.
     #[serde(skip)]
     pub pattern_load_confirm: Option<usize>,
+    /// GENERATE or Full random clicked once on an unsaved pattern: the key
+    /// asks for a second click (`(action, armed_at)`); disarms after a few
+    /// seconds or on a click anywhere else. Not persisted.
+    #[serde(skip)]
+    pub generate_confirm: Option<(GenAction, f64)>,
     /// Source slot while dragging a lane reorder handle.
     #[serde(default)]
     pub lane_drag_source: Option<usize>,
