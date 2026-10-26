@@ -764,7 +764,9 @@ impl Pattern {
         }
     }
 
-    pub fn random_pattern() -> Self {
+    /// Full random: about one step in three on every lane `fill` accepts (the
+    /// Generator passes "not an effect bus": an effect lane takes no trigger).
+    pub fn random_pattern(fill: impl Fn(usize) -> bool) -> Self {
         let mut pattern = Self::empty();
         pattern.name = "Random".to_string();
 
@@ -782,7 +784,7 @@ impl Pattern {
 
         for step in 0..STEP_COUNT {
             for instrument in 0..INSTRUMENT_COUNT {
-                if (lcg() % 10) < 3 {
+                if (lcg() % 10) < 3 && fill(instrument) {
                     // 30% probability like the original PoC
                     pattern.steps[step].instruments[instrument] = true;
                 }
@@ -1109,6 +1111,16 @@ impl SharedPattern {
 
 #[cfg(test)]
 mod tests {
+    /// Full random never writes a step on a lane it is told to skip.
+    #[test]
+    fn random_pattern_leaves_skipped_lanes_empty() {
+        let pattern = Pattern::random_pattern(|lane| lane < 12);
+        for step in &pattern.steps {
+            assert!(!step.instruments[12] && !step.instruments[13]);
+        }
+        assert!(pattern.steps.iter().any(|s| s.instruments[..12].iter().any(|&on| on)));
+    }
+
     use super::*;
 
     #[test]

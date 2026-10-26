@@ -317,7 +317,12 @@ fn draw_generator_panel_content(
                         params.seq_plock_state.state.clear_all();
                         crate::ui::grid::clear_all_fusions(pattern);
                         let pattern_length = params.pattern_length.value() as usize;
-                        load_pattern_for_ui_with_length(pattern, &Pattern::random_pattern(), pattern_length);
+                        // An effect lane takes no trigger (like GENERATE).
+                        let layout = params.track_layout.state.as_ref();
+                        let random = Pattern::random_pattern(|slot| {
+                            !layout.kind_for_slot(slot).is_some_and(|kind| kind.is_effect())
+                        });
+                        load_pattern_for_ui_with_length(pattern, &random, pattern_length);
                     }
                 }
             }
