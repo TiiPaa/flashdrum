@@ -133,17 +133,18 @@ pub const INSERTS: [InsertDef; INSERT_COUNT] = [
     },
     InsertDef {
         name: "EQ",
-        help: "EQ: three bands. Low is a shelf (everything under Low Freq), Mid is a bell (a band around Mid Freq), High is a shelf (everything over 6 kHz).",
+        help: "EQ: three bands. Low Shelf moves everything under Low Freq, Mid Peak a band around Mid Freq, High Shelf everything over High Freq.",
         params: &[
-            knob("Low", -15.0, 15.0, 0.0, Some(" dB"), false, "Low: a shelf. Raises or lowers everything under Low Freq."),
+            knob("Low Shelf", -15.0, 15.0, 0.0, Some(" dB"), false, "Low Shelf: raises or lowers everything under Low Freq."),
             at(
-                knob("Low Freq", 30.0, 600.0, 150.0, Some(" Hz"), true, "Low Freq: where the Low shelf starts."),
+                knob("Low Freq", 30.0, 600.0, 150.0, Some(" Hz"), true, "Low Freq: where the Low Shelf starts."),
                 4,
             ),
             // (Rows after Low Freq are stored where they always were: slots 1, 2, 3.)
-            at(knob("Mid", -15.0, 15.0, 0.0, Some(" dB"), false, "Mid: a bell (a peak). Raises or lowers a band around Mid Freq."), 1),
-            at(knob("Mid Freq", 150.0, 8_000.0, 1_000.0, Some(" Hz"), true, "Mid Freq: the centre of the Mid band."), 2),
-            at(knob("High", -15.0, 15.0, 0.0, Some(" dB"), false, "High: a shelf. Raises or lowers everything over about 6 kHz."), 3),
+            at(knob("Mid Peak", -15.0, 15.0, 0.0, Some(" dB"), false, "Mid Peak: a bell. Raises or lowers a band around Mid Freq."), 1),
+            at(knob("Mid Freq", 150.0, 8_000.0, 1_000.0, Some(" Hz"), true, "Mid Freq: the centre of the Mid Peak."), 2),
+            at(knob("High Shelf", -15.0, 15.0, 0.0, Some(" dB"), false, "High Shelf: raises or lowers everything over High Freq."), 3),
+            at(knob("High Freq", 1_000.0, 16_000.0, 6_000.0, Some(" Hz"), true, "High Freq: where the High Shelf starts."), 5),
         ],
     },
     InsertDef {
@@ -205,8 +206,13 @@ where
     D: serde::Deserializer<'de>,
 {
     let raw: Vec<Vec<f32>> = Vec::deserialize(deserializer)?;
+    // A slot no knob used was saved as 0: when a later knob takes it and 0 is outside its
+    // range, the lane predates that knob and gets its default.
+    let unused = |i: usize, k: usize, v: f32| v == 0.0 && knob_at(i, k).is_some_and(|d| d.min > 0.0);
     Ok(std::array::from_fn(|i| {
-        std::array::from_fn(|k| raw.get(i).and_then(|v| v.get(k)).copied().unwrap_or_else(|| default_value(i, k)))
+        std::array::from_fn(|k| {
+            raw.get(i).and_then(|v| v.get(k)).copied().filter(|v| !unused(i, k, *v)).unwrap_or_else(|| default_value(i, k))
+        })
     }))
 }
 
@@ -425,6 +431,7 @@ struct Eq3 {
     db: [Smooth; 3],
     log_mid: Smooth,
     log_low: Smooth,
+    log_high: Smooth,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -453,8 +460,7 @@ struct Compressor {
     gr_peak: f32,
 }
 
-/// The high shelf's corner, and the bell's Q.
-const EQ_HIGH_HZ: f32 = 6_000.0;
+/// The bell's Q.
 const EQ_MID_Q: f32 = 0.9;
 /// The drive's tilt: corner and range.
 const TONE_CORNER_HZ: f32 = 800.0;
@@ -573,10 +579,11 @@ impl InsertRack {
                 high: [Svf::default(); 2],
                 c_low: SvfCoefs::low_shelf(v[EQ][4].max(20.0), 0.0, sr),
                 c_mid: SvfCoefs::bell(v[EQ][2], 0.0, EQ_MID_Q, sr),
-                c_high: SvfCoefs::high_shelf(EQ_HIGH_HZ, 0.0, sr),
+                c_high: SvfCoefs::high_shelf(v[EQ][5].max(20.0), 0.0, sr),
                 db: [Smooth { value: 0.0 }; 3],
                 log_mid: Smooth { value: v[EQ][2].log2() },
                 log_low: Smooth { value: v[EQ][4].max(20.0).log2() },
+                log_high: Smooth { value: v[EQ][5].max(20.0).log2() },
             },
             drive: Drive {
                 x1: [0.0; 2],
@@ -664,9 +671,10 @@ impl InsertRack {
         let high = e.db[2].to(v[EQ][3], k);
         let log_mid = e.log_mid.to(v[EQ][2].max(20.0).log2(), k);
         let log_low = e.log_low.to(v[EQ][4].max(20.0).log2(), k);
+        let log_high = e.log_high.to(v[EQ][5].max(20.0).log2(), k);
         e.c_low = SvfCoefs::low_shelf(2f32.powf(log_low), low, sr);
         e.c_mid = SvfCoefs::bell(2f32.powf(log_mid), mid, EQ_MID_Q, sr);
-        e.c_high = SvfCoefs::high_shelf(EQ_HIGH_HZ, high, sr);
+        e.c_high = SvfCoefs::high_shelf(2f32.powf(log_high), high, sr);
         // Drive
         let d = &mut self.drive;
         d.drive_db.to(v[DRIVE][1], k);
@@ -1166,6 +1174,29 @@ mod tests {
         println!("low shelf +6: corner 400 Hz -> 100 Hz {at_100:.2}, 2 kHz {at_2k:.2}; corner 60 Hz -> 100 Hz {at_100_low:.2}");
         assert!(at_100 > 5.0 && at_2k.abs() < 0.5);
         assert!(at_100_low < 3.5, "a lower corner lifts 100 Hz less");
+    }
+
+    #[test]
+    fn the_high_band_moves_with_high_freq() {
+        // +6 dB shelf at 2 kHz: 8 kHz is lifted, 300 Hz is not; at 12 kHz, 8 kHz far less so.
+        let mut r = rack(EQ, &[(3, 6.0), (5, 2_000.0)]);
+        let at_8k = response_db(&mut r, 8_000.0);
+        let at_300 = response_db(&mut r, 300.0);
+        let mut r12 = rack(EQ, &[(3, 6.0), (5, 12_000.0)]);
+        let at_8k_high = response_db(&mut r12, 8_000.0);
+        println!("high shelf +6: corner 2 kHz -> 8 kHz {at_8k:.2}, 300 Hz {at_300:.2}; corner 12 kHz -> 8 kHz {at_8k_high:.2}");
+        assert!(at_8k > 5.0 && at_300.abs() < 0.5);
+        assert!(at_8k_high < 3.5, "a higher corner lifts 8 kHz less");
+    }
+
+    /// A lane saved before High Freq (its slot stored as 0) keeps the old 6 kHz corner.
+    #[test]
+    fn a_lane_saved_before_high_freq_keeps_6_khz() {
+        let json = r#"{"on":[false,false,true,false,false,false],"values":[[0,0,0,0,0,0],[0,2000,0.2,1,0,0],[2,1,1000,3,150,0],[0,12,0,1,0,0],[8,0.25,1,0,0,0],[-18,4,5,120,0,1]],"order":[5,0,1,2,3,4]}"#;
+        let s: InsertSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.values[EQ][5], 6_000.0);
+        assert_eq!(s.values[EQ][3], 3.0);
+        assert_eq!(s.values[TRANSIENT][0], 0.0, "a 0 inside a knob's range stays a 0");
     }
 
     /// The order is the lane's: Drive then Filter is not Filter then Drive.
