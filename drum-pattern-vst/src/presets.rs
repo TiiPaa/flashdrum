@@ -1004,7 +1004,7 @@ mod tests {
             std::thread::current().id()
         ));
         std::fs::remove_dir_all(&root).ok();
-        assert_eq!(seed_default_user_presets_into(&root).unwrap(), 22);
+        assert_eq!(seed_default_user_presets_into(&root).unwrap(), 25);
         assert!(root.join(DEFAULT_USER_PRESETS_MARKER).is_file());
         assert_eq!(
             list_dir(&root.join("instruments"), PresetKind::Instrument).len(),
@@ -1012,7 +1012,7 @@ mod tests {
         );
         assert_eq!(
             list_dir(&root.join("patterns"), PresetKind::Pattern).len(),
-            18
+            21
         );
 
         for (subdir, name, packed) in DEFAULT_USER_PRESETS {
