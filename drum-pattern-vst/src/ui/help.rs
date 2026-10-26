@@ -125,14 +125,13 @@ pub const GEN_TYPE: &str = "Generator type: how GENERATE builds the pattern. All
 pub const GEN_STYLE_A: &str =
     "Style A: the main style (Rock, Funk, Techno...). Every generator type follows it.";
 
-pub const GEN_MIX: &str = "Mix A/B: blends style A with style B. Probabilistic type only: greyed with the other types, which follow style A alone.\n\
+pub const GEN_MIX: &str = "Mix A/B: blends style A with style B. Probabilistic type only: hidden with the other types, which follow style A alone.\n\
 Far left: style A only. Far right: style B only. In between: the odds of both styles are mixed.";
 
 pub const GEN_STYLE_B: &str =
     "Style B: the second style, blended in with the Mix A/B slider. Probabilistic type only: hidden with the other types, which follow style A alone.";
 
 /// Short tooltip of B and Mix A/B when greyed, outside help mode.
-pub const GEN_PROBABILISTIC_ONLY: &str = "Used by the Probabilistic type only (Type, on the left).";
 
 pub const GEN_DENSITY: &str = "Density: how many hits, with every type.\n\
 - Fully left: sparse, the style's key hits and a few more (with Classic, mostly the groove's hits on the beats).\n\

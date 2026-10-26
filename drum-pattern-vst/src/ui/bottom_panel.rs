@@ -210,7 +210,8 @@ fn draw_generator_panel_content(
     // STYLE
     let g2 = d1 + GROUP_GAP;
     crate::ui::skeuo::group_title(&painter, egui::pos2(g2, title_y), "STYLE");
-    // [283] Only Probabilistic blends A with B: Mix is greyed for the others, B hidden.
+    // [283] Only Probabilistic blends A with B: B, Mix A/B and its note are not
+    // shown at all with the other types (their place stays empty, nothing moves).
     let blends = params.generator_type.value() == GeneratorType::Probabilistic;
     let half = (STYLE_W - 12.0) * 0.5;
     let a_rect = egui::Rect::from_min_size(egui::pos2(g2, row(0.0)), Vec2::new(half, CTL_HEIGHT));
@@ -221,8 +222,6 @@ fn draw_generator_panel_content(
             enum_combo_compact(ui, setter, &params.style_primary, "style_a", half - 16.0);
         });
     });
-    // Style B only exists for Probabilistic: the other types do not show it at
-    // all (its place stays empty, nothing else moves).
     if blends {
         let bx = g2 + half + 12.0;
         let b_rect = egui::Rect::from_min_size(egui::pos2(bx, row(0.0)), Vec2::new(half, CTL_HEIGHT));
@@ -234,19 +233,21 @@ fn draw_generator_panel_content(
             });
         });
     }
-    let mix_rect = egui::Rect::from_min_size(egui::pos2(g2, row(1.0)), Vec2::new(STYLE_W, CTL_HEIGHT));
-    at(ui, mix_rect, |ui| {
-        probabilistic_only(ui, "style_mix", help::GEN_MIX, blends, |ui| {
-            header_param_slider_col(ui, setter, &params.style_mix, STYLE_W, "Mix A/B", false, LABEL_W);
+    if blends {
+        let mix_rect = egui::Rect::from_min_size(egui::pos2(g2, row(1.0)), Vec2::new(STYLE_W, CTL_HEIGHT));
+        at(ui, mix_rect, |ui| {
+            help::zone(ui, "style_mix", help::GEN_MIX, |ui| {
+                header_param_slider_col(ui, setter, &params.style_mix, STYLE_W, "Mix A/B", false, LABEL_W);
+            });
         });
-    });
-    painter.text(
-        egui::pos2(g2, row(2.0) + CTL_HEIGHT * 0.5),
-        egui::Align2::LEFT_CENTER,
-        "Mix blends A into B (Probabilistic only)",
-        f_sans(10.5),
-        INK3(),
-    );
+        painter.text(
+            egui::pos2(g2, row(2.0) + CTL_HEIGHT * 0.5),
+            egui::Align2::LEFT_CENTER,
+            "Mix blends A into B (Probabilistic only)",
+            f_sans(10.5),
+            INK3(),
+        );
+    }
     let d2 = g2 + STYLE_W + GROUP_GAP;
     divider(d2);
 
@@ -372,23 +373,3 @@ fn generate_pattern(params: &DrumFlashParams, pattern: &SharedPattern) {
     load_pattern_for_ui_with_length(pattern, &generated, pattern_length);
 }
 
-/// [283] A generator control only the Probabilistic type reads: greyed with
-/// the other types, saying why (help mode shows its full text instead).
-fn probabilistic_only(
-    ui: &mut egui::Ui,
-    id_salt: &str,
-    help_text: &str,
-    enabled: bool,
-    add: impl FnOnce(&mut egui::Ui),
-) {
-    let rect = ui.add_enabled_ui(enabled, add).response.rect;
-    help::rect(ui, rect, id_salt, help_text);
-    if !enabled && !help::is_on(ui.ctx()) {
-        ui.interact(
-            rect,
-            ui.id().with(("gen_unused", id_salt)),
-            egui::Sense::hover(),
-        )
-        .on_hover_text_at_pointer(help::GEN_PROBABILISTIC_ONLY);
-    }
-}
