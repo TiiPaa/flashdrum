@@ -2,6 +2,17 @@
 
 Downloads: [releases page](https://github.com/TiiPaa/flashdrum/releases).
 
+## 0.9.7 — 2026-10-26 (beta)
+
+**Generator**
+
+- **New layout**: three aligned groups. **PATTERN** (Type, Density, Variation), **STYLE** (A and B side by side, Mix A/B below them) and **CREATE** (a large **GENERATE** key with **Full random** under it).
+- **Density** now works over the whole slider. Below the default it thins the groove down to a skeleton (the hits on the beats stay); it used to change almost nothing on the left two thirds of the slider, especially with Techno, Disco and House.
+- **Style B** and **Mix A/B** only appear with the **Probabilistic** type, the only one that uses them. The summary next to the Generator / Song switch no longer mentions style B with the other types.
+- **Random** is renamed **Full random**, with a die icon. It no longer writes steps on the effect lanes.
+- **GENERATE** and **Full random** ask for confirmation when the current pattern is not saved: the first click turns the key into **Sure?**, a second click on the same key goes ahead.
+- The fixed style presets (Rock, Funk, Disco, House, Dub, DnB, Bossa, Afro, Break) are removed; the Generator's styles cover them.
+
 ## 0.9.6 — 2026-10-26 (beta)
 
 **Effect lanes**

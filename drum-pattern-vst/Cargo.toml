@@ -1,6 +1,6 @@
 [package]
 name = "drum-pattern-vst"
-version = "0.9.6"
+version = "0.9.7"
 edition = "2021"
 authors = ["Flash Drum"]
 description = "A 64-step drum sequencer VST3 plugin"
