@@ -2,6 +2,62 @@
 
 Downloads: [releases page](https://github.com/TiiPaa/flashdrum/releases).
 
+## 0.9.6 — 2026-10-26 (beta)
+
+**Effect lanes**
+
+- The last two lanes are now effect buses, **Fx1** and **Fx2**. Each one hosts an effect: **Reverb**, **Delay** or **Rumble**, and is named after it. A project that already has an instrument on one of these lanes keeps it; that bus is unavailable until the lane is deleted.
+- **Sends**: every instrument lane feeds Fx1 and Fx2 from its new **Effects** tab, after the lane's volume. Each send has a mute (**M**) and an **Edit** button that opens the effect lane. Sends can be locked per step.
+- **Reverb**: Hall, Room and Plate types; Size, Decay, Damping, Pre-delay, Low Cut, High Cut, Width; a **Gate** (Gate Time, Gate Release) for gated sounds; **Warp** links Decay to the size of the room, so moving Decay bends the pitch of the tail.
+- **Delay**: Time in ms or synced to the host tempo (1/32 to 1 bar), Feedback, Damping, Low Cut, High Cut, Ping-pong, Width.
+- **Rumble**: the techno kick rumble. A huge, dark reverb that drops out on each kick and swells back between them, with Echo, Drive, Width, High Pass and its own reverb Size, Motion and Blur.
+- **P-locks on an effect lane** move the effect along the pattern: each lock holds until the next one, or, with **Glide** on, the value glides from lock to lock. **Loop Restart** (or the arrow on the lane's first cell) chooses whether the effect goes back to its sliders when the pattern loops. **Playing now** shows the values the effect is using.
+
+**Lane inserts** (Effects tab, on every instrument lane)
+
+- Six effects in series, one of each, each with its own On switch: **Compressor** (with Makeup, Mix and a gain-reduction meter), **Transient** (reshapes the hits and keeps the lane's level), **Filter** (low-pass, high-pass, band-pass, notch), **EQ** (Low Shelf, Mid Peak, High Shelf, each with its own frequency), **Drive** (Soft, Hard, Tube, with anti-aliasing) and **Bitcrush**.
+- Drag the handle before an insert's name to change the order of the chain; fold an insert with its triangle.
+
+**Lanes and grid**
+
+- A level meter at the end of every lane.
+- **Own Swing** (Track tab): a lane can play its own swing amount and groove instead of the header's.
+- The pulses of a fused cell now follow the swing, in playback and in MIDI export.
+- **MIDI learn** for a lane's note: Track tab → **Learn**, then play a note on your controller.
+- **Humanize** moves to the Track tab (Sequencing); the lane names get more room in the grid.
+- Dragging a WAV from the Explorer onto a **One-Shot** lane replaces its file (the lane warns you before you drop). When a drop cannot be accepted, a message says why.
+- **Randomize Lane**: each lane has its own Density, with a default per instrument type in **Settings**.
+- The step menu opens under its cell (above it near the bottom of the window).
+- **Ext MIDI**: Mute and Solo now work when the lanes are played from incoming MIDI notes. A muted lane neither plays nor forwards the note.
+- **MIDI export**: a linked lane exports the steps of the lane it follows.
+- Volume is shown from 0 to 1.
+- Fixed: a lane name sometimes stayed lit after its flash.
+
+**Instruments**
+
+- **Decay Curve** now goes from −2 to +2 for much sharper or much more held decays (−1 to +1 sounds as before), on every voice except the AC606 models. **Attack Curve** added to Buzz and the 606 samplers.
+- LFO rates can follow the host tempo (**Sync** menu under each rate): Rift's pitch and filter LFOs, SDrex modulation, Buzz gate and the Toms.
+- **Toms**: a pitch LFO (Rate, Depth, Shape, Fade-in).
+- Filter **Resonance** on SDrex, the Toms and Buzz.
+- **SDrex**: a **Noise <-> Synth** balance replaces the Noise level (older lanes sound the same); modulation Depth works in both directions.
+- **Rift**: new **Pad** texture; the **Noise** texture is regenerated with an even level and less low end; the filter LFO reaches 5 octaves and keeps its full swing at the ends of the range.
+- **TM6(AC)**: Model is a menu (Auto / Low tom / High tom), Frequency is in Hz, and Overtones, Tail Noise and Decay have a clearer effect.
+- **606 samplers**: with Analog Mode on, the Sample row reads "Random each hit".
+- Fixed: in Studio One, the Algorithm menu of some lanes (for example Buzz's Razor) snapped back during playback.
+
+**Interface**
+
+- Settings that depend on the switch above them are indented under it.
+- Changing the **Zoom** closes Settings.
+
+**Presets**
+
+- Starter presets refreshed: 4 new patterns, **Apollo**, **Battlestar**, **LastWinterV2** and **Wire** (LastWinterV2 replaces LastWinter). They are added on a new installation; an installation that already received the starter presets keeps its own.
+
+**Compatibility**
+
+- Projects saved with 0.9.5 open as before. A project that uses effect lanes cannot be opened correctly by 0.9.5 or earlier.
+
 ## 0.9.5 — 2026-10-13 (beta)
 
 - **Easier to read**: brighter secondary text in every skin and all text one size larger.
