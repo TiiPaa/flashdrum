@@ -20,6 +20,20 @@ pub fn header_param_slider<P: Param>(
     label: &str,
     show_value: bool,
 ) {
+    header_param_slider_col(ui, setter, param, total_w, label, show_value, 0.0);
+}
+
+/// [`header_param_slider`] whose groove starts `label_w` after its left edge, so
+/// the sliders of a group line up whatever their labels (0 = right after the label).
+pub fn header_param_slider_col<P: Param>(
+    ui: &mut egui::Ui,
+    setter: &ParamSetter,
+    param: &P,
+    total_w: f32,
+    label: &str,
+    show_value: bool,
+    label_w: f32,
+) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(total_w, CTL_HEIGHT), egui::Sense::hover());
     let cy = rect.center().y;
     let norm = param.unmodulated_normalized_value();
@@ -35,7 +49,11 @@ pub fn header_param_slider<P: Param>(
             f_sans_med(11.5),
             INK2(),
         );
-        label_rect.right().max(rect.left() + 34.0) + 8.0
+        if label_w > 0.0 {
+            rect.left() + label_w
+        } else {
+            label_rect.right().max(rect.left() + 34.0) + 8.0
+        }
     };
     let track_right = if show_value {
         let valstr = param.normalized_value_to_string(norm, true);

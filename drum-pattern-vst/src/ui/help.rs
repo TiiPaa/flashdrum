@@ -427,7 +427,7 @@ pub const BOTTOM_TABS: &str =
     "Generator: create patterns automatically.\nSong: chain the saved patterns into a song.\n\
 This only changes the view: Song playback is turned on by the Song Mode box in the Song tab.";
 
-pub const PRESET_RANDOM: &str = "Fills the grid with random steps (about 1 in 3), ignoring the generator settings. Lanes and sounds stay; p-locks and fusions are cleared.";
+pub const PRESET_RANDOM: &str = "Full random: fills the grid with random steps (about 1 in 3), ignoring the generator settings. Lanes and sounds stay; p-locks and fusions are cleared.";
 
 // --- Song tab ----------------------------------------------------------------------
 

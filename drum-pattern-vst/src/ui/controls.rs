@@ -285,12 +285,24 @@ pub fn keycap_button(
             .x
     });
     let w = (tw + 18.0).max(min_w);
+    keycap_button_sized(ui, label, Vec2::new(w, CTL_HEIGHT), state, enabled, font)
+}
+
+/// [`keycap_button`] at an exact size (the Generator's tall GENERATE key).
+pub fn keycap_button_sized(
+    ui: &mut egui::Ui,
+    label: &str,
+    size: Vec2,
+    state: KeycapState,
+    enabled: bool,
+    font: egui::FontId,
+) -> egui::Response {
     let sense = if enabled {
         egui::Sense::click()
     } else {
         egui::Sense::hover()
     };
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, CTL_HEIGHT), sense);
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
     keycap_tex(ui, rect, state);
     if enabled {
         keycap_feedback(ui.painter(), rect, &resp);
@@ -318,11 +330,30 @@ pub fn keycap_button(
     resp
 }
 
-pub fn genrow_label(ui: &mut egui::Ui, label: &str, min_w: f32) {
-    ui.add_sized(
-        Vec2::new(min_w, CTL_HEIGHT),
-        egui::Label::new(RichText::new(label).font(f_mono_med(9.5)).color(INK3())),
+/// The Generator's **Full random** key: a die, then the label, in amber, centred
+/// together on a rest keycap of `size`.
+pub fn full_random_button(ui: &mut egui::Ui, size: Vec2) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    keycap_tex(ui, rect, KeycapState::Rest);
+    keycap_feedback(ui.painter(), rect, &resp);
+    let font = f_sans_sb(11.0);
+    let label = "Full random";
+    let tw = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font.clone(), AMBER()).size().x);
+    let (icon, gap) = (13.0, 6.0);
+    let x = rect.center().x - (icon + gap + tw) * 0.5;
+    crate::ui::skeuo::dice_icon(
+        ui.painter(),
+        egui::Rect::from_min_size(egui::pos2(x, rect.center().y - icon * 0.5), Vec2::splat(icon)),
+        AMBER(),
     );
+    ui.painter().text(
+        egui::pos2(x + icon + gap, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font,
+        AMBER(),
+    );
+    resp
 }
 
 pub fn chip_button(

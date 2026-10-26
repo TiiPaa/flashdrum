@@ -501,6 +501,45 @@ pub fn link_arrow(p: &egui::Painter, rect: egui::Rect, color: Color32) {
     ));
 }
 
+/// The small tracked capitals that title a group of controls (the Generator's
+/// PATTERN / STYLE / CREATE), left-centred on `pos`.
+pub fn group_title(p: &egui::Painter, pos: egui::Pos2, text: &str) {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            font_id: f_mono_sb(9.0),
+            color: INK3(),
+            extra_letter_spacing: 1.2,
+            ..Default::default()
+        },
+    );
+    let galley = p.ctx().fonts(|f| f.layout_job(job));
+    let r = egui::Align2::LEFT_CENTER.anchor_size(pos, galley.size());
+    p.galley(r.min, galley, INK3());
+}
+
+/// A die seen from the front, showing five: the Generator's **Full random** key.
+/// `rect` is the die's square; the outline and the pips take `color`.
+pub fn dice_icon(p: &egui::Painter, rect: egui::Rect, color: Color32) {
+    let side = rect.width().min(rect.height());
+    let die = egui::Rect::from_center_size(rect.center(), egui::vec2(side, side));
+    let stroke = (side * 0.11).clamp(1.2, 2.0);
+    p.rect_stroke(
+        die.shrink(stroke * 0.5),
+        side * 0.22,
+        egui::Stroke::new(stroke, color),
+        egui::StrokeKind::Middle,
+    );
+    let pip = side * 0.095;
+    let off = side * 0.24;
+    let c = die.center();
+    for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (0.0, 0.0), (-1.0, 1.0), (1.0, 1.0)] {
+        p.circle_filled(egui::pos2(c.x + dx * off, c.y + dy * off), pip, color);
+    }
+}
+
 pub fn well_recess(ui: &egui::Ui, rect: egui::Rect, radius: f32) {
     let p = ui.painter_at(rect);
     inner_top_shadow(&p, rect, radius, 5.0, 150);

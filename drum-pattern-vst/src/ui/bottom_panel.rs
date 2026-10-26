@@ -1,14 +1,12 @@
-//! Bottom panel: Generator | Song tabs, generator controls, preset chips.
+//! Bottom panel: Generator | Song tabs, the Generator (PATTERN / STYLE / CREATE).
 
 use crate::generator::{self, GeneratorType, Style};
 use crate::pattern_bank::SONG_BLOCKS;
 use crate::sequencer::{Pattern, SharedPattern};
-use crate::ui::controls::{
-    chip_button, enum_combo_compact, generator_song_segmented, genrow_label,
-};
+use crate::ui::controls::{enum_combo_compact, generator_song_segmented};
 use crate::ui::editor_state::EditorUIState;
-use crate::ui::header::header_param_slider;
-use crate::ui::help::{self, HelpExt};
+use crate::ui::header::header_param_slider_col;
+use crate::ui::help;
 use crate::ui::pattern_bank::load_pattern_for_ui_with_length;
 use crate::ui::song::draw_song_editor;
 use crate::ui::theme::*;
@@ -130,36 +128,178 @@ pub fn draw_bottom_panel(
     );
 }
 
+/// Place `add` in `rect`, left to right, vertically centred.
+fn at<R>(ui: &mut egui::Ui, rect: egui::Rect, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            add(ui)
+        },
+    )
+    .inner
+}
+
+/// A row label in the sliders' face.
+fn row_label(ui: &egui::Ui, x: f32, y: f32, text: &str) {
+    ui.painter().text(
+        egui::pos2(x, y + CTL_HEIGHT * 0.5),
+        egui::Align2::LEFT_CENTER,
+        text,
+        f_sans_med(11.5),
+        INK2(),
+    );
+}
+
+/// The Generator, in three groups: **PATTERN** (Type, Density, Variation),
+/// **STYLE** (A and B side by side, Mix A/B under them) and **CREATE** (a tall
+/// GENERATE and Full random under it, same width). Every row label of a group
+/// sits in one column, so its controls start at the same x.
 fn draw_generator_panel_content(
     ui: &mut egui::Ui,
     setter: &ParamSetter,
     params: &DrumFlashParams,
     pattern: &SharedPattern,
 ) {
-    ui.vertical(|ui| {
-        ui.add_space(6.0);
-        ui.spacing_mut().item_spacing.y = 12.0;
-        draw_generator_bar(ui, setter, params, pattern);
-        draw_random_bar(ui, pattern, params);
+    const LABEL_W: f32 = 64.0;
+    const PATTERN_W: f32 = 268.0;
+    const STYLE_W: f32 = 332.0;
+    const GROUP_GAP: f32 = 16.0;
+    const ROW_GAP: f32 = 7.0;
+    let body = ui.max_rect();
+    let title_y = body.top() + 11.0;
+    let row = |i: f32| body.top() + 22.0 + i * (CTL_HEIGHT + ROW_GAP);
+    let painter = ui.painter().clone();
+    let divider = |x: f32| {
+        painter.vline(x, (body.top() + 6.0)..=(body.bottom() - 2.0), egui::Stroke::new(1.0, LINE()));
+    };
+
+    // PATTERN
+    let g1 = body.left() + 2.0;
+    crate::ui::skeuo::group_title(&painter, egui::pos2(g1, title_y), "PATTERN");
+    let type_rect = egui::Rect::from_min_size(egui::pos2(g1, row(0.0)), Vec2::new(PATTERN_W, CTL_HEIGHT));
+    at(ui, type_rect, |ui| {
+        help::zone(ui, "gen_type", help::GEN_TYPE, |ui| {
+            row_label(ui, g1, row(0.0), "Type");
+            ui.add_space(LABEL_W);
+            enum_combo_compact(ui, setter, &params.generator_type, "gen_type", PATTERN_W - LABEL_W);
+        });
     });
+    let density_rect = egui::Rect::from_min_size(egui::pos2(g1, row(1.0)), Vec2::new(PATTERN_W, CTL_HEIGHT));
+    at(ui, density_rect, |ui| {
+        help::zone(ui, "gen_density", help::GEN_DENSITY, |ui| {
+            header_param_slider_col(ui, setter, &params.gen_density, PATTERN_W, "Density", false, LABEL_W);
+        });
+    });
+    let variation_rect = egui::Rect::from_min_size(egui::pos2(g1, row(2.0)), Vec2::new(PATTERN_W, CTL_HEIGHT));
+    at(ui, variation_rect, |ui| {
+        help::zone(ui, "gen_variation", help::GEN_VARIATION, |ui| {
+            header_param_slider_col(ui, setter, &params.gen_variation, PATTERN_W, "Variation", false, LABEL_W);
+        });
+    });
+    let d1 = g1 + PATTERN_W + GROUP_GAP;
+    divider(d1);
+
+    // STYLE
+    let g2 = d1 + GROUP_GAP;
+    crate::ui::skeuo::group_title(&painter, egui::pos2(g2, title_y), "STYLE");
+    // [283] Only Probabilistic blends A with B: Mix and B are greyed for the others.
+    let blends = params.generator_type.value() == GeneratorType::Probabilistic;
+    let half = (STYLE_W - 12.0) * 0.5;
+    let a_rect = egui::Rect::from_min_size(egui::pos2(g2, row(0.0)), Vec2::new(half, CTL_HEIGHT));
+    at(ui, a_rect, |ui| {
+        help::zone(ui, "style_a", help::GEN_STYLE_A, |ui| {
+            row_label(ui, g2, row(0.0), "A");
+            ui.add_space(16.0);
+            enum_combo_compact(ui, setter, &params.style_primary, "style_a", half - 16.0);
+        });
+    });
+    let bx = g2 + half + 12.0;
+    let b_rect = egui::Rect::from_min_size(egui::pos2(bx, row(0.0)), Vec2::new(half, CTL_HEIGHT));
+    at(ui, b_rect, |ui| {
+        probabilistic_only(ui, "style_b", help::GEN_STYLE_B, blends, |ui| {
+            row_label(ui, bx, row(0.0), "B");
+            ui.add_space(16.0);
+            enum_combo_compact(ui, setter, &params.style_secondary, "style_b", half - 16.0);
+        });
+    });
+    let mix_rect = egui::Rect::from_min_size(egui::pos2(g2, row(1.0)), Vec2::new(STYLE_W, CTL_HEIGHT));
+    at(ui, mix_rect, |ui| {
+        probabilistic_only(ui, "style_mix", help::GEN_MIX, blends, |ui| {
+            header_param_slider_col(ui, setter, &params.style_mix, STYLE_W, "Mix A/B", false, LABEL_W);
+        });
+    });
+    painter.text(
+        egui::pos2(g2, row(2.0) + CTL_HEIGHT * 0.5),
+        egui::Align2::LEFT_CENTER,
+        "Mix blends A into B (Probabilistic only)",
+        f_sans(10.5),
+        INK3(),
+    );
+    let d2 = g2 + STYLE_W + GROUP_GAP;
+    divider(d2);
+
+    // CREATE
+    let g3 = d2 + GROUP_GAP;
+    let g3w = (body.right() - 2.0 - g3).max(80.0);
+    crate::ui::skeuo::group_title(&painter, egui::pos2(g3, title_y), "CREATE");
+    let gen_rect = egui::Rect::from_min_max(egui::pos2(g3, row(0.0)), egui::pos2(g3 + g3w, row(1.0) + CTL_HEIGHT));
+    let generate = at(ui, gen_rect, |ui| {
+        help::zone(ui, "generate", help::GEN_GENERATE, |ui| {
+            crate::ui::controls::keycap_button_sized(
+                ui,
+                "GENERATE",
+                gen_rect.size(),
+                crate::ui::widgets::KeycapState::PressedAmber,
+                true,
+                f_sans_sb(13.0),
+            )
+        })
+    });
+    if generate.clicked() {
+        generate_pattern(params, pattern);
+    }
+    let random_rect = egui::Rect::from_min_size(egui::pos2(g3, row(2.0)), Vec2::new(g3w, CTL_HEIGHT));
+    let random = at(ui, random_rect, |ui| {
+        help::zone(ui, "full_random", help::PRESET_RANDOM, |ui| {
+            crate::ui::controls::full_random_button(ui, random_rect.size())
+        })
+    });
+    if random.clicked() {
+        params.plock_state.state.clear_all();
+        params.seq_plock_state.state.clear_all();
+        crate::ui::grid::clear_all_fusions(pattern);
+        let pattern_length = params.pattern_length.value() as usize;
+        load_pattern_for_ui_with_length(pattern, &Pattern::random_pattern(), pattern_length);
+    }
 }
 
-fn draw_random_bar(ui: &mut egui::Ui, pattern: &SharedPattern, params: &DrumFlashParams) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 7.0;
-        ui.set_height(CTL_HEIGHT);
-        genrow_label(ui, "Random", 62.0);
-        let pattern_length = params.pattern_length.value() as usize;
-        if chip_button(ui, "⟳ Random", true, AMBER(), egui::Sense::click())
-            .help(help::PRESET_RANDOM)
-            .clicked()
-        {
-            params.plock_state.state.clear_all();
-            params.seq_plock_state.state.clear_all();
-            crate::ui::grid::clear_all_fusions(pattern);
-            load_pattern_for_ui_with_length(pattern, &Pattern::random_pattern(), pattern_length);
-        }
-    });
+/// GENERATE: a new pattern from the Generator's settings, on the loaded slot.
+fn generate_pattern(params: &DrumFlashParams, pattern: &SharedPattern) {
+    params.plock_state.state.clear_all();
+    params.seq_plock_state.state.clear_all();
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    let gen_params = generator::GeneratorParams {
+        generator_type: params.generator_type.value(),
+        style_primary: params.style_primary.value(),
+        style_secondary: params.style_secondary.value(),
+        style_mix: params.style_mix.value(),
+        density: params.gen_density.value(),
+        variation: params.gen_variation.value(),
+        seed,
+    };
+    let generated = generator::generate(&gen_params, params.track_layout.state.as_ref());
+    let pattern_length = params.pattern_length.value() as usize;
+    crate::ui::grid::clear_all_fusions(pattern);
+    // [283] The grid stays on the slot it was loaded from (P3*):
+    // a generated pattern is an edit of that slot, like any other
+    // (user decision; MIDI Pat saves it there before switching).
+    load_pattern_for_ui_with_length(pattern, &generated, pattern_length);
 }
 
 /// [283] A generator control only the Probabilistic type reads: greyed with
@@ -181,101 +321,4 @@ fn probabilistic_only(
         )
         .on_hover_text_at_pointer(help::GEN_PROBABILISTIC_ONLY);
     }
-}
-
-fn draw_generator_bar(
-    ui: &mut egui::Ui,
-    setter: &ParamSetter,
-    params: &DrumFlashParams,
-    pattern: &SharedPattern,
-) {
-    const GEN_TYPE_W: f32 = 116.0;
-    // Fits the longest style name ("Drum'n'Bass") next to the caret.
-    const STYLE_W: f32 = 104.0;
-    const GEN_BTN_W: f32 = 104.0;
-
-    // Two rows: (1) Type · style A → Mix → B   (2) Density · Variation · GENERATE.
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 6.0;
-
-        // Row 1 — algorithm + style morph.
-        ui.horizontal(|ui| {
-            ui.set_height(CTL_HEIGHT);
-            ui.spacing_mut().item_spacing.x = 0.0;
-            // [283] Each control explains itself in help mode.
-            help::zone(ui, "gen_type", help::GEN_TYPE, |ui| {
-                genrow_label(ui, "Type", 40.0);
-                enum_combo_compact(ui, setter, &params.generator_type, "gen_type", GEN_TYPE_W);
-            });
-            ui.add_space(16.0);
-            help::zone(ui, "style_a", help::GEN_STYLE_A, |ui| {
-                genrow_label(ui, "A", 12.0);
-                ui.add_space(5.0);
-                enum_combo_compact(ui, setter, &params.style_primary, "style_a", STYLE_W);
-            });
-            // [283] Only Probabilistic blends A with B: greyed for the others.
-            let blends = params.generator_type.value() == GeneratorType::Probabilistic;
-            ui.add_space(14.0);
-            probabilistic_only(ui, "style_mix", help::GEN_MIX, blends, |ui| {
-                header_param_slider(ui, setter, &params.style_mix, 110.0, "Mix A/B", false);
-            });
-            ui.add_space(14.0);
-            probabilistic_only(ui, "style_b", help::GEN_STYLE_B, blends, |ui| {
-                genrow_label(ui, "B", 12.0);
-                ui.add_space(5.0);
-                enum_combo_compact(ui, setter, &params.style_secondary, "style_b", STYLE_W);
-            });
-        });
-
-        // Row 2 — amounts + GENERATE (right).
-        ui.horizontal(|ui| {
-            ui.set_height(CTL_HEIGHT);
-            ui.spacing_mut().item_spacing.x = 0.0;
-            help::zone(ui, "gen_density", help::GEN_DENSITY, |ui| {
-                header_param_slider(ui, setter, &params.gen_density, 150.0, "Density", false);
-            });
-            ui.add_space(18.0);
-            help::zone(ui, "gen_variation", help::GEN_VARIATION, |ui| {
-                header_param_slider(ui, setter, &params.gen_variation, 150.0, "Variation", false);
-            });
-
-            let space = (ui.available_width() - GEN_BTN_W).max(10.0);
-            ui.add_space(space);
-            let gen_btn_response = help::zone(ui, "generate", help::GEN_GENERATE, |ui| {
-                crate::ui::controls::keycap_button(
-                    ui,
-                    "GENERATE",
-                    GEN_BTN_W,
-                    crate::ui::widgets::KeycapState::PressedAmber,
-                    true,
-                    f_sans_sb(11.0),
-                )
-            });
-            if gen_btn_response.clicked() {
-                params.plock_state.state.clear_all();
-                params.seq_plock_state.state.clear_all();
-                let seed = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_nanos() as u64)
-                    .unwrap_or(0);
-                let gen_params = generator::GeneratorParams {
-                    generator_type: params.generator_type.value(),
-                    style_primary: params.style_primary.value(),
-                    style_secondary: params.style_secondary.value(),
-                    style_mix: params.style_mix.value(),
-                    density: params.gen_density.value(),
-                    variation: params.gen_variation.value(),
-                    seed,
-                };
-                let generated =
-                    generator::generate(&gen_params, params.track_layout.state.as_ref());
-                let pattern_length = params.pattern_length.value() as usize;
-                crate::ui::grid::clear_all_fusions(pattern);
-                // [283] The grid stays on the slot it was loaded from (P3*):
-                // a generated pattern is an edit of that slot, like any other
-                // (user decision; MIDI Pat saves it there before switching).
-                load_pattern_for_ui_with_length(pattern, &generated, pattern_length);
-            }
-        });
-    });
 }
