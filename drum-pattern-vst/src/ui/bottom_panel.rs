@@ -210,7 +210,7 @@ fn draw_generator_panel_content(
     // STYLE
     let g2 = d1 + GROUP_GAP;
     crate::ui::skeuo::group_title(&painter, egui::pos2(g2, title_y), "STYLE");
-    // [283] Only Probabilistic blends A with B: Mix and B are greyed for the others.
+    // [283] Only Probabilistic blends A with B: Mix is greyed for the others, B hidden.
     let blends = params.generator_type.value() == GeneratorType::Probabilistic;
     let half = (STYLE_W - 12.0) * 0.5;
     let a_rect = egui::Rect::from_min_size(egui::pos2(g2, row(0.0)), Vec2::new(half, CTL_HEIGHT));
@@ -221,15 +221,19 @@ fn draw_generator_panel_content(
             enum_combo_compact(ui, setter, &params.style_primary, "style_a", half - 16.0);
         });
     });
-    let bx = g2 + half + 12.0;
-    let b_rect = egui::Rect::from_min_size(egui::pos2(bx, row(0.0)), Vec2::new(half, CTL_HEIGHT));
-    at(ui, b_rect, |ui| {
-        probabilistic_only(ui, "style_b", help::GEN_STYLE_B, blends, |ui| {
-            row_label(ui, bx, row(0.0), "B");
-            ui.add_space(16.0);
-            enum_combo_compact(ui, setter, &params.style_secondary, "style_b", half - 16.0);
+    // Style B only exists for Probabilistic: the other types do not show it at
+    // all (its place stays empty, nothing else moves).
+    if blends {
+        let bx = g2 + half + 12.0;
+        let b_rect = egui::Rect::from_min_size(egui::pos2(bx, row(0.0)), Vec2::new(half, CTL_HEIGHT));
+        at(ui, b_rect, |ui| {
+            help::zone(ui, "style_b", help::GEN_STYLE_B, |ui| {
+                row_label(ui, bx, row(0.0), "B");
+                ui.add_space(16.0);
+                enum_combo_compact(ui, setter, &params.style_secondary, "style_b", half - 16.0);
+            });
         });
-    });
+    }
     let mix_rect = egui::Rect::from_min_size(egui::pos2(g2, row(1.0)), Vec2::new(STYLE_W, CTL_HEIGHT));
     at(ui, mix_rect, |ui| {
         probabilistic_only(ui, "style_mix", help::GEN_MIX, blends, |ui| {

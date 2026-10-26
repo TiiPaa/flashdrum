@@ -129,7 +129,7 @@ pub const GEN_MIX: &str = "Mix A/B: blends style A with style B. Probabilistic t
 Far left: style A only. Far right: style B only. In between: the odds of both styles are mixed.";
 
 pub const GEN_STYLE_B: &str =
-    "Style B: the second style, blended in with the Mix A/B slider. Probabilistic type only: greyed with the other types, which follow style A alone.";
+    "Style B: the second style, blended in with the Mix A/B slider. Probabilistic type only: hidden with the other types, which follow style A alone.";
 
 /// Short tooltip of B and Mix A/B when greyed, outside help mode.
 pub const GEN_PROBABILISTIC_ONLY: &str = "Used by the Probabilistic type only (Type, on the left).";
