@@ -45,6 +45,19 @@ fn repaint_schedule(
     }
 }
 
+/// FLASH-DRUM PATCH: egui's clock (`RawInput::time`) starts at this one instant
+/// for every window of the process, instead of at each window's creation.
+///
+/// A plugin keeps its editor state while its window is closed and reopened;
+/// a time stored in that state (Flash Drum's lane-name flash end, a "Sure?"
+/// confirmation) was read against a clock that restarted at zero, so it lay
+/// minutes in the future: the lane names that had flashed stayed lit for as
+/// long as the previous window had been open.
+fn clock_origin() -> Instant {
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *ORIGIN.get_or_init(Instant::now)
+}
+
 pub struct Queue<'a> {
     bg_color: &'a mut Rgba,
     close_requested: &'a mut bool,
@@ -211,7 +224,7 @@ where
             }
         };
 
-        let start_time = Instant::now();
+        let start_time = clock_origin();
 
         Self {
             user_state: Some(state),
@@ -234,7 +247,7 @@ where
             scale_policy: open_settings.scale_policy,
             bg_color,
             close_requested,
-            repaint_after: Some(start_time),
+            repaint_after: Some(Instant::now()),
         }
     }
 
@@ -722,8 +735,18 @@ fn calculate_screen_rect(physical_size: PhySize, points_per_pixel: f32) -> Rect 
 
 #[cfg(test)]
 mod tests {
-    use super::repaint_schedule;
+    use super::{clock_origin, repaint_schedule};
     use std::time::{Duration, Instant};
+
+    /// A window opened later reads the same clock as the first one: a time
+    /// stored in the editor state never lies in the new window's future.
+    #[test]
+    fn every_window_shares_one_clock_origin() {
+        let first = clock_origin();
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(clock_origin(), first);
+        assert!(clock_origin().elapsed() >= Duration::from_millis(5));
+    }
 
     #[test]
     fn a_frame_that_is_not_drawn_keeps_the_earliest_deadline() {

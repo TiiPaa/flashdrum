@@ -28,6 +28,13 @@ scheduled nothing after itself. The earliest deadline is now kept, and a
 "now" also schedules the next tick. Covered by
 `the_lane_flash_is_always_drawn_off` (fails on the previous logic).
 
+One clock for every window (`window.rs`, `clock_origin`): egui's
+`RawInput::time` counted from each window's creation, but the plugin's editor
+state outlives the window. A time stored in it (the lane-name flash end) lay in
+the future of a reopened window, so lanes that had flashed stayed lit for as
+long as the previous window had been open. The clock now starts once per
+process. Covered by `every_window_shares_one_clock_origin`.
+
 [273] rejected-hover reporting (`file_drop.rs`): a drag the editor refuses
 (target disabled, outside the rectangle, wrong file type) reports its hover
 position through `rejected_hover_position()` until it leaves or is accepted.
