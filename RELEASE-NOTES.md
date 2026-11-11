@@ -13,6 +13,7 @@ Downloads: [releases page](https://github.com/TiiPaa/flashdrum/releases).
 **Fixes**
 
 - Step conditions (1/2, 1/4, 4/4…) fired one loop early when the host started playing before bar 1 (pre-roll, count-in): a step set to 4/4 played on the third loop.
+- After closing and reopening the plugin window, the names of the lanes that had just flashed (MIDI note, Paste Lane, Paste Grid, Randomize Lane) could stay white for minutes.
 
 **Presets**
 
