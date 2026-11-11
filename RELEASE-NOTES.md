@@ -2,6 +2,22 @@
 
 Downloads: [releases page](https://github.com/TiiPaa/flashdrum/releases).
 
+## 0.9.8 — 2026-11-11 (beta)
+
+**Song mode**
+
+- Every change made to the playing pattern in Song mode (grid edits, GENERATE, Full random, pattern length…) is now kept in its pattern slot just before the Song moves on to the next pattern. Before, only some grid edits were kept, and an edit could end up in the wrong slot.
+- In Song mode, **GENERATE** and **Full random** always ask for confirmation (**Sure?**): the result is kept in the slot of the playing pattern.
+- The **Song Mode** checkbox becomes a key, **Song Mode OFF** / **Song Mode ON** (blue), like Follow.
+
+**Fixes**
+
+- Step conditions (1/2, 1/4, 4/4…) fired one loop early when the host started playing before bar 1 (pre-roll, count-in): a step set to 4/4 played on the third loop.
+
+**Presets**
+
+- An installation that already received the starter presets now also gets **Apollo**, **Battlestar**, **LastWinterV2** and **Wire**, once. A starter preset you deleted comes back that one time.
+
 ## 0.9.7 — 2026-10-26 (beta)
 
 **Generator**
