@@ -138,7 +138,7 @@ fn add_stereo_aux_sample(
 /// loop? No sequencer p-lock = always.
 fn step_condition_passes(
     seq_params: Option<crate::plock::SequencerStepParams>,
-    loop_count: usize,
+    loop_count: i64,
 ) -> bool {
     if let Some(sp) = seq_params {
         use crate::plock::StepCondition::*;
@@ -151,15 +151,15 @@ fn step_condition_passes(
             Always => true,
             First => loop_count == 0,
             NotFirst => loop_count > 0,
-            Half1 => loop_count % 2 == 0,
-            Half2 => loop_count % 2 == 1,
-            Third1 => loop_count % 3 == 0,
-            Third2 => loop_count % 3 == 1,
-            Third3 => loop_count % 3 == 2,
-            Fourth1 => loop_count % 4 == 0,
-            Fourth2 => loop_count % 4 == 1,
-            Fourth3 => loop_count % 4 == 2,
-            Fourth4 => loop_count % 4 == 3,
+            Half1 => loop_count.rem_euclid(2) == 0,
+            Half2 => loop_count.rem_euclid(2) == 1,
+            Third1 => loop_count.rem_euclid(3) == 0,
+            Third2 => loop_count.rem_euclid(3) == 1,
+            Third3 => loop_count.rem_euclid(3) == 2,
+            Fourth1 => loop_count.rem_euclid(4) == 0,
+            Fourth2 => loop_count.rem_euclid(4) == 1,
+            Fourth3 => loop_count.rem_euclid(4) == 2,
+            Fourth4 => loop_count.rem_euclid(4) == 3,
         };
         let passes = evaluate(sp.condition) && sp.condition_and.map(evaluate).unwrap_or(true);
         // `Not` inverts the whole expression, second term
@@ -399,7 +399,7 @@ pub struct DrumFlashVst {
     /// Current position in the song sequence (0-63).
     song_position: Arc<AtomicU32>,
     /// Last observed loop count to detect pattern wrap.
-    last_loop_count: usize,
+    last_loop_count: i64,
     /// How many times the current song step has repeated since it was loaded.
     song_repeat_counter: u32,
     /// Last song position seen by the audio thread, used to detect UI resets.
@@ -422,7 +422,7 @@ pub struct DrumFlashVst {
     /// per-hit count), plus the loop and page the previous sample was in, to
     /// catch the wraps that reset it.
     advance_hits: [u32; crate::track::MAX_TRACKS],
-    advance_last_loop: usize,
+    advance_last_loop: i64,
     advance_last_page: usize,
     /// Pending pattern length update after a slot load (1-64, 0 = none).
     /// The UI thread applies this to the IntParam on the next frame.
@@ -2712,7 +2712,8 @@ impl DrumFlashVst {
             } else if mode & RESET_PATTERN != 0 {
                 step as u32
             } else {
-                (self.sequencer.loop_count() * (self.audio_master_length as usize).max(1) + step)
+                (self.sequencer.loop_count().max(0) as usize * (self.audio_master_length as usize).max(1)
+                    + step)
                     as u32
             };
         }
@@ -3548,7 +3549,7 @@ impl DrumFlashVst {
                 // Apply step conditions. A trigger that fired early
                 // across the pattern wrap (negative microtiming on the
                 // first step) belongs to the NEXT loop.
-                let loop_count = self.sequencer.loop_count() + usize::from(trigger.early_next_loop);
+                let loop_count = self.sequencer.loop_count() + i64::from(trigger.early_next_loop);
                 let condition_passes = step_condition_passes(seq_params, loop_count);
                 if !condition_passes {
                     continue;
@@ -5197,7 +5198,7 @@ mod tests {
         assert!(!step_condition_passes(cond(First, None, false), 1));
         // [219] "1/2 and 1/3" fires every sixth loop.
         let both = cond(Half1, Some(Third1), false);
-        let fired: Vec<usize> = (0..12)
+        let fired: Vec<i64> = (0..12)
             .filter(|&l| step_condition_passes(both, l))
             .collect();
         assert_eq!(fired, vec![0, 6]);

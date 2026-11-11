@@ -189,7 +189,9 @@ pub struct Sequencer {
     /// Global pattern length (1-64 steps). Controls master loop point.
     master_length: usize,
     /// How many times the master pattern has looped (for step conditions).
-    loop_count: usize,
+    /// Signed: a host pre-roll / count-in (negative position) is loop -1,
+    /// so the loop that starts at the host's 0 is loop 0, the FIRST one.
+    loop_count: i64,
     /// Per-slot mapping to the legacy `DrumVoice` index used for synthesis.
     /// `None` means the slot is inactive.
     slot_voices: [Option<usize>; MAX_TRACKS],
@@ -676,7 +678,10 @@ impl Sequencer {
         self.beat_position = self.host_to_local(position_beats);
         // Keep loop_count in sync with the host's absolute timeline so
         // step conditions (1st loop, 2/2, etc.) work when driven by DAW transport.
-        self.loop_count = (position_beats / self.loop_span_beats()).floor() as usize;
+        // Signed floor: a negative position (pre-roll, count-in) is loop -1.
+        // Cast to usize it saturated to 0, and the wrap at the host's 0 then
+        // made the first real loop number 1: every condition fired a loop early.
+        self.loop_count = (position_beats / self.loop_span_beats()).floor() as i64;
         let page_loop_on = self.page_loop().is_some();
         for i in 0..MAX_TRACKS {
             let (swing, groove_type) = self.groove_of(i);
@@ -810,7 +815,7 @@ impl Sequencer {
         steps
     }
 
-    pub fn loop_count(&self) -> usize {
+    pub fn loop_count(&self) -> i64 {
         self.loop_count
     }
 
@@ -1135,6 +1140,37 @@ mod tests {
         assert!(triggers[0].should_trigger);
         assert_eq!(triggers[0].step, 0);
         assert_eq!(seq.current_step(), 0);
+    }
+
+    /// A host pre-roll / count-in starts the transport at a NEGATIVE position:
+    /// that run-up is loop -1, and the loop starting at the host's 0 is loop 0.
+    /// The count used to saturate to 0 there, so the first real loop was
+    /// loop 1 and every step condition (1/4, 4/4...) fired one loop early.
+    #[test]
+    fn pre_roll_does_not_shift_the_loop_count() {
+        let mut seq = Sequencer::new(SharedPattern::new(&Pattern::empty()));
+        seq.play();
+        let sample_rate = 44100.0;
+        let bpm = 120.0;
+        // One bar of pre-roll before the host's 0.
+        seq.sync_to_host(-4.0, bpm, sample_rate);
+        assert_eq!(seq.loop_count(), -1, "the pre-roll is not the first loop");
+        let samples_per_beat = (60.0 / bpm * sample_rate) as usize;
+        let mut first_real_loop = None;
+        for _ in 0..(samples_per_beat * 9) {
+            seq.process_sample(bpm, sample_rate, 0.0, GrooveType::Straight);
+            if first_real_loop.is_none() && seq.loop_count() >= 0 {
+                first_real_loop = Some(seq.loop_count());
+            }
+        }
+        assert_eq!(first_real_loop, Some(0), "the loop at the host's 0 is the first");
+        // A start a hair before 0 (latency rounding) is still loop -1 → 0.
+        seq.sync_to_host(-0.001, bpm, sample_rate);
+        assert_eq!(seq.loop_count(), -1);
+        for _ in 0..64 {
+            seq.process_sample(bpm, sample_rate, 0.0, GrooveType::Straight);
+        }
+        assert_eq!(seq.loop_count(), 0);
     }
 
     #[test]
