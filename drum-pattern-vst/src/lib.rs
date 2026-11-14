@@ -30,6 +30,7 @@ mod sound_settings;
 mod synthesis;
 mod track;
 mod ui;
+mod instrument_images;
 mod user_textures;
 
 use generator::{GeneratorType, Style};
@@ -503,6 +504,10 @@ pub struct DrumFlashParams {
     /// paths, decoded on restore (main thread) into the pool the voices read.
     #[persist = "lane-textures-v1"]
     pub user_textures: user_textures::UserTextures,
+
+    /// Optional custom PNG per lane for the Lane Editor identity block.
+    #[persist = "instrument-images-v1"]
+    pub instrument_images: instrument_images::InstrumentImages,
 
     /// [242] Macro assignments: host-driven "Macro N" knob -> (lane, sound
     /// parameter). The blob holds 32 slots so extending past 16 knobs later
@@ -1080,6 +1085,7 @@ impl Default for DrumFlashParams {
             song_controller: atomic_song::SharedSongStateController::default(),
             lane_length_locks: LaneLengthLocks::new(),
             user_textures: user_textures::UserTextures::new(),
+            instrument_images: instrument_images::InstrumentImages::new(),
 
             macro_map_state: macros::PersistentMacroMap::new(),
             instance_seeded: Arc::new(AtomicBool::new(false)),
@@ -2394,6 +2400,50 @@ impl Default for DrumFlashVst {
     }
 }
 
+/// [95] Control messages emitted by a MIDI Out hit, before its NoteOn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MidiOutMessage {
+    ProgramChange(u8),
+    ControlChange { cc: u8, value: u8 },
+}
+
+fn midi_byte(value: f32) -> u8 {
+    if value.is_finite() {
+        value.round().clamp(0.0, 127.0) as u8
+    } else {
+        0
+    }
+}
+
+/// [95] 0 keeps the global channel; 1..16 overrides it (NoteEvent is 0-based).
+fn midi_out_channel(settings: &synthesis::MidiOutSettings, global_channel: u8) -> u8 {
+    if settings.channel.is_finite() && settings.channel.round() >= 1.0 {
+        (settings.channel.round().clamp(1.0, 16.0) as u8) - 1
+    } else {
+        global_channel
+    }
+}
+
+/// Resolve MIDI Out's global + per-step settings into raw MIDI messages.
+/// Program Change comes first so the CCs address the newly selected program.
+fn emit_midi_out_control_messages(
+    settings: &synthesis::VoiceSettings,
+    mut emit: impl FnMut(MidiOutMessage),
+) {
+    let settings = synthesis::MidiOutSettings::from(*settings);
+    if settings.program_enabled >= 0.5 {
+        emit(MidiOutMessage::ProgramChange(midi_byte(settings.program)));
+    }
+    for i in 0..4 {
+        if settings.cc_enabled[i] >= 0.5 {
+            emit(MidiOutMessage::ControlChange {
+                cc: midi_byte(settings.cc_number[i]),
+                value: midi_byte(settings.cc_value[i]),
+            });
+        }
+    }
+}
+
 /// Silence every other active slot sharing `slot_idx`'s choke group.
 /// Generalizes the old HH→OH choke to any instrument, driven by the per-slot
 /// `choke_group` (0 = none) set in the Track tab. Lock-free, audio-thread safe.
@@ -2757,7 +2807,7 @@ impl DrumFlashVst {
         hard: bool,
         settings: synthesis::VoiceSettings,
     ) {
-        let Some(_voice) = synthesis::DrumVoice::from_index(voice_idx) else {
+        let Some(voice) = synthesis::DrumVoice::from_index(voice_idx) else {
             return;
         };
         // [227] Every path that fires a voice (first hit, stutter, fusion
@@ -2775,7 +2825,38 @@ impl DrumFlashVst {
             &self.params.track_layout.state,
             slot_idx,
         );
-        let (note, channel) = self.resolve_midi_output_for_slot(slot_idx);
+        let (lane_note, global_channel) = self.resolve_midi_output_for_slot(slot_idx);
+        // [95] MIDI Out's Note and Channel are sound settings: the step's
+        // p-lock wins over the lane/global values, as for its CCs and Program.
+        let (note, channel) = if voice == synthesis::DrumVoice::MidiOut {
+            let midi = synthesis::MidiOutSettings::from(settings);
+            (
+                midi_byte(midi.note),
+                midi_out_channel(&midi, global_channel),
+            )
+        } else {
+            (lane_note, global_channel)
+        };
+        if voice == synthesis::DrumVoice::MidiOut {
+            let timing = sample_idx as u32;
+            emit_midi_out_control_messages(&settings, |message| match message {
+                MidiOutMessage::ProgramChange(program) => {
+                    context.send_event(NoteEvent::MidiProgramChange {
+                        timing,
+                        channel,
+                        program,
+                    });
+                }
+                MidiOutMessage::ControlChange { cc, value } => {
+                    context.send_event(NoteEvent::MidiCC {
+                        timing,
+                        channel,
+                        cc,
+                        value: value as f32 / 127.0,
+                    });
+                }
+            });
+        }
         context.send_event(NoteEvent::NoteOn {
             timing: sample_idx as u32,
             voice_id: None,
@@ -4063,7 +4144,7 @@ impl Plugin for DrumFlashVst {
     }];
 
     const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
-    const MIDI_OUTPUT: MidiConfig = MidiConfig::Basic;
+    const MIDI_OUTPUT: MidiConfig = MidiConfig::MidiCCs;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
     type SysExMessage = ();
@@ -4721,11 +4802,16 @@ mod tests {
     fn morphable_fields_are_non_empty_for_all_voices() {
         for inst in 0..crate::instrument_registry::INSTRUMENTS.len() {
             let fields = crate::instrument_registry::morphable_fields(inst);
-            assert!(
-                !fields.is_empty(),
-                "instrument {} should have morphable fields",
-                inst
-            );
+            if inst == synthesis::DrumVoice::MidiOut as usize {
+                // [95] MIDI CCs and program numbers are discrete: no morphing.
+                assert!(fields.is_empty());
+            } else {
+                assert!(
+                    !fields.is_empty(),
+                    "instrument {} should have morphable fields",
+                    inst
+                );
+            }
         }
     }
 
@@ -5796,6 +5882,97 @@ mod tests {
         assert_eq!(gains[2], 1.0);
         assert_eq!(gains[4], 0.0); // soloed but not routed to Main
         assert_eq!(gains[5], 1.0); // routed to Main; gains are independent of mute/solo
+    }
+
+    #[test]
+    fn midi_out_controls_respect_switches_order_and_byte_ranges() {
+        let mut settings = synthesis::VoiceSettings::midi_out();
+        let mut messages = Vec::new();
+        emit_midi_out_control_messages(&settings, |message| messages.push(message));
+        assert!(messages.is_empty(), "all MIDI Out controls default to off");
+
+        settings.special[12] = 1.0;
+        settings.special[13] = 127.0;
+        for i in 0..4 {
+            settings.special[i * 3] = 1.0;
+            settings.special[i * 3 + 1] = i as f32 + 10.0;
+            settings.special[i * 3 + 2] = i as f32 * 20.0;
+        }
+        // Host or corrupt preset data must not escape the MIDI byte range.
+        settings.special[2] = 999.0;
+        settings.special[4] = f32::NAN;
+        emit_midi_out_control_messages(&settings, |message| messages.push(message));
+        assert_eq!(
+            messages,
+            vec![
+                MidiOutMessage::ProgramChange(127),
+                MidiOutMessage::ControlChange { cc: 10, value: 127 },
+                MidiOutMessage::ControlChange { cc: 0, value: 20 },
+                MidiOutMessage::ControlChange { cc: 12, value: 40 },
+                MidiOutMessage::ControlChange { cc: 13, value: 60 },
+            ]
+        );
+    }
+
+    #[test]
+    fn midi_out_controls_use_the_steps_sound_plock() {
+        let vst = DrumFlashVst::default();
+        let voice_idx = synthesis::DrumVoice::MidiOut as usize;
+        vst.sound_settings_state.reset_slot_to_defaults(
+            0,
+            crate::track::TrackInstrumentKind::MidiOut,
+            0.0,
+        );
+        // CC 2 is off globally; the step turns it on and chooses number/value.
+        for (special, value) in [
+            (3, 1.0),
+            (4, 74.0),
+            (5, 111.0),
+            (14, 67.0),
+            (15, 3.0),
+        ] {
+            let field = crate::param_id::ParamId::Special(special)
+                .plock_field()
+                .expect("MIDI Out CC 2 must be p-lockable");
+            vst.params
+                .plock_state
+                .state
+                .set_field(0, 7, field, value);
+        }
+        let settings = vst.voice_settings_at_step(0, voice_idx, 7);
+        let midi = synthesis::MidiOutSettings::from(settings);
+        assert_eq!(midi.note, 67.0);
+        assert_eq!(midi_out_channel(&midi, 9), 2);
+        let mut messages = Vec::new();
+        emit_midi_out_control_messages(&settings, |message| messages.push(message));
+        assert_eq!(
+            messages,
+            vec![MidiOutMessage::ControlChange { cc: 74, value: 111 }]
+        );
+    }
+
+    #[test]
+    fn midi_out_channel_defaults_to_global_and_clamps_the_override() {
+        let mut settings = synthesis::VoiceSettings::midi_out();
+        assert_eq!(
+            midi_out_channel(&synthesis::MidiOutSettings::from(settings), 9),
+            9
+        );
+        settings.special[15] = 16.0;
+        assert_eq!(
+            midi_out_channel(&synthesis::MidiOutSettings::from(settings), 9),
+            15
+        );
+        settings.special[15] = f32::NAN;
+        assert_eq!(
+            midi_out_channel(&synthesis::MidiOutSettings::from(settings), 9),
+            9
+        );
+    }
+
+    #[test]
+    fn midi_output_configuration_accepts_ccs_and_program_change() {
+        assert_eq!(DrumFlashVst::MIDI_OUTPUT, MidiConfig::MidiCCs);
     }
 
     #[test]

@@ -34,6 +34,8 @@ pub enum ParamFamily {
     Saturation,
     /// Output / routing parameters: volume, mix, stereo, analog drift.
     Output,
+    /// [95] External MIDI controls: CCs and Program Change.
+    Midi,
 }
 
 impl ParamFamily {
@@ -47,6 +49,7 @@ impl ParamFamily {
             ParamFamily::Modulation => "MOD",
             ParamFamily::Saturation => "DIST",
             ParamFamily::Output => "OUTPUT",
+            ParamFamily::Midi => "MIDI",
         }
     }
 }
@@ -5302,6 +5305,52 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
         freq_as_notes: false,
         analog_fixed: true,
     },
+    // [95] MIDI Out: no audio and no standard sound parameters. Every control
+    // is discrete, globally editable and available to the per-step p-locks.
+    InstrumentDef {
+        index: 30,
+        name: "MidiOut",
+        label: "MI",
+        full_name: "MIDI Out",
+        midi_note: 60,
+        algo_count: 1,
+        standard_params: &[],
+        special_params: &[
+            sp_discrete("midi_out_note", "Note", 60.0, 0.0, 127.0, 14, ParamFamily::Midi),
+            sp_options(
+                "midi_out_channel",
+                "Channel",
+                0.0,
+                15,
+                ParamFamily::Midi,
+                &["Global", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16"],
+            ),
+            sp_discrete("midi_out_cc1_on", "CC 1", 0.0, 0.0, 1.0, 0, ParamFamily::Midi),
+            sp_discrete("midi_out_cc1_number", "CC 1 Number", 1.0, 0.0, 127.0, 1, ParamFamily::Midi),
+            sp_discrete("midi_out_cc1_value", "CC 1 Value", 0.0, 0.0, 127.0, 2, ParamFamily::Midi),
+            sp_discrete("midi_out_cc2_on", "CC 2", 0.0, 0.0, 1.0, 3, ParamFamily::Midi),
+            sp_discrete("midi_out_cc2_number", "CC 2 Number", 2.0, 0.0, 127.0, 4, ParamFamily::Midi),
+            sp_discrete("midi_out_cc2_value", "CC 2 Value", 0.0, 0.0, 127.0, 5, ParamFamily::Midi),
+            sp_discrete("midi_out_cc3_on", "CC 3", 0.0, 0.0, 1.0, 6, ParamFamily::Midi),
+            sp_discrete("midi_out_cc3_number", "CC 3 Number", 3.0, 0.0, 127.0, 7, ParamFamily::Midi),
+            sp_discrete("midi_out_cc3_value", "CC 3 Value", 0.0, 0.0, 127.0, 8, ParamFamily::Midi),
+            sp_discrete("midi_out_cc4_on", "CC 4", 0.0, 0.0, 1.0, 9, ParamFamily::Midi),
+            sp_discrete("midi_out_cc4_number", "CC 4 Number", 4.0, 0.0, 127.0, 10, ParamFamily::Midi),
+            sp_discrete("midi_out_cc4_value", "CC 4 Value", 0.0, 0.0, 127.0, 11, ParamFamily::Midi),
+            sp_discrete("midi_out_program_on", "Program Change", 0.0, 0.0, 1.0, 12, ParamFamily::Midi),
+            sp_discrete("midi_out_program", "Program", 0.0, 0.0, 127.0, 13, ParamFamily::Midi),
+        ],
+        // Inert audio values, kept only because the common per-slot settings
+        // layout always carries the thirteen standard fields.
+        sound_settings_default: [
+            60.0, 1.0, 1.0, 20000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0,
+        ],
+        freq_display_ratio: 1.0,
+        filter_type_label: "",
+        is_sampler: false,
+        freq_as_notes: false,
+        analog_fixed: true,
+    },
 ];
 
 /// Highest algo index across all instruments. Used as the shared range of the
@@ -5497,6 +5546,26 @@ mod tests {
                     def.full_name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn midi_out_declares_only_discrete_midi_controls() {
+        let def = &INSTRUMENTS[crate::synthesis::DrumVoice::MidiOut as usize];
+        assert_eq!(def.full_name, "MIDI Out");
+        assert_eq!(def.midi_note, 60);
+        assert!(def.standard_params.is_empty());
+        assert_eq!(def.special_params.len(), 16);
+        for param in def.special_params {
+            assert!(!param.continuous, "{} must not morph", param.name);
+            let expected_max = if matches!(param.special_index, 0 | 3 | 6 | 9 | 12) {
+                1.0
+            } else if param.special_index == 15 {
+                16.0
+            } else {
+                127.0
+            };
+            assert_eq!((param.min, param.max), (0.0, expected_max), "{}", param.name);
         }
     }
 

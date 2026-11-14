@@ -13,6 +13,7 @@ mod hihat;
 pub mod inserts;
 mod kick;
 mod kick_808;
+mod midi_out;
 mod oneshot;
 mod open_hihat;
 mod perc1;
@@ -46,6 +47,7 @@ pub use cymbal::CymbalVoice;
 pub use hihat::HiHatVoice;
 pub use kick::KickVoice;
 pub use kick_808::Kick808Voice;
+pub use midi_out::MidiOutVoice;
 pub use oneshot::OneShotVoice;
 #[allow(unused_imports)]
 pub use delay::sp as delay_sp;
@@ -92,6 +94,8 @@ pub use settings::cymbal::CymbalSettings;
 pub use settings::hihat::HiHatSettings;
 pub use settings::kick::KickSettings;
 pub use settings::kick_808::Kick808Settings;
+#[allow(unused_imports)] // the standalone harness has no MIDI event path
+pub use settings::midi_out::MidiOutSettings;
 pub use settings::oneshot::OneShotSettings;
 pub use settings::open_hihat::OpenHiHatSettings;
 pub use settings::perc1::Perc1Settings;
@@ -144,10 +148,12 @@ pub enum DrumVoice {
     Delay = 28,
     /// [286] Rumble - the third send effect: the kick rumble.
     Rumble = 29,
+    /// [95] MIDI Out - notes, CCs and Program Change, with no audio engine.
+    MidiOut = 30,
 }
 
 impl DrumVoice {
-    pub const COUNT: usize = 30;
+    pub const COUNT: usize = 31;
 
     /// [286] An effect (Reverb, Delay), not a sound source: no steps, no note.
     pub const fn is_effect_index(index: usize) -> bool {
@@ -188,6 +194,7 @@ impl DrumVoice {
             27 => Some(Self::Reverb),
             28 => Some(Self::Delay),
             29 => Some(Self::Rumble),
+            30 => Some(Self::MidiOut),
             _ => None,
         }
     }
@@ -819,6 +826,31 @@ impl VoiceSettings {
         }
     }
 
+    /// [95] MIDI Out: inert audio settings; four CCs default to controllers
+    /// 1..4, all CCs and Program Change start disabled.
+    pub fn midi_out() -> Self {
+        Self {
+            frequency: 60.0,
+            decay: 1.0,
+            volume: 1.0,
+            filter_freq: 20000.0,
+            attack: 0.0,
+            release: 0.0,
+            decay_curve: 0.0,
+            release_curve: 0.0,
+            hold: 0.0,
+            filter_env_amount: 0.0,
+            filter_env_decay: 0.05,
+            analog: 0.0,
+            stereo: 0.0,
+            algo: 0,
+            special: [
+                0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 60.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        }
+    }
+
     pub fn oneshot() -> Self {
         Self {
             frequency: 0.0,
@@ -1202,6 +1234,8 @@ drum_voice_kinds! {
     Delay(DelayVoice),
     /// [286] Carried by an effect slot; the DSP is `DrumSynthesizer::fx_rumble`.
     Rumble(RumbleVoice),
+    /// [95] An instrument lane whose output is MIDI only.
+    MidiOut(MidiOutVoice),
     Buzz(BuzzVoice),
     Sdrex(SdrexVoice),
     Bd6Ac(AcVoice),
@@ -1290,6 +1324,7 @@ fn create_voice_for_kind(
         K::Reverb => DrumVoiceKind::Reverb(ReverbVoice),
         K::Delay => DrumVoiceKind::Delay(DelayVoice),
         K::Rumble => DrumVoiceKind::Rumble(RumbleVoice),
+        K::MidiOut => DrumVoiceKind::MidiOut(MidiOutVoice),
         K::Buzz => DrumVoiceKind::Buzz(BuzzVoice::new(
             sample_rate,
             BuzzSettings::from(VoiceSettings::buzz()),
@@ -2576,6 +2611,7 @@ mod tests {
                 K::Reverb => VoiceSettings::reverb(),
                 K::Delay => VoiceSettings::delay(),
                 K::Rumble => VoiceSettings::rumble(),
+                K::MidiOut => VoiceSettings::midi_out(),
             }
         }
 

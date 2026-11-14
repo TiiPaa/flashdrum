@@ -85,6 +85,9 @@ pub struct InstrumentPreset {
     /// from older presets (`default`), and for every other instrument.
     #[serde(default)]
     pub user_texture: Option<String>,
+    /// Optional custom artwork for the Lane Editor identity block.
+    #[serde(default)]
+    pub instrument_image: Option<String>,
 }
 
 /// One active lane's sound (standards + specials + algo) captured with a
@@ -104,6 +107,8 @@ pub struct PatternSlotSound {
     /// [228] See `InstrumentPreset::user_texture`.
     #[serde(default)]
     pub user_texture: Option<String>,
+    #[serde(default)]
+    pub instrument_image: Option<String>,
 }
 
 /// A full pattern: grid + fusions + sound plocks + seq plocks, plus the lane
@@ -209,6 +214,7 @@ pub fn capture_instrument(
         algo: algo.clamp(0, 255) as u8,
         specials,
         user_texture,
+        instrument_image: None,
     }
 }
 
@@ -226,6 +232,7 @@ pub fn capture_pattern(
     sound_settings: &SoundSettingsState,
     algos: &[i32],
     textures: &crate::user_textures::UserTextures,
+    instrument_images: &crate::instrument_images::InstrumentImages,
 ) -> PatternPreset {
     let mut slot = PatternSlot::default();
     slot.capture(pattern, plock_state, seq_plock_state, pattern_length);
@@ -251,6 +258,9 @@ pub fn capture_pattern(
                 algo: ip.algo,
                 specials: ip.specials,
                 user_texture: ip.user_texture,
+                instrument_image: instrument_images
+                    .path(i)
+                    .map(|p| p.to_string_lossy().into_owned()),
             });
         }
     }
@@ -745,6 +755,7 @@ mod tests {
             algo: 2,
             specials: vec![0.5, 1.0, 3.0],
             user_texture: Some("C:/samples/tex.wav".to_string()),
+            instrument_image: Some("C:/images/kick.png".to_string()),
         };
         let json = serde_json::to_string(&p).unwrap();
         let back: InstrumentPreset = serde_json::from_str(&json).unwrap();
@@ -777,6 +788,7 @@ mod tests {
             &sound_settings,
             &[0i32; 14],
             &crate::user_textures::UserTextures::new(),
+            &crate::instrument_images::InstrumentImages::new(),
         );
         // JSON round trip, like save/load through a file.
         let json = serde_json::to_string(&preset).unwrap();
@@ -831,6 +843,7 @@ mod tests {
             &sound,
             &algos,
             &crate::user_textures::UserTextures::new(),
+            &crate::instrument_images::InstrumentImages::new(),
         );
         assert_eq!(p.step_masks[0], 0b101);
         assert!(hex_decode(&p.plock_hex).is_ok());

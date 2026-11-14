@@ -121,6 +121,30 @@ pub fn standard(voice: usize, field: F) -> String {
 /// Help of a special row, by its registry name (`kick_click`, ...).
 pub fn special(name: &str) -> &'static str {
     let ends = |s: &str| name.ends_with(s);
+    // [95] MIDI Out: all controls can be set globally or locked per step.
+    if name.starts_with("midi_out_cc") {
+        if ends("_on") {
+            return "MIDI CC: on = this controller is sent at every active step, just before the note. A step p-lock can switch it on or off independently.";
+        }
+        if ends("_number") {
+            return "CC Number: which MIDI controller to send (0-127). Can be locked per step.";
+        }
+        if ends("_value") {
+            return "CC Value: the controller value to send (0-127). Can be locked per step.";
+        }
+    }
+    if name == "midi_out_note" {
+        return "Note: the MIDI note sent at each active step (0-127; 60 = C3). Can be locked per step.";
+    }
+    if name == "midi_out_channel" {
+        return "Channel: Global follows Flash Drum's global MIDI channel. Choose 1-16 to override it for this instrument, globally or with a step p-lock.";
+    }
+    if name == "midi_out_program_on" {
+        return "Program Change: on = the selected program is sent at every active step, before the CCs and the note. A step p-lock can switch it on or off independently.";
+    }
+    if name == "midi_out_program" {
+        return "Program: the MIDI program number to send (0-127). Can be locked per step.";
+    }
     // Shared by many instruments: by suffix.
     if ends("_saturation_type") || ends("_sat_type") {
         return "Saturation Type: the kind of distortion. None = off. SoftClip and Tape round the peaks, Valve and Transistor add colour, HardClip cuts hard.";

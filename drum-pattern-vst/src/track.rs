@@ -74,6 +74,8 @@ pub enum TrackInstrumentKind {
     Delay = 26,
     /// [286] Rumble - the third send effect: the kick rumble (an effect-bus slot, 12 / 13).
     Rumble = 27,
+    /// [95] MIDI Out - external notes, CCs and Program Change, no audio.
+    MidiOut = 28,
 }
 
 /// Instrument category used to group the kind pickers/menus
@@ -115,7 +117,7 @@ impl InstrumentCategory {
 }
 
 impl TrackInstrumentKind {
-    pub const COUNT: usize = 28;
+    pub const COUNT: usize = 29;
 
     /// Every kind, in stable declaration order.
     pub const ALL: [Self; Self::COUNT] = [
@@ -147,6 +149,7 @@ impl TrackInstrumentKind {
         Self::Reverb,
         Self::Delay,
         Self::Rumble,
+        Self::MidiOut,
     ];
 
     /// Musical family of this kind (grouping for pickers/menus).
@@ -170,7 +173,7 @@ impl TrackInstrumentKind {
             | Self::Oh6Ac => InstrumentCategory::HiHat,
             Self::Tom | Self::Perc1 | Self::Tm6Ac | Self::OneShot => InstrumentCategory::Perc,
             Self::Buzz | Self::Rift => InstrumentCategory::Fx,
-            Self::Ride | Self::Cymbal => InstrumentCategory::Other,
+            Self::Ride | Self::Cymbal | Self::MidiOut => InstrumentCategory::Other,
             Self::Reverb | Self::Delay | Self::Rumble => InstrumentCategory::Effect,
         }
     }
@@ -237,6 +240,7 @@ impl TrackInstrumentKind {
             25 => Some(Self::Reverb),
             26 => Some(Self::Delay),
             27 => Some(Self::Rumble),
+            28 => Some(Self::MidiOut),
             _ => None,
         }
     }
@@ -275,6 +279,7 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::Reverb => "RV",
             TrackInstrumentKind::Delay => "DL",
             TrackInstrumentKind::Rumble => "RU",
+            TrackInstrumentKind::MidiOut => "MI",
         }
     }
 
@@ -308,6 +313,7 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::Reverb => "Reverb",
             TrackInstrumentKind::Delay => "Delay",
             TrackInstrumentKind::Rumble => "Rumble",
+            TrackInstrumentKind::MidiOut => "MIDI Out",
         }
     }
 
@@ -342,6 +348,7 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::Rift => 58,
             // GM ride cymbal 2 - free.
             TrackInstrumentKind::OneShot => 59,
+            TrackInstrumentKind::MidiOut => 60,
             // An effect bus plays no note and listens to none; 0 is never matched
             // (`slots_listening_to` skips effect kinds).
             TrackInstrumentKind::Reverb | TrackInstrumentKind::Delay | TrackInstrumentKind::Rumble => 0,
@@ -382,6 +389,7 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::Reverb => 27,
             TrackInstrumentKind::Delay => 28,
             TrackInstrumentKind::Rumble => 29,
+            TrackInstrumentKind::MidiOut => 30,
         }
     }
 
@@ -416,6 +424,7 @@ impl TrackInstrumentKind {
             27 => Some(Self::Reverb),
             28 => Some(Self::Delay),
             29 => Some(Self::Rumble),
+            30 => Some(Self::MidiOut),
             _ => None,
         }
     }
@@ -1550,6 +1559,20 @@ mod tests {
             let cat = kind.category();
             assert!(InstrumentCategory::ALL.contains(&cat), "{kind:?}");
         }
+    }
+
+    #[test]
+    fn midi_out_has_stable_indices_and_external_midi_defaults() {
+        let kind = TrackInstrumentKind::MidiOut;
+        assert_eq!(kind.index(), 28);
+        assert_eq!(TrackInstrumentKind::from_index(28), Some(kind));
+        assert_eq!(kind.drum_voice_index(), 30);
+        assert_eq!(TrackInstrumentKind::from_drum_voice_index(30), Some(kind));
+        assert_eq!(kind.category(), InstrumentCategory::Other);
+        assert_eq!(kind.default_label(), "MI");
+        assert_eq!(kind.default_name(), "MIDI Out");
+        assert_eq!(kind.default_midi_note(), 60);
+        assert!(!kind.is_effect());
     }
 
     /// [203] [204] A retired kind cannot be picked, but it must still decode

@@ -14,6 +14,7 @@ pub mod cymbal;
 pub mod hihat;
 pub mod kick;
 pub mod kick_808;
+pub mod midi_out;
 pub mod oneshot;
 pub mod open_hihat;
 pub mod perc1;

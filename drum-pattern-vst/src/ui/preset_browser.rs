@@ -527,13 +527,18 @@ fn save_current(
                 return Err("no instrument on the selected lane".to_string());
             };
             let algo = params.algos()[slot].value();
-            presets::save_instrument(&presets::capture_instrument(
+            let mut preset = presets::capture_instrument(
                 name,
                 slot_kind,
                 &sound_settings.instruments[slot],
                 algo,
                 presets::user_texture_path(slot_kind, slot, &params.user_textures),
-            ))
+            );
+            preset.instrument_image = params
+                .instrument_images
+                .path(slot)
+                .map(|p| p.to_string_lossy().into_owned());
+            presets::save_instrument(&preset)
         }
         PresetKind::Pattern => {
             let layout =
@@ -552,6 +557,7 @@ fn save_current(
                 sound_settings,
                 &algos,
                 &params.user_textures,
+                &params.instrument_images,
             ))
         }
         PresetKind::Song => {
@@ -694,6 +700,7 @@ pub fn apply_instrument_preset_to_slot(
             preset.algo,
             &preset.specials,
             preset.user_texture.as_deref(),
+            preset.instrument_image.as_deref(),
         );
     }
     sound_settings.bump_version();
@@ -712,6 +719,7 @@ fn write_slot_sound(
     algo: u8,
     specials: &[f32],
     user_texture: Option<&str>,
+    instrument_image: Option<&str>,
 ) {
     use crate::instrument_registry::StandardField as F;
     const ORDER: [F; 13] = [
@@ -755,6 +763,14 @@ fn write_slot_sound(
             }
             None => params.user_textures.clear(slot),
         }
+    }
+    match instrument_image {
+        Some(path) => {
+            let _ = params
+                .instrument_images
+                .load_restored(slot, std::path::Path::new(path));
+        }
+        None => params.instrument_images.clear(slot),
     }
     for (i, def) in kind.instrument_def().special_params.iter().enumerate() {
         if let Some(value) = specials.get(i) {
@@ -869,6 +885,7 @@ fn apply_pattern(
             snd.algo,
             &snd.specials,
             snd.user_texture.as_deref(),
+            snd.instrument_image.as_deref(),
         );
     }
     if !preset.sounds.is_empty() {
@@ -894,13 +911,18 @@ fn export_factory(
                 return;
             };
             let algo = params.algos()[slot].value();
-            serde_json::to_string_pretty(&presets::capture_instrument(
+            let mut preset = presets::capture_instrument(
                 name.clone(),
                 slot_kind,
                 &sound_settings.instruments[slot],
                 algo,
                 presets::user_texture_path(slot_kind, slot, &params.user_textures),
-            ))
+            );
+            preset.instrument_image = params
+                .instrument_images
+                .path(slot)
+                .map(|p| p.to_string_lossy().into_owned());
+            serde_json::to_string_pretty(&preset)
         }
         PresetKind::Pattern => {
             let layout =
@@ -919,6 +941,7 @@ fn export_factory(
                 sound_settings,
                 &algos,
                 &params.user_textures,
+                &params.instrument_images,
             ))
         }
         PresetKind::Song => {

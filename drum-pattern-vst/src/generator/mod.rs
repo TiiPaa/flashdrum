@@ -153,6 +153,7 @@ fn remap_roles_to_slots(
             TrackInstrumentKind::Buzz => 12,  // borrow the Perc1 role
             TrackInstrumentKind::Rift => 12,  // [221] borrow the Perc1 role too
             TrackInstrumentKind::OneShot => 12, // [243] same: borrow the Perc1 role
+            TrackInstrumentKind::MidiOut => 12, // [95] external MIDI uses the Perc1 role
             TrackInstrumentKind::Sdrex => 1,  // borrow the Snare role
             TrackInstrumentKind::Bd6Ac => 0,
             TrackInstrumentKind::Sd6Ac => 1,
@@ -452,6 +453,29 @@ mod tests {
             kick0, kick1,
             "Duplicate Kick slots produced identical patterns despite variation=1.0"
         );
+    }
+
+    #[test]
+    fn midi_out_borrows_the_perc1_generator_role() {
+        let params = GeneratorParams {
+            generator_type: GeneratorType::Probabilistic,
+            style_primary: Style::Rock,
+            style_secondary: Style::Rock,
+            style_mix: 0.0,
+            density: 0.8,
+            variation: 0.0,
+            seed: 42,
+        };
+        let midi = layout_from_kinds(&[TrackInstrumentKind::MidiOut]);
+        let perc = layout_from_kinds(&[TrackInstrumentKind::Perc1]);
+        let lane = |layout: &crate::track::AtomicTrackLayout| {
+            generate(&params, layout)
+                .steps
+                .iter()
+                .map(|step| step.instruments[0])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(lane(midi.as_ref()), lane(perc.as_ref()));
     }
 
     #[test]

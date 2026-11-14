@@ -1146,8 +1146,12 @@ fn draw_legacy_slot_lane_v2(
                                 anchor: Some(anchor),
                                 just_opened: true,
                                 // [213] Seeded from the grid mode, then free to
-                                // change inside the menu.
-                                sequencer: state.sequencer_mode && !is_fx,
+                                // change inside the menu. [313] A cell carrying only
+                                // a sequencer p-lock opens directly on that menu,
+                                // even while the grid is in Sound p-lock mode.
+                                sequencer: !is_fx
+                                    && (state.sequencer_mode
+                                        || (has_seq_plock && !has_sound_plock)),
                             });
                         }
                     }
@@ -1631,6 +1635,7 @@ fn apply_lane_reorder_move(
     // [228] The lane's custom texture moves with it (was left behind on the
     // old number, then dropped by the "no Texture menu here" rule).
     params.user_textures.reorder(&order);
+    params.instrument_images.reorder(&order);
 
     // [242] Macro assignments point at lane NUMBERS packed inside each entry:
     // they move with their lane like every other per-slot store.

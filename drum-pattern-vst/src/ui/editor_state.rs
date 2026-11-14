@@ -43,6 +43,8 @@ pub struct LaneClipboardData {
     /// on the target lane - shared with the source through the decode cache,
     /// so it costs no second copy.
     pub texture_path: Option<std::path::PathBuf>,
+    /// Optional custom artwork for the Lane Editor identity block.
+    pub image_path: Option<std::path::PathBuf>,
     /// [286] The lane's sends to Fx1 / Fx2.
     pub fx_send: [f32; crate::track::FX_SLOT_COUNT],
     /// [300] The lane's send mutes.
@@ -251,6 +253,9 @@ pub struct EditorUIState {
     /// took Studio One down. Not persisted.
     #[serde(skip)]
     pub texture_pick: Option<TexturePick>,
+    /// Native PNG picker for the lane's identity artwork (helper thread).
+    #[serde(skip)]
+    pub image_pick: Option<TexturePick>,
     /// Pending pattern-bank slot load (click on P1-P16) while the current
     /// pattern has unsaved changes. Requires explicit confirmation.
     #[serde(skip)]
@@ -688,6 +693,7 @@ impl EditorUIState {
         let length = params.lengths()[slot].value();
         let length_locked = params.lane_length_locks.is_locked(slot);
         let texture_path = params.user_textures.path(slot);
+        let image_path = params.instrument_images.path(slot);
         let fx_send = std::array::from_fn(|bus| params.track_layout.state.fx_send(slot, bus));
         let inserts = params.track_layout.state.inserts(slot);
         let fx_send_mute = std::array::from_fn(|bus| params.track_layout.state.fx_send_muted(slot, bus));
@@ -708,6 +714,7 @@ impl EditorUIState {
             length,
             length_locked,
             texture_path,
+            image_path,
             fx_send,
             fx_send_mute,
             lfo_sync,
@@ -783,6 +790,12 @@ impl EditorUIState {
                 let _ = params.user_textures.load(target_slot, path);
             }
             None => params.user_textures.clear(target_slot),
+        }
+        match &clipboard.image_path {
+            Some(path) => {
+                let _ = params.instrument_images.load(target_slot, path);
+            }
+            None => params.instrument_images.clear(target_slot),
         }
 
         // [283] A linked lane's steps are the shared ones it shows.

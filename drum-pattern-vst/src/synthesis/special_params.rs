@@ -73,6 +73,7 @@ pub const CH606_ALGOS: &[AlgoDef] = &[AlgoDef { name: "Standard" }];
 
 pub const RIFT_ALGOS: &[AlgoDef] = &[AlgoDef { name: "Standard" }];
 pub const ONE_SHOT_ALGOS: &[AlgoDef] = &[AlgoDef { name: "Standard" }];
+pub const MIDI_OUT_ALGOS: &[AlgoDef] = &[AlgoDef { name: "Standard" }];
 
 // ── Buzz (tonal perc + gate) ────────────────────────────────────────────────
 
@@ -112,6 +113,7 @@ pub fn algos_for(voice: DrumVoice) -> &'static [AlgoDef] {
         DrumVoice::Oh606 => CH606_ALGOS,
         DrumVoice::Rift => RIFT_ALGOS,
         DrumVoice::OneShot => ONE_SHOT_ALGOS,
+        DrumVoice::MidiOut => MIDI_OUT_ALGOS,
         DrumVoice::Buzz => BUZZ_ALGOS,
         DrumVoice::Sdrex => SDREX_ALGOS,
         DrumVoice::Bd6Ac

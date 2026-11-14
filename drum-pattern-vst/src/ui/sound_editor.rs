@@ -788,6 +788,31 @@ fn poll_texture_pick(
     }
 }
 
+/// Collect the PNG chosen for a lane's identity artwork. Like the texture
+/// picker, the native dialog lives on a helper thread so it never re-enters
+/// the host's message loop inside an egui frame.
+fn poll_instrument_image_pick(
+    ctx: &egui::Context,
+    params: &DrumFlashParams,
+    state: &mut EditorUIState,
+) {
+    let Some(pick) = state.image_pick.as_ref() else {
+        return;
+    };
+    let answer = pick.result.lock().ok().and_then(|r| r.clone());
+    match answer {
+        None => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+        Some(picked) => {
+            let lane = pick.slot;
+            state.image_pick = None;
+            if let Some(path) = picked {
+                let _ = params.instrument_images.load(lane, &path);
+                ctx.request_repaint();
+            }
+        }
+    }
+}
+
 /// [228] The row under Rift's Texture menu: the lane's file (or why nothing
 /// plays from it) and the Load / Clear buttons. The native dialog runs on its
 /// own thread - blocking inside the egui frame re-entered baseview's message
@@ -1651,6 +1676,7 @@ pub fn draw_sound_panel(
     reconcile_lane_textures(params);
     reconcile_lane_macros(params);
     poll_texture_pick(ui.ctx(), params, state, sound_settings);
+    poll_instrument_image_pick(ui.ctx(), params, state);
     // Slot index drives per-slot state (sound_settings, algos, mutes, ...);
     // the voice index drives registry/schema lookups (INSTRUMENTS, special_param).
     let voice_idx = schema_voice_idx(params, state.selected_instrument);
@@ -1773,12 +1799,13 @@ pub fn draw_sound_panel(
 
     draw_panel_header(ui, &cx, state, scope_badge);
     // [303] An effect lane has no sends and no inserts: no Effects tab.
-    let show_effects = !layout_snapshot.slots[slot].kind.is_effect();
+    // [95] MIDI Out has no audio either: sends and inserts would do nothing.
+    let show_effects = !layout_snapshot.slots[slot].kind.is_effect()
+        && layout_snapshot.slots[slot].kind != crate::track::TrackInstrumentKind::MidiOut;
     if !show_effects && state.sound_editor_tab == SoundEditorTab::Effects {
         state.sound_editor_tab = SoundEditorTab::Sound;
     }
     draw_panel_tabs(ui, state, scope_badge, show_effects);
-    draw_action_strip(ui, &cx, state, &mut src);
 
     let mut freq = src.get(ParamId::Std(StandardField::Freq));
     let mut decay = src.get(ParamId::Std(StandardField::Decay));
@@ -1820,68 +1847,9 @@ pub fn draw_sound_panel(
         changed = true;
     }
 
-    // [282] Volume stays fixed above the scrolling sections (Sound tab), in a
-    // module without a title. Its row keeps the params column like every
-    // other row, so its readout lines up with the rest. The frame's margins
-    // are the scroll content's (14 px, plus the 20 px kept for the bar on the
-    // right), so the module lines up with the ones below. Top margin 2: the
-    // Store / Restore / Default strip above already ends with its own space,
-    // and 8 here left it 9 px under the tabs but 17 px over Volume (2 px
-    // more than above, which the keys' drop shadow takes back).
-    // [303] The Effects tab keeps the lane's Volume in view as well.
-    if matches!(state.sound_editor_tab, SoundEditorTab::Sound | SoundEditorTab::Effects) {
-        // (No Store / Restore strip above it in Effects: the tabs' edge needs the room.)
-        let top = if state.sound_editor_tab == SoundEditorTab::Effects { 10 } else { 2 };
-        egui::Frame::new()
-            .inner_margin(egui::Margin {
-                left: 14,
-                right: 14 + 20,
-                top,
-                bottom: 0,
-            })
-            .show(ui, |ui| {
-                let volume_module = module_begin(ui, None);
-                let vol_id = ParamId::Std(StandardField::Volume);
-                let vol_help = row_help(&*src, vol_id, help::std_param(voice_idx, StandardField::Volume));
-                let (vol_reverted, vol_changed) = help::zone(ui, "vol_row", &vol_help, |ui| {
-                    ui.allocate_ui(Vec2::new(EDITOR_PARAMS_W, 22.0), |ui| {
-                        row_scoped(
-                            ui,
-                            src.is_overridden(vol_id),
-                            src.supports(vol_id).reason(),
-                            |ui| {
-                                // [288] Displayed 0..1; the stored gain keeps its 0..2 range.
-                                let mut vol_disp = vol * 0.5;
-                                let vol_changed = draw_editor_slider_row(
-                                    ui,
-                                    "Volume",
-                                    &mut vol_disp,
-                                    0.0,
-                                    1.0,
-                                    VoiceSettings::default().volume * 0.5,
-                                    false,
-                                    Some(""),
-                                )
-                                .changed();
-                                if vol_changed {
-                                    vol = vol_disp * 2.0;
-                                }
-                                vol_changed
-                            },
-                        )
-                    })
-                    .inner
-                });
-                if vol_reverted {
-                    src.clear(vol_id);
-                    changed = true;
-                } else if vol_changed {
-                    src.set(vol_id, vol);
-                    changed = true;
-                }
-                module_end(ui, volume_module);
-            });
-    }
+    // [318] Artwork first, then the Volume/actions row, on every tab.
+    draw_instrument_identity(ui, &cx, state);
+    draw_action_strip(ui, &cx, state, &mut src);
 
     // [184] Kept for the floating notice below, which must sit at the panel's
     // bottom edge rather than scroll away with the content.
@@ -1926,6 +1894,7 @@ pub fn draw_sound_panel(
                 crate::instrument_registry::ParamFamily::Modulation,
                 crate::instrument_registry::ParamFamily::Saturation,
                 crate::instrument_registry::ParamFamily::Output,
+                crate::instrument_registry::ParamFamily::Midi,
             ] {
                 // Skip a section that has no parameters for this instrument
                 // (e.g. Saturation on instruments without a saturation pack).
@@ -1953,6 +1922,7 @@ pub fn draw_sound_panel(
                     crate::instrument_registry::ParamFamily::Modulation => "Modulation",
                     crate::instrument_registry::ParamFamily::Saturation => "Distortion",
                     crate::instrument_registry::ParamFamily::Output => "Output",
+                    crate::instrument_registry::ParamFamily::Midi => "MIDI",
                     }
                 };
                 // [282] Each section is a module with its title strip.
@@ -2582,8 +2552,227 @@ fn draw_panel_tabs(ui: &mut egui::Ui, state: &mut EditorUIState, scope_badge: Op
     }
 }
 
-/// [269] Sound tab only: the Step / Start / End switch and Default / Restore
-/// / Store.
+/// Volume on every tab: its track takes all space left between the morph
+/// selector and the fixed-width actions, with the same scoped behavior as before.
+fn draw_compact_volume(ui: &mut egui::Ui, cx: &PanelCtx, src: &mut dyn ParamSource) {
+    if !cx.instrument
+        .standard_params
+        .iter()
+        .any(|def| def.field == StandardField::Volume)
+    {
+        return;
+    }
+    let vol_id = ParamId::Std(StandardField::Volume);
+    let vol_help = row_help(src, vol_id, help::std_param(cx.voice_idx, StandardField::Volume));
+    help::zone(ui, "vol_row", &vol_help, |ui| {
+        let label_w = ui.fonts(|f| {
+            f.layout_no_wrap("Volume".into(), f_sans_med(10.5), INK2()).size().x
+        });
+        // The parent UI is already bounded to Volume's own area. Only the
+        // gutter, label, readout and gaps are subtracted here.
+        let track_w = (ui.available_width()
+            - ROW_GUTTER_W
+            - label_w
+            - 42.0
+            - 3.0 * 6.0)
+            .max(60.0);
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let reverted = row_gutter(ui, src.is_overridden(vol_id));
+        let unsupported = src.supports(vol_id).reason();
+        let mut changed = false;
+        let mut vol = src.get(vol_id) * 0.5;
+        ui.add_enabled_ui(unsupported.is_none(), |ui| {
+            ui.label(RichText::new("Volume").font(f_sans_med(10.5)).color(INK2()));
+            if draw_editor_slider_track(
+                ui,
+                &mut vol,
+                0.0,
+                1.0,
+                VoiceSettings::default().volume * 0.5,
+                false,
+                track_w,
+            )
+            .changed()
+            {
+                changed = true;
+            }
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(42.0, 22.0), egui::Sense::hover());
+            crate::ui::skeuo::value_readout(ui, rect, &format!("{vol:.2}"), INK());
+        });
+        if reverted {
+            src.clear(vol_id);
+        } else if changed {
+            src.set(vol_id, vol * 2.0);
+        }
+    });
+}
+
+/// A continuous top-to-bottom alpha shadow as a 1×64 texture. Unlike stacked
+/// rectangles, texture interpolation cannot produce visible shadow bands.
+fn instrument_shadow_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = egui::Id::new("instrument_inner_shadow_v1");
+    if let Some(texture) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return texture;
+    }
+    let mut pixels = [0u8; 64 * 4];
+    for y in 0..64 {
+        pixels[y * 4 + 3] = (180 - 180 * y as u32 / 63) as u8;
+    }
+    let image = egui::ColorImage::from_rgba_premultiplied([1, 64], &pixels);
+    let texture = ctx.load_texture("instrument_inner_shadow_v1", image, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
+    texture
+}
+
+/// The old Volume module: artwork alone when available, otherwise the
+/// instrument's full name. Click loads a custom PNG; right-click resets it.
+fn draw_instrument_identity(ui: &mut egui::Ui, cx: &PanelCtx, state: &mut EditorUIState) {
+    // The action strip now has the same height on every tab: keep the banner
+    // at one identical y position on Sound, Effects and Track.
+    let top = 2;
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 14,
+            right: 14 + 20,
+            top,
+            bottom: 0,
+        })
+        .show(ui, |ui| {
+            // Original module geometry, then the image INSIDE it, then the
+            // original shadow and rim ABOVE the image (the approved mockup).
+            let module_top = ui.cursor().top();
+            ui.add_space(6.0);
+            let _ = ui.allocate_exact_size(
+                Vec2::new(ui.available_width(), 26.0),
+                egui::Sense::hover(),
+            );
+            ui.add_space(6.0);
+            let content = ui.max_rect();
+            let image_rect = egui::Rect::from_min_max(
+                egui::pos2(content.left() - MODULE_INSET, module_top),
+                egui::pos2(content.right() + MODULE_INSET, ui.min_rect().bottom()),
+            );
+            ui.painter().add(crate::ui::skeuo::editor_module_indented(
+                ui.ctx(),
+                image_rect,
+                None,
+                0.0,
+            ));
+            let images = &cx.params.instrument_images;
+            let custom_path = images.path(cx.slot);
+            let custom = custom_path.as_ref().and_then(|_| images.image(cx.slot));
+            if let Some(image) = custom {
+                egui::Image::from_bytes(image.uri.clone(), image.bytes.clone())
+                    .uv(egui::Rect::from_min_max(
+                        egui::pos2(0.0, 0.11),
+                        egui::pos2(1.0, 0.89),
+                    ))
+                    .corner_radius(5.0)
+                    .fit_to_exact_size(image_rect.size())
+                    .paint_at(ui, image_rect);
+            } else if custom_path.is_none() {
+                let (uri, bytes) = crate::instrument_images::embedded(cx.layout_snapshot.slots[cx.slot].kind);
+                egui::Image::from_bytes(uri, bytes)
+                    .uv(egui::Rect::from_min_max(
+                        egui::pos2(0.0, 0.11),
+                        egui::pos2(1.0, 0.89),
+                    ))
+                    .corner_radius(5.0)
+                    .fit_to_exact_size(image_rect.size())
+                    .paint_at(ui, image_rect);
+            } else {
+                ui.painter().text(
+                    image_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    cx.instrument.full_name,
+                    f_sans_sb(12.5),
+                    INK(),
+                );
+            }
+            // Smooth interpolated texture over the artwork: no banding, and
+            // the rounded image keeps the module's exact corner shape.
+            let shadow = instrument_shadow_texture(ui.ctx());
+            egui::Image::new((shadow.id(), image_rect.size()))
+                .corner_radius(5.0)
+                .fit_to_exact_size(image_rect.size())
+                .paint_at(ui, image_rect);
+            let painter = ui.painter();
+            // Instrument name over the shadow: uppercase, large, with a dark
+            // offset for readability on every category colour.
+            let name = cx.instrument.full_name.to_uppercase();
+            painter.text(
+                image_rect.center() + egui::vec2(0.0, 1.5),
+                egui::Align2::CENTER_CENTER,
+                &name,
+                f_sans_bold(16.0),
+                Color32::from_black_alpha(225),
+            );
+            painter.text(
+                image_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                &name,
+                f_sans_bold(16.0),
+                Color32::WHITE,
+            );
+            painter.rect_stroke(
+                image_rect,
+                5.0,
+                egui::Stroke::new(1.0, Color32::from_rgb(20, 20, 24)),
+                egui::StrokeKind::Inside,
+            );
+            ui.add_space(12.0);
+            let response = ui.interact(
+                image_rect,
+                ui.id().with(("instrument_identity", cx.slot)),
+                egui::Sense::click(),
+            );
+
+            let picking = state.image_pick.is_some();
+            let mut hover = if picking {
+                "Choose a PNG image…".to_string()
+            } else {
+                "Click to load a custom PNG banner (centre-cropped). Right-click to use the embedded artwork.".to_string()
+            };
+            if let Some(path) = custom_path {
+                hover.push_str(&format!("\n{}", path.display()));
+            }
+            if let Some(error) = images.error(cx.slot) {
+                hover.push_str(&format!("\n{error}"));
+            }
+            response.clone().on_hover_text(hover);
+            if response.clicked() && !picking {
+                let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+                let start_dir = images
+                    .path(cx.slot)
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                let cell = result.clone();
+                std::thread::Builder::new()
+                    .name("flash-drum-image-dialog".into())
+                    .spawn(move || {
+                        let mut dialog = rfd::FileDialog::new()
+                            .set_title("Load instrument artwork")
+                            .add_filter("PNG image", &["png", "PNG"]);
+                        if let Some(dir) = start_dir {
+                            dialog = dialog.set_directory(dir);
+                        }
+                        let picked = dialog.pick_file();
+                        if let Ok(mut r) = cell.lock() {
+                            *r = Some(picked);
+                        }
+                    })
+                    .ok();
+                state.image_pick = Some(crate::ui::editor_state::TexturePick {
+                    slot: cx.slot,
+                    result,
+                });
+            }
+            if response.secondary_clicked() {
+                images.clear(cx.slot);
+            }
+        });
+}
+
+/// Every tab: Step / Start / End, compact Volume, and Store / Restore / Default.
 fn draw_action_strip(
     ui: &mut egui::Ui,
     cx: &PanelCtx,
@@ -2604,11 +2793,10 @@ fn draw_action_strip(
         morph_available,
         ..
     } = *cx;
-    // [200d] Action strip, Sound tab only: Default / Store / Restore live
-    // here (right-aligned) instead of the header — the scope badge and the
-    // Step/Start/End switch need the header's width. The strip is fixed
-    // (never scrolls away) and only exists in the Sound tab.
-    if state.sound_editor_tab == SoundEditorTab::Sound {
+    // [200d] Fixed action strip on EVERY tab: the morph selector, Volume,
+    // then Store / Restore / Default. The two morph ends only appear when
+    // they do something; Volume stays put and MIDI Out gets no dummy slider.
+    {
         ui.add_space(3.0);
         // The horizontal wrapper constrains the strip to its content height —
         // a bare `with_layout` would grab ALL the panel's remaining height
@@ -2645,11 +2833,25 @@ fn draw_action_strip(
                     state.fusion_tab = tabs[picked.min(tabs.len() - 1)];
                 }
             } else {
-                // Keeps the strip's height without the switch.
+                // No invisible reserved area: Volume uses the whole free width.
                 ui.allocate_space(Vec2::new(0.0, CTL_HEIGHT));
             }
+            // Two strictly separated areas: Volume flexes only inside its own
+            // allocation, then the fixed-width buttons get theirs. No overlap.
+            const ACTIONS_W: f32 = 14.0 + 52.0 + 3.0 + 52.0 + 3.0 + 46.0;
+            const ACTIONS_GAP: f32 = 52.0;
+            let volume_w = (ui.available_width() - ACTIONS_W - ACTIONS_GAP).max(0.0);
+            ui.allocate_ui_with_layout(
+                Vec2::new(volume_w, CTL_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| draw_compact_volume(ui, cx, &mut **src),
+            );
+            ui.add_space(ACTIONS_GAP);
             // Right section: Store / Restore / Default.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.allocate_ui_with_layout(
+                Vec2::new(ACTIONS_W, CTL_HEIGHT),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
             ui.add_space(14.0);
             // [200] Default: reset to the instrument's factory defaults,
             // scoped to what the panel edits [200c]:
@@ -3919,6 +4121,19 @@ fn draw_special_rows(
         let gate_sub = def.name == "reverb_gate" || def.name == "reverb_gate_release";
         let gate_off = gate_sub
             && src.get(ParamId::Special(crate::synthesis::reverb_sp::GATE_ON)) < 0.5;
+        // [95] CC Number / Value and Program belong to the switch above them.
+        // Read through `src`, so a step's p-lock controls its own rows too.
+        let midi_cc_sub = def.name.starts_with("midi_out_cc")
+            && (def.name.ends_with("_number") || def.name.ends_with("_value"));
+        let midi_program_sub = def.name == "midi_out_program";
+        let midi_sub = midi_cc_sub || midi_program_sub;
+        let midi_off = if midi_cc_sub {
+            src.get(ParamId::Special((def.special_index / 3) * 3)) < 0.5
+        } else if midi_program_sub {
+            src.get(ParamId::Special(12)) < 0.5
+        } else {
+            false
+        };
         // [286] The delay's Time knob is the sync menu's business once a note value is chosen.
         let sync_disabled = (def.name == "delay_time"
             && src.get(ParamId::Special(crate::synthesis::delay_sp::SYNC)) >= 0.5)
@@ -3958,7 +4173,7 @@ fn draw_special_rows(
         let advance_disabled = advance_row && !advance_on;
         // Sub-parameters (a row that depends on the switch right above it) step their
         // label in; the Advance switch drawn above stays at the margin.
-        if saturation_sub || gate_sub || grain_sub || advance_row {
+        if saturation_sub || gate_sub || grain_sub || advance_row || midi_sub {
             set_sub_indent(SUB_INDENT_PX);
         }
         // [304] Each LFO (its Rate, Sync and Depth) reads as its own group: a hairline
@@ -3978,6 +4193,7 @@ fn draw_special_rows(
                 || advance_disabled
                 || saturation_off
                 || gate_off
+                || midi_off
                 || unsupported.is_some()),
             |ui| {
                 ui.horizontal(|ui| {
@@ -4372,17 +4588,34 @@ fn special_row_widget(
     } else {
         let mut value = current;
         let logarithmic = def.min > 0.0 && def.max / def.min >= 20.0;
-        let row = draw_editor_slider_row_curved(
-            ui,
-            def.label,
-            &mut value,
-            def.min,
-            def.max,
-            src.inherited(ParamId::Special(def.special_index)),
-            logarithmic,
-            def.unit,  // [182] specials carry a unit too
-            def.curve, // [189] response curve from the registry
-        );
+        let default = src.inherited(ParamId::Special(def.special_index));
+        // [95] Numeric discrete settings (MIDI CC/program numbers and values)
+        // move in integer steps; continuous settings keep their response curve.
+        let row = if def.continuous {
+            draw_editor_slider_row_curved(
+                ui,
+                def.label,
+                &mut value,
+                def.min,
+                def.max,
+                default,
+                logarithmic,
+                def.unit,  // [182] specials carry a unit too
+                def.curve, // [189] response curve from the registry
+            )
+        } else {
+            draw_editor_slider_row_full(
+                ui,
+                def.label,
+                &mut value,
+                def.min,
+                def.max,
+                default,
+                logarithmic,
+                def.unit,
+                1.0,
+            )
+        };
         page_lock_menu(
             &row,
             plock,
