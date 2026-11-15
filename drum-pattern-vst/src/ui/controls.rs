@@ -279,13 +279,24 @@ pub fn keycap_button(
     enabled: bool,
     font: egui::FontId,
 ) -> egui::Response {
+    let w = keycap_button_width(ui, label, min_w, font.clone());
+    keycap_button_sized(ui, label, Vec2::new(w, CTL_HEIGHT), state, enabled, font)
+}
+
+/// Measure with the same policy as the renderer, including font-dependent
+/// growth beyond the requested minimum. Useful for anchored button groups.
+pub fn keycap_button_width(
+    ui: &egui::Ui,
+    label: &str,
+    min_w: f32,
+    font: egui::FontId,
+) -> f32 {
     let tw = ui.fonts(|f| {
-        f.layout_no_wrap(label.to_string(), font.clone(), Color32::WHITE)
+        f.layout_no_wrap(label.to_string(), font, Color32::WHITE)
             .size()
             .x
     });
-    let w = (tw + 18.0).max(min_w);
-    keycap_button_sized(ui, label, Vec2::new(w, CTL_HEIGHT), state, enabled, font)
+    (tw + 18.0).max(min_w)
 }
 
 /// [`keycap_button`] at an exact size (the Generator's tall GENERATE key).

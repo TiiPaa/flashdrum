@@ -114,6 +114,15 @@ pub fn algos_for(voice: DrumVoice) -> &'static [AlgoDef] {
         DrumVoice::Rift => RIFT_ALGOS,
         DrumVoice::OneShot => ONE_SHOT_ALGOS,
         DrumVoice::MidiOut => MIDI_OUT_ALGOS,
+        DrumVoice::IonBloom
+        | DrumVoice::Ferroskin
+        | DrumVoice::PrismHat
+        | DrumVoice::OrbitClay
+        | DrumVoice::NeonTom
+        | DrumVoice::ArcZap
+        | DrumVoice::TidalAlloy
+        | DrumVoice::MobiusSkin
+        | DrumVoice::AbyssFm => AC606_ALGOS,
         DrumVoice::Buzz => BUZZ_ALGOS,
         DrumVoice::Sdrex => SDREX_ALGOS,
         DrumVoice::Bd6Ac

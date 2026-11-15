@@ -1847,9 +1847,10 @@ pub fn draw_sound_panel(
         changed = true;
     }
 
-    // [318] Artwork first, then the Volume/actions row, on every tab.
+    // [320] Option C, shared by every tab: artwork, actions/morph, wide Volume.
     draw_instrument_identity(ui, &cx, state);
     draw_action_strip(ui, &cx, state, &mut src);
+    draw_volume_strip(ui, voice_idx, &mut *src);
 
     // [184] Kept for the floating notice below, which must sit at the panel's
     // bottom edge rather than scroll away with the content.
@@ -1864,7 +1865,7 @@ pub fn draw_sound_panel(
             // The scroll styling above is for the BAR only; the rows keep the
             // plain style so nothing inside picks up the handle's fills.
             ui.set_style(content_style);
-            ui.set_width(ui.available_width() - 20.0);
+            ui.set_width(ui.available_width() - crate::ui::lane_editor_layout::SCROLLBAR_RESERVE);
             egui::Frame::new()
                 .inner_margin(egui::Margin {
                     left: 14,
@@ -1894,6 +1895,7 @@ pub fn draw_sound_panel(
                 crate::instrument_registry::ParamFamily::Modulation,
                 crate::instrument_registry::ParamFamily::Saturation,
                 crate::instrument_registry::ParamFamily::Output,
+                crate::instrument_registry::ParamFamily::Stereo,
                 crate::instrument_registry::ParamFamily::Midi,
             ] {
                 // Skip a section that has no parameters for this instrument
@@ -1923,6 +1925,7 @@ pub fn draw_sound_panel(
                     crate::instrument_registry::ParamFamily::Saturation => "Distortion",
                     crate::instrument_registry::ParamFamily::Output => "Output",
                     crate::instrument_registry::ParamFamily::Midi => "MIDI",
+                    crate::instrument_registry::ParamFamily::Stereo => "Stereo",
                     }
                 };
                 // [282] Each section is a module with its title strip.
@@ -1938,7 +1941,10 @@ pub fn draw_sound_panel(
                 .special_params
                 .iter()
                 .find(|d| d.name.ends_with("_texture"));
-            let has_graph = family == crate::instrument_registry::ParamFamily::Env
+            // Native-envelope engines expose their own Decay/Release controls,
+            // not AHD stages. Do not draw an unrelated AHD graph beside them.
+            let has_graph = (family == crate::instrument_registry::ParamFamily::Env
+                    && instrument.has_ahd_amp_graph())
                 || (family == crate::instrument_registry::ParamFamily::Pitch
                     && special_defs.iter().any(|d| d.name.ends_with("_pitch_env")))
                 || (family == crate::instrument_registry::ParamFamily::Filter && has_filter_env)
@@ -1987,7 +1993,7 @@ pub fn draw_sound_panel(
 
                 draw_section_graphs(
                     ui,
-                    &cx,
+                    &SectionGraphCtx::from(&cx),
                     family,
                     has_graph,
                     texture_param,
@@ -2338,6 +2344,21 @@ struct PanelCtx<'a> {
     morph_available: bool,
 }
 
+/// Graph rendering does not need a host ParamSetter. Keeping only its actual
+/// dependencies makes the production renderer testable without a live editor.
+struct SectionGraphCtx<'a> {
+    params: &'a DrumFlashParams,
+    instrument: &'static crate::instrument_registry::InstrumentDef,
+    slot: usize,
+    voice_idx: usize,
+}
+
+impl<'a> From<&PanelCtx<'a>> for SectionGraphCtx<'a> {
+    fn from(cx: &PanelCtx<'a>) -> Self {
+        Self { params: cx.params, instrument: cx.instrument, slot: cx.slot, voice_idx: cx.voice_idx }
+    }
+}
+
 /// [269] Header band: "Lane Editor", the lane being edited, and the scope
 /// badge (lane sound vs one step's p-lock or morph end).
 fn draw_panel_header(
@@ -2552,59 +2573,34 @@ fn draw_panel_tabs(ui: &mut egui::Ui, state: &mut EditorUIState, scope_badge: Op
     }
 }
 
-/// Volume on every tab: its track takes all space left between the morph
-/// selector and the fixed-width actions, with the same scoped behavior as before.
-fn draw_compact_volume(ui: &mut egui::Ui, cx: &PanelCtx, src: &mut dyn ParamSource) {
-    if !cx.instrument
+/// [320] Volume has its own full-width row, using the ordinary Sound columns.
+/// Keep the row's space for MIDI Out too, but never draw a dummy audio control.
+fn draw_volume_strip(ui: &mut egui::Ui, voice_idx: usize, src: &mut dyn ParamSource) -> Option<egui::Response> {
+    let mut row_ui = crate::ui::lane_editor_layout::volume_row(ui);
+    if !crate::instrument_registry::INSTRUMENTS[voice_idx]
         .standard_params
         .iter()
         .any(|def| def.field == StandardField::Volume)
     {
-        return;
+        return None;
     }
     let vol_id = ParamId::Std(StandardField::Volume);
-    let vol_help = row_help(src, vol_id, help::std_param(cx.voice_idx, StandardField::Volume));
-    help::zone(ui, "vol_row", &vol_help, |ui| {
-        let label_w = ui.fonts(|f| {
-            f.layout_no_wrap("Volume".into(), f_sans_med(10.5), INK2()).size().x
-        });
-        // The parent UI is already bounded to Volume's own area. Only the
-        // gutter, label, readout and gaps are subtracted here.
-        let track_w = (ui.available_width()
-            - ROW_GUTTER_W
-            - label_w
-            - 42.0
-            - 3.0 * 6.0)
-            .max(60.0);
-        ui.spacing_mut().item_spacing.x = 6.0;
-        let reverted = row_gutter(ui, src.is_overridden(vol_id));
-        let unsupported = src.supports(vol_id).reason();
-        let mut changed = false;
-        let mut vol = src.get(vol_id) * 0.5;
-        ui.add_enabled_ui(unsupported.is_none(), |ui| {
-            ui.label(RichText::new("Volume").font(f_sans_med(10.5)).color(INK2()));
-            if draw_editor_slider_track(
-                ui,
-                &mut vol,
-                0.0,
-                1.0,
-                VoiceSettings::default().volume * 0.5,
-                false,
-                track_w,
+    let vol_help = row_help(src, vol_id, help::std_param(voice_idx, StandardField::Volume));
+    let mut vol = src.get(vol_id) * 0.5;
+    let (reverted, response) = help::zone(&mut row_ui, "vol_row", &vol_help, |ui| {
+        row_scoped(ui, src.is_overridden(vol_id), src.supports(vol_id).reason(), |ui| {
+            draw_editor_slider_row(
+                ui, "Volume", &mut vol, 0.0, 1.0,
+                VoiceSettings::default().volume * 0.5, false, Some(""),
             )
-            .changed()
-            {
-                changed = true;
-            }
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(42.0, 22.0), egui::Sense::hover());
-            crate::ui::skeuo::value_readout(ui, rect, &format!("{vol:.2}"), INK());
-        });
-        if reverted {
-            src.clear(vol_id);
-        } else if changed {
-            src.set(vol_id, vol * 2.0);
-        }
+        })
     });
+    if reverted {
+        src.clear(vol_id);
+    } else if response.changed() {
+        src.set(vol_id, vol * 2.0);
+    }
+    Some(response)
 }
 
 /// A continuous top-to-bottom alpha shadow as a 1×64 texture. Unlike stacked
@@ -2633,7 +2629,7 @@ fn draw_instrument_identity(ui: &mut egui::Ui, cx: &PanelCtx, state: &mut Editor
     egui::Frame::new()
         .inner_margin(egui::Margin {
             left: 14,
-            right: 14 + 20,
+            right: 14 + crate::ui::lane_editor_layout::SCROLLBAR_RESERVE as i8,
             top,
             bottom: 0,
         })
@@ -2772,7 +2768,7 @@ fn draw_instrument_identity(ui: &mut egui::Ui, cx: &PanelCtx, state: &mut Editor
         });
 }
 
-/// Every tab: Step / Start / End, compact Volume, and Store / Restore / Default.
+/// Every tab: Store / Restore / Default on the left, morph selector on the right.
 fn draw_action_strip(
     ui: &mut egui::Ui,
     cx: &PanelCtx,
@@ -2793,33 +2789,26 @@ fn draw_action_strip(
         morph_available,
         ..
     } = *cx;
-    // [200d] Fixed action strip on EVERY tab: the morph selector, Volume,
-    // then Store / Restore / Default. The two morph ends only appear when
-    // they do something; Volume stays put and MIDI Out gets no dummy slider.
+    // [320] Reserve the row once, then draw two independent children. The
+    // measured actions include actual text widths and both 8 + 3 px gaps.
+    // Default keeps its measured width while showing "Sure?" as well.
     {
-        ui.add_space(3.0);
-        // The horizontal wrapper constrains the strip to its content height —
-        // a bare `with_layout` would grab ALL the panel's remaining height
-        // and squeeze the params scroll area to zero (seen 2026-09-03).
-        ui.horizontal(|ui| {
-            ui.add_space(14.0);
-            // [200e] Left section: the Step / Start / End switch ([184] ph. 4) —
-            // a fused group's three stores. Always drawn so the strip never
-            // changes width; the two morph ends are greyed when the cell is
-            // not a fused, multi-pulse group (a single pulse cannot morph,
-            // the engine skips the interpolation), leaving `Step` as the only
-            // choice.
+        let default_w = crate::ui::controls::keycap_button_width(ui, "Default", 52.0, f_sans_med(9.5));
+        let actions_w = default_w
+            + crate::ui::controls::keycap_button_width(ui, "Restore", 52.0, f_sans_med(9.5))
+            + crate::ui::controls::keycap_button_width(ui, "Store", 46.0, f_sans_med(9.5))
+            + 2.0 * 11.0;
+        let (mut actions_ui, mut morph_ui) = crate::ui::lane_editor_layout::action_row(ui, actions_w, ROW_GUTTER_W);
+        {
+            let ui = &mut morph_ui;
             use crate::ui::editor_state::FusionTab;
             let tabs = [FusionTab::Step, FusionTab::Start, FusionTab::End];
             let selected = tabs
                 .iter()
                 .position(|tab| *tab == state.fusion_tab)
                 .unwrap_or(0);
-            // [282] Shown only where it does something: on a cell of a fused,
-            // multi-pulse group. Greyed everywhere else, its blue `Step` key
-            // still read as an active choice. Hiding it moves nothing: the
-            // strip keeps its height and Store / Restore / Default are
-            // right-aligned.
+            // [282] Only shown on a fused, multi-pulse cell. The parent row
+            // is always allocated, so hiding it moves no other control.
             if morph_available {
                 let picked = help::zone(ui, "fusion_tab", help::EDITOR_FUSION_TAB, |ui| {
                     crate::ui::skeuo::segmented(
@@ -2832,27 +2821,10 @@ fn draw_action_strip(
                 if picked != selected {
                     state.fusion_tab = tabs[picked.min(tabs.len() - 1)];
                 }
-            } else {
-                // No invisible reserved area: Volume uses the whole free width.
-                ui.allocate_space(Vec2::new(0.0, CTL_HEIGHT));
             }
-            // Two strictly separated areas: Volume flexes only inside its own
-            // allocation, then the fixed-width buttons get theirs. No overlap.
-            const ACTIONS_W: f32 = 14.0 + 52.0 + 3.0 + 52.0 + 3.0 + 46.0;
-            const ACTIONS_GAP: f32 = 52.0;
-            let volume_w = (ui.available_width() - ACTIONS_W - ACTIONS_GAP).max(0.0);
-            ui.allocate_ui_with_layout(
-                Vec2::new(volume_w, CTL_HEIGHT),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| draw_compact_volume(ui, cx, &mut **src),
-            );
-            ui.add_space(ACTIONS_GAP);
-            // Right section: Store / Restore / Default.
-            ui.allocate_ui_with_layout(
-                Vec2::new(ACTIONS_W, CTL_HEIGHT),
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| {
-            ui.add_space(14.0);
+        }
+        {
+            let ui = &mut actions_ui;
             // [200] Default: reset to the instrument's factory defaults,
             // scoped to what the panel edits [200c]:
             // - Lane: the lane's sound settings (step p-locks kept);
@@ -2883,7 +2855,7 @@ fn draw_action_strip(
             let default_resp = crate::ui::controls::keycap_button(
                 ui,
                 if armed { "Sure?" } else { "Default" },
-                52.0,
+                default_w,
                 crate::ui::widgets::KeycapState::Rest,
                 true,
                 f_sans_med(9.5),
@@ -3078,9 +3050,7 @@ fn draw_action_strip(
                 };
                 state.sound_scratchpad[slot] = Some(scratch);
             }
-        });
-        });
-        ui.add_space(3.0);
+        }
     }
 }
 
@@ -3973,6 +3943,30 @@ fn is_fx_sequencer_param(name: &str) -> bool {
     )
 }
 
+/// [325] Read the current editing scope, not a cached lane switch: a step can
+/// enable Stereo while the lane stays mono, and vice versa. No value is erased.
+fn stereo_dependency_reason(
+    family: crate::instrument_registry::ParamFamily,
+    src: &dyn ParamSource,
+) -> Option<&'static str> {
+    (family == crate::instrument_registry::ParamFamily::Stereo
+        && src.get(ParamId::Std(crate::instrument_registry::StandardField::Stereo)) < 0.5)
+        .then_some("Enable Stereo in this module to use this control.")
+}
+
+fn with_special_row_enabled<R>(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    reason: Option<&'static str>,
+    row: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let mut inner = ui.add_enabled_ui(enabled && reason.is_none(), row);
+    if let Some(reason) = reason {
+        inner.response = inner.response.on_disabled_hover_text(reason);
+    }
+    inner
+}
+
 fn draw_special_rows(
     ui: &mut egui::Ui,
     cx: &PanelCtx,
@@ -4147,6 +4141,7 @@ fn draw_special_rows(
         // greyed WITH its reason rather than hidden: the special
         // whose field collides with Attack, for instance.
         let unsupported = src.supports(special_id).reason();
+        let stereo_disabled = stereo_dependency_reason(def.family, &**src);
         // [227] Advance: a switch above its step slider and the
         // options folded under it. Switch and options are LANE
         // settings (the slot's `advance_mode` param): they say
@@ -4173,7 +4168,8 @@ fn draw_special_rows(
         let advance_disabled = advance_row && !advance_on;
         // Sub-parameters (a row that depends on the switch right above it) step their
         // label in; the Advance switch drawn above stays at the margin.
-        if saturation_sub || gate_sub || grain_sub || advance_row || midi_sub {
+        if saturation_sub || gate_sub || grain_sub || advance_row || midi_sub
+            || family == crate::instrument_registry::ParamFamily::Stereo {
             set_sub_indent(SUB_INDENT_PX);
         }
         // [304] Each LFO (its Rate, Sync and Depth) reads as its own group: a hairline
@@ -4185,7 +4181,8 @@ fn draw_special_rows(
             ui.add_space(2.0);
         }
         rows_drawn += 1;
-        let row_area = ui.add_enabled_ui(
+        let row_area = with_special_row_enabled(
+            ui,
             !(sample_disabled
                 || modulation_disabled
                 || grain_disabled
@@ -4195,6 +4192,7 @@ fn draw_special_rows(
                 || gate_off
                 || midi_off
                 || unsupported.is_some()),
+            stereo_disabled,
             |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
@@ -4249,7 +4247,7 @@ fn draw_special_rows(
                 PersistentField::<TrackLayoutState>::set(&params.track_layout, layout);
             }
         }
-        if unsupported.is_none() {
+        if unsupported.is_none() && stereo_disabled.is_none() {
             let mut row_help = help::special_param(def.name).to_string();
             if def.continuous && def.options.is_none() {
                 row_help.push_str(help::SLIDER_GESTURES);
@@ -4678,19 +4676,23 @@ fn draw_algorithm_row(
 #[allow(clippy::too_many_arguments)]
 fn draw_section_graphs(
     ui: &mut egui::Ui,
-    cx: &PanelCtx,
+    cx: &SectionGraphCtx,
     family: crate::instrument_registry::ParamFamily,
     has_graph: bool,
     texture_param: Option<&'static crate::instrument_registry::SpecialParamDef>,
     src: &mut Box<dyn ParamSource + '_>,
     values: RowValues,
 ) {
-    let PanelCtx {
+    // [324] This used to guard only add_space() below, so native-envelope
+    // instruments still painted an unrelated AHD graph and grew the module.
+    if !has_graph {
+        return;
+    }
+    let SectionGraphCtx {
         params,
         instrument,
         slot,
         voice_idx,
-        ..
     } = *cx;
     let standard_defs = instrument.standard_params;
     let RowValues {
@@ -5240,5 +5242,351 @@ mod tests {
             hz_w, notes_w,
             "column width: Hz {hz_w} px, Notes {notes_w} px"
         );
+    }
+
+    struct VolumeSource {
+        value: f32,
+        overridden: bool,
+        disabled: bool,
+        writes: usize,
+        clears: usize,
+    }
+
+    impl Default for VolumeSource {
+        fn default() -> Self {
+            Self { value: 1.44, overridden: false, disabled: false, writes: 0, clears: 0 }
+        }
+    }
+
+    impl ParamSource for VolumeSource {
+        fn get(&self, _: ParamId) -> f32 { self.value }
+        fn set(&mut self, id: ParamId, value: f32) {
+            assert_eq!(id, ParamId::Std(StandardField::Volume));
+            self.value = value;
+            self.writes += 1;
+        }
+        fn is_overridden(&self, _: ParamId) -> bool { self.overridden }
+        fn clear(&mut self, id: ParamId) {
+            assert_eq!(id, ParamId::Std(StandardField::Volume));
+            self.clears += 1;
+        }
+        fn inherited(&self, _: ParamId) -> f32 { 1.0 }
+        fn supports(&self, _: ParamId) -> crate::ui::param_source::Support {
+            if self.disabled {
+                crate::ui::param_source::Support::Disabled("Unavailable in this scope")
+            } else {
+                crate::ui::param_source::Support::Editable
+            }
+        }
+        fn salt(&self) -> (u8, usize, usize) { (0, 0, 0) }
+    }
+
+    #[test]
+    fn stereo_greying_reads_the_selected_steps_switch_not_the_lane() {
+        use crate::instrument_registry::ParamFamily;
+        use crate::ui::param_source::{AlgoSink, GlobalSource, PlockSource};
+        struct Algo;
+        impl AlgoSink for Algo {
+            fn get(&self) -> u8 { 0 }
+            fn set(&self, _: u8) {}
+        }
+        let mut layout = crate::track::TrackLayoutState::empty_layout();
+        layout.slots[0] = crate::track::TrackSlot::active_with_kind(crate::track::TrackInstrumentKind::TidalAlloy);
+        let settings = SoundSettingsState::new(&layout);
+        let locks = crate::plock::PlockState::new();
+        let id = ParamId::Std(StandardField::Stereo);
+        for lane_on in [false, true] {
+            let mut global = GlobalSource::new(&settings, 0, DrumVoice::TidalAlloy as usize, &Algo);
+            global.set(id, lane_on as u8 as f32);
+            assert_eq!(stereo_dependency_reason(ParamFamily::Stereo, &global).is_some(), !lane_on);
+            assert!(stereo_dependency_reason(ParamFamily::Modulation, &global).is_none(), "Tide is useful in mono");
+            let mut step = PlockSource::new(&locks, 7, global);
+            step.set(id, (!lane_on) as u8 as f32);
+            assert_eq!(stereo_dependency_reason(ParamFamily::Stereo, &step).is_some(), lane_on);
+            step.clear(id);
+            assert_eq!(stereo_dependency_reason(ParamFamily::Stereo, &step).is_some(), !lane_on);
+        }
+    }
+
+    #[test]
+    fn stereo_only_sliders_disable_without_moving_or_forgetting_their_values() {
+        use crate::instrument_registry::ParamFamily;
+        for zoom in [1.0, 1.25, 1.5] {
+            for label in ["Stereo LFO Rate", "Stereo LFO Depth", "Stereo Width"] {
+                let mut baseline = None;
+                for on in [false, true] {
+                    let ctx = egui::Context::default();
+                    crate::ui::install_egui_fonts(&ctx);
+                    ctx.set_zoom_factor(zoom);
+                    let source = VolumeSource { value: on as u8 as f32, ..Default::default() };
+                    let reason = stereo_dependency_reason(ParamFamily::Stereo, &source);
+                    let mut value = 25.0;
+                    let mut track = egui::Rect::NOTHING;
+                    let mut footprint = egui::Rect::NOTHING;
+                    let mut frame = |events: Vec<egui::Event>, time| {
+                        let _ = ctx.run(egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(568.0, 300.0))),
+                            events, time: Some(time), ..Default::default()
+                        }, |ctx| {
+                            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                                ui.set_width(EDITOR_PARAMS_W);
+                                let result = with_special_row_enabled(ui, true, reason, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 0.0;
+                                        row_gutter(ui, false);
+                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                        set_sub_indent(SUB_INDENT_PX);
+                                        let response = draw_editor_slider_row(ui, label, &mut value,
+                                            0.0, 100.0, 50.0, false, Some(" %"));
+                                        set_sub_indent(0.0);
+                                        assert_eq!(response.enabled(), on);
+                                        track = response.rect;
+                                    });
+                                });
+                                footprint = result.response.rect;
+                            });
+                        });
+                        (track, footprint)
+                    };
+                    frame(vec![], 0.0);
+                    let (track, rect) = frame(vec![], 0.02);
+                    if let Some(previous) = baseline { assert_eq!(rect, previous, "{label}, zoom {zoom}"); }
+                    else { baseline = Some(rect); }
+                    let pos = egui::pos2(track.left() + track.width() * 0.8, track.center().y);
+                    for (n, pressed) in [true, false].into_iter().enumerate() {
+                        frame(vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                            pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE,
+                        }], 0.1 + n as f64 * 0.02);
+                    }
+                    if on { assert!(value > 25.0, "enabled {label} must react, zoom {zoom}, track {track:?}, click {pos:?}, value {value}"); }
+                    else { assert_eq!(value, 25.0, "disabled slider must keep its value"); }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_amp_graphs_really_paint_nothing_and_use_no_space() {
+        let params = DrumFlashParams::default();
+        let native = [DrumVoice::IonBloom, DrumVoice::Ferroskin, DrumVoice::PrismHat,
+            DrumVoice::OrbitClay, DrumVoice::NeonTom, DrumVoice::ArcZap, DrumVoice::TidalAlloy,
+            DrumVoice::MobiusSkin, DrumVoice::AbyssFm, DrumVoice::Bd6Ac, DrumVoice::Sd6Ac,
+            DrumVoice::Hh6Ac, DrumVoice::Oh6Ac, DrumVoice::Cl6Ac, DrumVoice::Tm6Ac];
+        for zoom in [1.0, 1.25, 1.5] {
+            let ctx = egui::Context::default();
+            crate::ui::install_egui_fonts(&ctx);
+            ctx.set_zoom_factor(zoom);
+            for voice in native.into_iter().chain([DrumVoice::Kick]) {
+                let instrument = &crate::instrument_registry::INSTRUMENTS[voice as usize];
+                let mut source: Box<dyn ParamSource> = Box::new(VolumeSource::default());
+                let values = RowValues { freq: 100.0, decay: 0.33, vol: 1.0, filt: 12000.0,
+                    attack: 0.001, release: 0.0, decay_curve: 0.0, release_curve: 0.0,
+                    hold: 0.0, filter_env_amount: 0.0, filter_env_decay: 0.05, analog: 0.0, stereo: 0.0 };
+                let output = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(568.0, 500.0))),
+                    ..Default::default()
+                }, |ctx| {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                        let before = (ui.cursor(), ui.min_rect());
+                        let graph = SectionGraphCtx { params: &params, instrument, slot: 0, voice_idx: voice as usize };
+                        draw_section_graphs(ui, &graph, crate::instrument_registry::ParamFamily::Env,
+                            instrument.has_ahd_amp_graph(), None, &mut source, values);
+                        if voice == DrumVoice::Kick {
+                            assert!(ui.cursor().top() > before.0.top(), "keep the useful Kick graph");
+                        } else {
+                            assert_eq!((ui.cursor(), ui.min_rect()), before, "{voice:?}, zoom {zoom}");
+                        }
+                    });
+                });
+                if voice != DrumVoice::Kick {
+                    assert!(output.shapes.len() <= 1, "{voice:?}: native envelope still painted");
+                }
+            }
+        }
+    }
+
+    struct HeaderFootprint {
+        actions: [egui::Rect; 3], // Default, Restore, Store
+        morph: Option<egui::Rect>,
+        volume: Option<egui::Rect>,
+        reference: egui::Rect,
+        content_right: f32,
+        module_right: f32,
+        after_rows: f32,
+    }
+
+    fn option_c_frame(
+        ctx: &egui::Context,
+        source: &mut VolumeSource,
+        morph: bool,
+        armed: bool,
+        voice: DrumVoice,
+        events: Vec<egui::Event>,
+        time: f64,
+    ) -> HeaderFootprint {
+        let mut result = None;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(568.0, 400.0))),
+            events,
+            time: Some(time),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                let default_w = crate::ui::controls::keycap_button_width(ui, "Default", 52.0, f_sans_med(9.5));
+                let width = default_w
+                    + crate::ui::controls::keycap_button_width(ui, "Restore", 52.0, f_sans_med(9.5))
+                    + crate::ui::controls::keycap_button_width(ui, "Store", 46.0, f_sans_med(9.5))
+                    + 22.0;
+                let (mut actions_ui, mut morph_ui) = crate::ui::lane_editor_layout::action_row(ui, width, ROW_GUTTER_W);
+                let mut action = |text, min| crate::ui::controls::keycap_button(
+                    &mut actions_ui, text, min, crate::ui::widgets::KeycapState::Rest, true, f_sans_med(9.5),
+                ).rect;
+                let default = action(if armed { "Sure?" } else { "Default" }, default_w);
+                actions_ui.add_space(3.0);
+                let restore = actions_ui.add_enabled_ui(false, |ui| {
+                    crate::ui::controls::keycap_button(ui, "Restore", 52.0, crate::ui::widgets::KeycapState::Rest, true, f_sans_med(9.5)).rect
+                }).inner;
+                actions_ui.add_space(3.0);
+                let store = crate::ui::controls::keycap_button(&mut actions_ui, "Store", 46.0, crate::ui::widgets::KeycapState::Rest, true, f_sans_med(9.5)).rect;
+                let selector = morph.then(|| {
+                    help::zone(&mut morph_ui, "fusion_tab", help::EDITOR_FUSION_TAB, |ui| {
+                        crate::ui::skeuo::segmented(ui, "test_morph", &["Step", "Start", "End"], 1);
+                    });
+                    morph_ui.min_rect()
+                });
+                let volume = draw_volume_strip(ui, voice as usize, source).map(|r| r.rect);
+                let after_rows = ui.cursor().top();
+                // A fresh child is important: the actual ScrollArea has its
+                // own UI. Shrinking the parent after its full-width rows have
+                // already grown min_rect does not reproduce that geometry.
+                let mut body_rect = ui.available_rect_before_wrap();
+                body_rect.max.x -= crate::ui::lane_editor_layout::SCROLLBAR_RESERVE;
+                let mut body = ui.new_child(egui::UiBuilder::new().max_rect(body_rect));
+                let (reference, content_right, module_right) = egui::Frame::new().inner_margin(egui::Margin::same(14)).show(&mut body, |ui| {
+                    let module = module_begin(ui, Some("Oscillator"));
+                    let right = ui.max_rect().right();
+                    let reference = ui.vertical(|ui| {
+                        ui.set_width(EDITOR_PARAMS_W);
+                        row_scoped(ui, false, None, |ui| {
+                            let mut v = 0.5;
+                            draw_editor_slider_row(ui, "Click Level", &mut v, 0.0, 1.0, 0.5, false, Some(""))
+                        }).1.rect
+                    }).inner;
+                    module_end(ui, module);
+                    (reference, right, right + MODULE_INSET)
+                }).inner;
+                result = Some(HeaderFootprint { actions: [default, restore, store], morph: selector, volume, reference, content_right, module_right, after_rows });
+            });
+        });
+        result.unwrap()
+    }
+
+    fn settled_option_c(ctx: &egui::Context, source: &mut VolumeSource, morph: bool, armed: bool, voice: DrumVoice) -> HeaderFootprint {
+        let mut footprint = None;
+        for i in 0..3 {
+            footprint = Some(option_c_frame(ctx, source, morph, armed, voice, vec![], i as f64 / 60.0));
+        }
+        footprint.unwrap()
+    }
+
+    #[test]
+    fn option_c_geometry_is_stable_at_every_zoom_and_confirmation_state() {
+        for zoom in [1.0, 1.25, 1.5] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(zoom);
+            crate::ui::install_egui_fonts(&ctx);
+            let mut source = VolumeSource::default();
+            let baseline = settled_option_c(&ctx, &mut source, false, false, DrumVoice::Kick);
+            for morph in [false, true] {
+                for armed in [false, true] {
+                    let current = settled_option_c(&ctx, &mut source, morph, armed, DrumVoice::Kick);
+                    let volume = current.volume.unwrap();
+                    assert_eq!(volume, baseline.volume.unwrap(), "Volume moved, zoom {zoom}");
+                    assert_eq!(current.actions, baseline.actions, "actions moved, zoom {zoom}");
+                    assert_eq!(current.after_rows, baseline.after_rows);
+                    assert_eq!(volume.left(), current.reference.left());
+                    assert_eq!(volume.width(), 288.0);
+                    assert_eq!(current.reference.width(), 108.0);
+                    assert_eq!(current.actions[2].left(), 28.0);
+                    assert!(current.actions[2].right() < current.actions[1].left());
+                    assert!(current.actions[1].right() < current.actions[0].left());
+                    assert!(volume.top() > current.actions[0].bottom());
+                    assert!(current.after_rows < 100.0, "header consumed the scroll area");
+                    if let Some(selector) = current.morph {
+                        assert!(selector.left() > current.actions[0].right() + 20.0);
+                        assert_eq!(selector.right(), 554.0);
+                        assert_eq!(selector.center().y, current.actions[0].center().y);
+                    }
+                }
+            }
+            assert_eq!(source.writes, 0, "rendering must not write a parameter");
+        }
+    }
+
+    #[test]
+    fn option_c_volume_readout_respects_the_modules_inner_right_margin() {
+        for zoom in [1.0, 1.25, 1.5] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(zoom);
+            crate::ui::install_egui_fonts(&ctx);
+            let mut source = VolumeSource::default();
+            let header = settled_option_c(&ctx, &mut source, true, false, DrumVoice::Kick);
+            let track = header.volume.unwrap();
+            let readout_right = track.right() + 8.0 + EDITOR_VALUE_W;
+            assert_eq!(readout_right, header.content_right, "Volume must end on the modules' content boundary, zoom {zoom}");
+            assert_eq!(readout_right, 534.0);
+            assert_eq!(header.module_right - readout_right, MODULE_INSET);
+        }
+    }
+
+    fn click_option_c(source: &mut VolumeSource, gutter: bool) {
+        let ctx = egui::Context::default();
+        crate::ui::install_egui_fonts(&ctx);
+        let initial = settled_option_c(&ctx, source, true, false, DrumVoice::Kick);
+        let track = initial.volume.unwrap();
+        let pos = if gutter { egui::pos2(20.0, track.center().y) } else { track.center() };
+        for (index, pressed) in [true, false].into_iter().enumerate() {
+            option_c_frame(&ctx, source, true, false, DrumVoice::Kick, vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+            ], 0.1 + index as f64 * 0.02);
+        }
+    }
+
+    #[test]
+    fn option_c_volume_click_keeps_the_display_to_storage_scaling() {
+        let mut source = VolumeSource::default();
+        click_option_c(&mut source, false);
+        assert!(source.writes > 0);
+        assert!((source.value - 1.0).abs() < 1e-6, "middle of display range 0..1 must store 1.0 in 0..2");
+    }
+
+    #[test]
+    fn option_c_volume_gutter_still_clears_the_current_override() {
+        let mut source = VolumeSource { overridden: true, ..Default::default() };
+        click_option_c(&mut source, true);
+        assert_eq!(source.clears, 1);
+        assert_eq!(source.writes, 0);
+    }
+
+    #[test]
+    fn option_c_disabled_volume_never_writes() {
+        let mut source = VolumeSource { disabled: true, ..Default::default() };
+        click_option_c(&mut source, false);
+        assert_eq!(source.writes, 0);
+        assert_eq!(source.value, 1.44);
+    }
+
+    #[test]
+    fn option_c_midi_out_has_no_volume_slider_but_keeps_the_row_height() {
+        let ctx = egui::Context::default();
+        crate::ui::install_egui_fonts(&ctx);
+        let mut source = VolumeSource::default();
+        let audio = settled_option_c(&ctx, &mut source, false, false, DrumVoice::Kick);
+        let midi = settled_option_c(&ctx, &mut source, false, false, DrumVoice::MidiOut);
+        assert!(midi.volume.is_none());
+        assert_eq!(midi.after_rows, audio.after_rows);
+        assert_eq!(source.writes, 0);
     }
 }

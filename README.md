@@ -1,6 +1,6 @@
 # Flash Drum
 
-**A free drum machine plugin (VST3, Windows).** Flash Drum started as a sidekick for a Roland TR-606 and grew into a full instrument: a 64-step sequencer driving 14 modular lanes, each one able to host any of 25 instruments — synthesized, sampled, modelled or hybrid.
+**A free drum machine plugin (VST3, Windows).** Flash Drum started as a sidekick for a Roland TR-606 and grew into a full instrument: a 64-step sequencer with modular lanes for synthesized, sampled, modelled or hybrid drums, plus two send-effect buses.
 
 **[Download the latest version](https://github.com/TiiPaa/flashdrum/releases)** · Beta — feedback and bug reports welcome in [Issues](https://github.com/TiiPaa/flashdrum/issues).
 
@@ -8,7 +8,7 @@
 
 ### Sound engines
 
-- **25 instruments on 14 modular lanes** — every lane can host a different instrument and hold its own sound settings.
+- **12 instrument lanes plus two effect buses** — each instrument lane holds its own engine and sound settings.
 - **Synthesized voices** — Kick, Snare, Hi-Hat, Tom, Clap, Ride, Cymbal, an 808-style kick and percussion.
 - **TR-606 multisamples** — every hit picks a different layer, like the hardware.
 - **Six modelled 606 voices** — ported from analogcode's open-source models.
@@ -16,6 +16,7 @@
 - **Buzz** — a tonal-percussion voice with adjustable noise, a fast gate and a machine-gun retrigger.
 - **Rift** — slices a long embedded or custom texture with Offset, Wander, Advance, Grain, Loop and Reverse.
 - **One-Shot** — drop your own WAV file on the grid and play it from any start point, forward or reversed.
+- **Nine Percussion Forge engines** — ION BLOOM, FERROSKIN, PRISM HAT, ORBIT CLAY, NEON TOM, ARC ZAP, TIDAL ALLOY, MÖBIUS SKIN and ABYSS FM. Their 68 source controls are editable and available as per-step sound locks; seven engines offer optional stereo, with mono as the default.
 - **Full sound editor** — oscillator/sample, amp envelope, pitch envelope, filter, modulation, distortion and output sections per instrument.
 - **Analog drift and five distortion flavours** — SoftClip, Valve, Transistor, HardClip and Tape, with pre-/post-filter routing.
 
@@ -68,6 +69,13 @@ cargo test                # unit and integration tests
 ```
 
 More details in [drum-pattern-vst/README.md](drum-pattern-vst/README.md).
+
+For the Percussion Forge engines, `cargo run --release --bin test_standalone -- --forge-benchmark`
+measures the production DSP at 48 kHz mono/stereo and 96 kHz with extreme settings.
+Deterministic source-reference fixtures are exercised by `cargo test forge`.
+The browser app's whole-hit peak normalisation is replaced by calibrated fixed
+gains and an over-range safety ceiling for real-time playback. Rapid retriggers
+reuse the lane's voice rather than layering unlimited hits.
 
 ## License
 

@@ -9,6 +9,7 @@ mod clap;
 mod cymbal;
 mod delay;
 mod dsp;
+mod forge;
 mod hihat;
 pub mod inserts;
 mod kick;
@@ -20,9 +21,9 @@ mod perc1;
 #[cfg(test)]
 mod retrig_tests;
 mod reverb;
-mod rumble;
 mod ride;
 mod rift;
+mod rumble;
 pub mod sample_bank;
 mod saturation;
 mod sd606;
@@ -44,20 +45,22 @@ pub use buzz::BuzzVoice;
 pub use ch606::Ch606Voice;
 pub use clap::ClapVoice;
 pub use cymbal::CymbalVoice;
+#[allow(unused_imports)]
+pub use delay::sp as delay_sp;
+#[allow(unused_imports)]
+pub use delay::synced_time_ms as delay_synced_time_ms;
+#[allow(unused_imports)]
+pub use delay::SYNC_BEATS as NOTE_SYNC_BEATS;
+pub use delay::{DelayCore, DelayParams, DelayVoice};
+#[allow(unused_imports)]
+pub use dsp::{decay_curve_amount, shape_decay_curve};
+pub use forge::ForgeVoice;
+use forge::{ForgeKind, ForgeMemory};
 pub use hihat::HiHatVoice;
 pub use kick::KickVoice;
 pub use kick_808::Kick808Voice;
 pub use midi_out::MidiOutVoice;
 pub use oneshot::OneShotVoice;
-#[allow(unused_imports)]
-pub use delay::sp as delay_sp;
-#[allow(unused_imports)]
-pub use delay::synced_time_ms as delay_synced_time_ms;
-pub use delay::{DelayCore, DelayParams, DelayVoice};
-#[allow(unused_imports)]
-pub use dsp::{decay_curve_amount, shape_decay_curve};
-#[allow(unused_imports)]
-pub use delay::SYNC_BEATS as NOTE_SYNC_BEATS;
 #[allow(unused_imports)]
 pub use reverb::sp as reverb_sp;
 pub use reverb::{ReverbCore, ReverbParams, ReverbVoice};
@@ -71,12 +74,12 @@ pub use rumble::{duck_depth, duck_exponent, duck_ratio};
 pub const fn rumble_duck_source_kick() -> u8 {
     rumble::DUCK_SOURCE_KICK
 }
-pub use rumble::{RumbleCore, RumbleParams, RumbleVoice};
 pub use open_hihat::OpenHiHatVoice;
 pub use perc1::Perc1Voice;
 pub use ride::RideVoice;
 #[allow(unused_imports)] // le binaire de test headless n'a pas d'UI
 pub use rift::grain_seconds as rift_grain_seconds;
+pub use rumble::{RumbleCore, RumbleParams, RumbleVoice};
 pub use sdrex::SdrexVoice;
 // Read by the Sound Panel's pitch-envelope graph; the standalone harness
 // has no UI, hence the allow.
@@ -150,10 +153,19 @@ pub enum DrumVoice {
     Rumble = 29,
     /// [95] MIDI Out - notes, CCs and Program Change, with no audio engine.
     MidiOut = 30,
+    IonBloom = 31,
+    Ferroskin = 32,
+    PrismHat = 33,
+    OrbitClay = 34,
+    NeonTom = 35,
+    ArcZap = 36,
+    TidalAlloy = 37,
+    MobiusSkin = 38,
+    AbyssFm = 39,
 }
 
 impl DrumVoice {
-    pub const COUNT: usize = 31;
+    pub const COUNT: usize = 40;
 
     /// [286] An effect (Reverb, Delay), not a sound source: no steps, no note.
     pub const fn is_effect_index(index: usize) -> bool {
@@ -195,6 +207,15 @@ impl DrumVoice {
             28 => Some(Self::Delay),
             29 => Some(Self::Rumble),
             30 => Some(Self::MidiOut),
+            31 => Some(Self::IonBloom),
+            32 => Some(Self::Ferroskin),
+            33 => Some(Self::PrismHat),
+            34 => Some(Self::OrbitClay),
+            35 => Some(Self::NeonTom),
+            36 => Some(Self::ArcZap),
+            37 => Some(Self::TidalAlloy),
+            38 => Some(Self::MobiusSkin),
+            39 => Some(Self::AbyssFm),
             _ => None,
         }
     }
@@ -285,6 +306,67 @@ impl Default for VoiceSettings {
 }
 
 impl VoiceSettings {
+    pub(crate) fn forge(voice: DrumVoice) -> Self {
+        let def = &crate::instrument_registry::INSTRUMENTS[voice as usize];
+        let d = def.sound_settings_default;
+        let mut settings = Self {
+            frequency: d[0],
+            decay: d[1],
+            volume: d[2],
+            filter_freq: d[3],
+            attack: d[4],
+            release: d[5],
+            decay_curve: d[6],
+            release_curve: d[7],
+            hold: d[8],
+            filter_env_amount: d[9],
+            filter_env_decay: d[10],
+            analog: d[11],
+            stereo: d[12],
+            algo: 0,
+            special: [0.0; 32],
+        };
+        for p in def.special_params {
+            settings.special[p.special_index] = p.default;
+        }
+        settings
+    }
+    #[cfg(test)]
+    pub fn ion_bloom() -> Self {
+        Self::forge(DrumVoice::IonBloom)
+    }
+    #[cfg(test)]
+    pub fn ferroskin() -> Self {
+        Self::forge(DrumVoice::Ferroskin)
+    }
+    #[cfg(test)]
+    pub fn prism_hat() -> Self {
+        Self::forge(DrumVoice::PrismHat)
+    }
+    #[cfg(test)]
+    pub fn orbit_clay() -> Self {
+        Self::forge(DrumVoice::OrbitClay)
+    }
+    #[cfg(test)]
+    pub fn neon_tom() -> Self {
+        Self::forge(DrumVoice::NeonTom)
+    }
+    #[cfg(test)]
+    pub fn arc_zap() -> Self {
+        Self::forge(DrumVoice::ArcZap)
+    }
+    #[cfg(test)]
+    pub fn tidal_alloy() -> Self {
+        Self::forge(DrumVoice::TidalAlloy)
+    }
+    #[cfg(test)]
+    pub fn mobius_skin() -> Self {
+        Self::forge(DrumVoice::MobiusSkin)
+    }
+    #[cfg(test)]
+    pub fn abyss_fm() -> Self {
+        Self::forge(DrumVoice::AbyssFm)
+    }
     /// Read one parameter by its canonical id ([184]).
     ///
     /// Audio-thread safe: a plain match, no allocation. Replaces the
@@ -793,8 +875,9 @@ impl VoiceSettings {
             algo: 0,
             // time ms, feedback, damping, low cut Hz, (4 reserved), ping-pong, -, glide
             special: [
-                375.0, 0.4, 0.4, 100.0, 0.0, 0.5, 0.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                375.0, 0.4, 0.4, 100.0, 0.0, 0.5, 0.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0,
             ],
         }
     }
@@ -820,8 +903,9 @@ impl VoiceSettings {
             algo: 0,
             // size, decay s, damping, pre-delay ms, (4 reserved), low cut Hz, width
             special: [
-                1.0, 2.5, 0.5, 20.0, 0.0, 120.0, 1.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                1.0, 2.5, 0.5, 20.0, 0.0, 120.0, 1.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0,
             ],
         }
     }
@@ -1236,6 +1320,7 @@ drum_voice_kinds! {
     Rumble(RumbleVoice),
     /// [95] An instrument lane whose output is MIDI only.
     MidiOut(MidiOutVoice),
+    Forge(ForgeVoice),
     Buzz(BuzzVoice),
     Sdrex(SdrexVoice),
     Bd6Ac(AcVoice),
@@ -1325,6 +1410,15 @@ fn create_voice_for_kind(
         K::Delay => DrumVoiceKind::Delay(DelayVoice),
         K::Rumble => DrumVoiceKind::Rumble(RumbleVoice),
         K::MidiOut => DrumVoiceKind::MidiOut(MidiOutVoice),
+        K::IonBloom => DrumVoiceKind::Forge(ForgeVoice::new(sample_rate, ForgeKind::IonBloom)),
+        K::Ferroskin => DrumVoiceKind::Forge(ForgeVoice::new(sample_rate, ForgeKind::Ferroskin)),
+        K::PrismHat => DrumVoiceKind::Forge(ForgeVoice::new(sample_rate, ForgeKind::PrismHat)),
+        K::OrbitClay => DrumVoiceKind::Forge(ForgeVoice::new(sample_rate, ForgeKind::OrbitClay)),
+        K::NeonTom => DrumVoiceKind::Forge(ForgeVoice::new(sample_rate, ForgeKind::NeonTom)),
+        K::ArcZap => DrumVoiceKind::Forge(ForgeVoice::new(sample_rate, ForgeKind::ArcZap)),
+        K::TidalAlloy => DrumVoiceKind::Forge(ForgeVoice::new(sample_rate, ForgeKind::TidalAlloy)),
+        K::MobiusSkin => DrumVoiceKind::Forge(ForgeVoice::new(sample_rate, ForgeKind::MobiusSkin)),
+        K::AbyssFm => DrumVoiceKind::Forge(ForgeVoice::new(sample_rate, ForgeKind::AbyssFm)),
         K::Buzz => DrumVoiceKind::Buzz(BuzzVoice::new(
             sample_rate,
             BuzzSettings::from(VoiceSettings::buzz()),
@@ -1431,6 +1525,9 @@ impl FxParams {
 }
 
 pub struct DrumSynthesizer {
+    /// A slot either lends this memory to its Forge voice or parks it here.
+    /// Ownership moves, never allocates/frees, when a kind changes during playback.
+    forge_memory: [Option<Box<ForgeMemory>>; crate::track::MAX_TRACKS],
     voices: Box<[Option<Box<DrumVoiceKind>>; crate::track::MAX_TRACKS]>,
     sample_rate: f32,
     velocities: [f32; crate::track::MAX_TRACKS],
@@ -1469,8 +1566,27 @@ const VELOCITY_SMOOTH_MS: f32 = 1.5;
 const SEND_SMOOTH_MS: f32 = 5.0;
 
 impl DrumSynthesizer {
+    /// Diagnostic for the standalone benchmark; counts only Forge buffer storage.
+    #[allow(dead_code)]
+    pub fn forge_buffer_bytes(&self) -> usize {
+        self.forge_memory
+            .iter()
+            .flatten()
+            .map(|m| m.allocated_bytes())
+            .sum::<usize>()
+            + self
+                .voices
+                .iter()
+                .flatten()
+                .map(|v| match &**v {
+                    DrumVoiceKind::Forge(f) => f.memory.as_ref().map_or(0, |m| m.allocated_bytes()),
+                    _ => 0,
+                })
+                .sum::<usize>()
+    }
     pub fn new() -> Self {
         Self {
+            forge_memory: std::array::from_fn(|_| None),
             texture_pool: None,
             fx_reverb: std::array::from_fn(|_| ReverbCore::new(44100.0)),
             fx_delay: std::array::from_fn(|_| DelayCore::new(44100.0)),
@@ -1505,11 +1621,14 @@ impl DrumSynthesizer {
         layout: &crate::track::TrackLayoutState,
     ) {
         self.sample_rate = sample_rate;
+        self.forge_memory = std::array::from_fn(|_| Some(Box::new(ForgeMemory::new(sample_rate))));
         // [286] The effects' buffers: allocated here (non-RT), never in `process`.
         self.fx_reverb = std::array::from_fn(|_| ReverbCore::new(sample_rate));
         self.fx_delay = std::array::from_fn(|_| DelayCore::new(sample_rate));
         self.fx_rumble = std::array::from_fn(|_| RumbleCore::new(sample_rate));
-        self.inserts = Box::new(std::array::from_fn(|_| inserts::InsertRack::new(sample_rate)));
+        self.inserts = Box::new(std::array::from_fn(|_| {
+            inserts::InsertRack::new(sample_rate)
+        }));
         self.send_coef = 1.0 - (-1.0 / (sample_rate * SEND_SMOOTH_MS * 0.001)).exp();
         for smoother in self.velocity_smoothers.iter_mut() {
             *smoother = dsp::OnePoleSmoother::new(sample_rate, VELOCITY_SMOOTH_MS, 1.0);
@@ -1538,6 +1657,9 @@ impl DrumSynthesizer {
                 placeholder_kind
             };
             let mut voice = create_voice_for_kind(kind, sample_rate);
+            if let DrumVoiceKind::Forge(forge) = &mut voice {
+                forge.memory = self.forge_memory[i].take();
+            }
             if let Some(pool) = &self.texture_pool {
                 voice.set_texture_pool(pool.clone(), i);
             }
@@ -1680,7 +1802,9 @@ impl DrumSynthesizer {
     pub fn rumble_duck_gain(&self, bus: usize) -> Option<f32> {
         let slot = crate::track::FX_FIRST_SLOT + *Some(&bus).filter(|b| **b < crate::track::FX_SLOT_COUNT)?;
         match self.voices[slot].as_deref() {
-            Some(DrumVoiceKind::Rumble(_)) if self.active[slot] => Some(self.fx_rumble[bus].duck_gain()),
+            Some(DrumVoiceKind::Rumble(_)) if self.active[slot] => {
+                Some(self.fx_rumble[bus].duck_gain())
+            }
             _ => None,
         }
     }
@@ -1791,9 +1915,15 @@ impl DrumSynthesizer {
             if crate::track::is_fx_slot(slot_idx) {
                 let bus = slot_idx - crate::track::FX_FIRST_SLOT;
                 match &**voice {
-                    DrumVoiceKind::Reverb(_) => self.fx_reverb[bus].set_params(ReverbParams::from(&settings)),
-                    DrumVoiceKind::Delay(_) => self.fx_delay[bus].set_params(DelayParams::from(&settings)),
-                    DrumVoiceKind::Rumble(_) => self.fx_rumble[bus].set_params(RumbleParams::from(&settings)),
+                    DrumVoiceKind::Reverb(_) => {
+                        self.fx_reverb[bus].set_params(ReverbParams::from(&settings))
+                    }
+                    DrumVoiceKind::Delay(_) => {
+                        self.fx_delay[bus].set_params(DelayParams::from(&settings))
+                    }
+                    DrumVoiceKind::Rumble(_) => {
+                        self.fx_rumble[bus].set_params(RumbleParams::from(&settings))
+                    }
                     _ => {}
                 }
             }
@@ -1830,6 +1960,14 @@ impl DrumSynthesizer {
             return;
         }
         let mut new_voice = create_voice_for_kind(kind, self.sample_rate);
+        if let Some(existing) = self.voices[slot_idx].as_mut() {
+            if let DrumVoiceKind::Forge(forge) = &mut **existing {
+                self.forge_memory[slot_idx] = forge.memory.take();
+            }
+        }
+        if let DrumVoiceKind::Forge(forge) = &mut new_voice {
+            forge.memory = self.forge_memory[slot_idx].take();
+        }
         if let Some(pool) = &self.texture_pool {
             // An Arc clone: one atomic increment, fine on the audio thread.
             new_voice.set_texture_pool(pool.clone(), slot_idx);
@@ -2612,6 +2750,17 @@ mod tests {
                 K::Delay => VoiceSettings::delay(),
                 K::Rumble => VoiceSettings::rumble(),
                 K::MidiOut => VoiceSettings::midi_out(),
+                K::IonBloom
+                | K::Ferroskin
+                | K::PrismHat
+                | K::OrbitClay
+                | K::NeonTom
+                | K::ArcZap
+                | K::TidalAlloy
+                | K::MobiusSkin
+                | K::AbyssFm => {
+                    VoiceSettings::forge(DrumVoice::from_index(kind.drum_voice_index()).unwrap())
+                }
             }
         }
 

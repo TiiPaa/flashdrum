@@ -11,6 +11,7 @@ pub mod buzz;
 pub mod ch606;
 pub mod clap;
 pub mod cymbal;
+pub mod forge;
 pub mod hihat;
 pub mod kick;
 pub mod kick_808;

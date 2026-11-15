@@ -8,6 +8,8 @@
 //! Everything else (multi-out, plock, UI, MIDI, parameters) is derived automatically.
 
 use crate::synthesis::DrumVoice;
+#[path = "instrument_registry/forge.rs"]
+mod forge;
 
 pub const SOUND_SETTINGS_FIELD_COUNT: usize = 13;
 
@@ -36,6 +38,9 @@ pub enum ParamFamily {
     Output,
     /// [95] External MIDI controls: CCs and Program Change.
     Midi,
+    /// [325] Stereo switch and the controls which have no mono effect.
+    /// Display metadata only: this enum is never part of a saved blob.
+    Stereo,
 }
 
 impl ParamFamily {
@@ -50,6 +55,7 @@ impl ParamFamily {
             ParamFamily::Saturation => "DIST",
             ParamFamily::Output => "OUTPUT",
             ParamFamily::Midi => "MIDI",
+            ParamFamily::Stereo => "STEREO",
         }
     }
 }
@@ -421,13 +427,25 @@ pub fn source_section_title(voice_idx: usize) -> &'static str {
     }
     let def = INSTRUMENTS.get(voice_idx);
     // [286] The reverb's knobs are its whole source section.
-    if def.is_some_and(|d| d.special_params.iter().any(|p| p.name.starts_with("reverb_"))) {
+    if def.is_some_and(|d| {
+        d.special_params
+            .iter()
+            .any(|p| p.name.starts_with("reverb_"))
+    }) {
         return "Reverb";
     }
-    if def.is_some_and(|d| d.special_params.iter().any(|p| p.name.starts_with("delay_"))) {
+    if def.is_some_and(|d| {
+        d.special_params
+            .iter()
+            .any(|p| p.name.starts_with("delay_"))
+    }) {
         return "Delay";
     }
-    if def.is_some_and(|d| d.special_params.iter().any(|p| p.name.starts_with("rumble_"))) {
+    if def.is_some_and(|d| {
+        d.special_params
+            .iter()
+            .any(|p| p.name.starts_with("rumble_"))
+    }) {
         return "Rumble";
     }
     let has = |suffix: &str| {
@@ -514,13 +532,24 @@ pub fn param_is_lane_global(voice_idx: usize, id: crate::param_id::ParamId) -> b
         return false;
     };
     INSTRUMENTS.get(voice_idx).is_some_and(|inst| {
-        inst.special_params
-            .iter()
-            .any(|def| def.special_index == index && matches!(
-                def.name,
-                "reverb_glide" | "reverb_type" | "reverb_gate_on" | "reverb_warp" | "delay_glide" | "reverb_norestart" | "delay_norestart" | "delay_sync"
-                    | "rumble_glide" | "rumble_norestart" | "rumble_echo_sync" | "rumble_duck_source"
-            ))
+        inst.special_params.iter().any(|def| {
+            def.special_index == index
+                && matches!(
+                    def.name,
+                    "reverb_glide"
+                        | "reverb_type"
+                        | "reverb_gate_on"
+                        | "reverb_warp"
+                        | "delay_glide"
+                        | "reverb_norestart"
+                        | "delay_norestart"
+                        | "delay_sync"
+                        | "rumble_glide"
+                        | "rumble_norestart"
+                        | "rumble_echo_sync"
+                        | "rumble_duck_source"
+                )
+        })
     })
 }
 
@@ -579,6 +608,20 @@ pub struct InstrumentDef {
     /// phase continuity, the voice has no random drift. The dev preset dump
     /// writes 0.0 in place of its analog value.
     pub analog_fixed: bool,
+}
+
+impl InstrumentDef {
+    /// Draw AHD only for engines actually using the shared amp envelope.
+    /// Forge/AC606 have their own equations, not the AHD drawn by the editor.
+    /// This is a VOICE/schema lookup, never a physical slot-number test.
+    pub fn has_ahd_amp_graph(&self) -> bool {
+        matches!(DrumVoice::from_index(self.index),
+            Some(DrumVoice::Kick | DrumVoice::Snare | DrumVoice::HiHat | DrumVoice::OpenHiHat
+                | DrumVoice::Tom1 | DrumVoice::Tom2 | DrumVoice::Tom3 | DrumVoice::Clap
+                | DrumVoice::Ride | DrumVoice::Cymbal | DrumVoice::Snare606 | DrumVoice::BassDrum808
+                | DrumVoice::Perc1 | DrumVoice::Bd606 | DrumVoice::Sd606 | DrumVoice::Ch606
+                | DrumVoice::Oh606 | DrumVoice::Buzz | DrumVoice::Sdrex | DrumVoice::Rift | DrumVoice::OneShot))
+    }
 }
 
 const fn s(
@@ -5351,6 +5394,15 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
         freq_as_notes: false,
         analog_fixed: true,
     },
+    forge::ION_BLOOM,
+    forge::FERROSKIN,
+    forge::PRISM_HAT,
+    forge::ORBIT_CLAY,
+    forge::NEON_TOM,
+    forge::ARC_ZAP,
+    forge::TIDAL_ALLOY,
+    forge::MOBIUS_SKIN,
+    forge::ABYSS_FM,
 ];
 
 /// Highest algo index across all instruments. Used as the shared range of the
@@ -5565,7 +5617,24 @@ mod tests {
             } else {
                 127.0
             };
-            assert_eq!((param.min, param.max), (0.0, expected_max), "{}", param.name);
+            assert_eq!(
+                (param.min, param.max),
+                (0.0, expected_max),
+                "{}",
+                param.name
+            );
+        }
+    }
+
+    #[test]
+    fn native_envelopes_do_not_claim_ahd_graphs_and_shared_envelopes_keep_them() {
+        use DrumVoice as V;
+        let native = [V::Bd6Ac, V::Sd6Ac, V::Hh6Ac, V::Oh6Ac, V::Cl6Ac, V::Tm6Ac,
+            V::IonBloom, V::Ferroskin, V::PrismHat, V::OrbitClay, V::NeonTom, V::ArcZap,
+            V::TidalAlloy, V::MobiusSkin, V::AbyssFm, V::MidiOut, V::Reverb, V::Delay, V::Rumble];
+        for def in &INSTRUMENTS {
+            let expected = !native.iter().any(|v| *v as usize == def.index);
+            assert_eq!(def.has_ahd_amp_graph(), expected, "{}", def.name);
         }
     }
 
@@ -5620,7 +5689,9 @@ mod tests {
         // Snare, HiHat, OpenHiHat, Clap, Ride, Cymbal, Snare606, Perc1,
         // BD606, SD606, CH606 ([168]: two-sample L&R stereo), Buzz,
         // One-Shot ([243]: a stereo user file plays its two channels).
-        for idx in [1usize, 2, 3, 7, 8, 9, 10, 12, 13, 14, 15, 16, 26] {
+        for idx in [
+            1usize, 2, 3, 7, 8, 9, 10, 12, 13, 14, 15, 16, 26, 31, 32, 33, 34, 35, 37, 38,
+        ] {
             assert!(
                 has_stereo(&INSTRUMENTS[idx]),
                 "{} (idx {idx}) lost its Stereo standard param",
@@ -5633,7 +5704,7 @@ mod tests {
     fn mono_voices_do_not_expose_the_stereo_checkbox() {
         // Kick, Tom1-3, B8, Sdrex stay mono. (Rift has the switch since
         // [228]: a stereo user file plays its two channels.)
-        for idx in [0usize, 4, 5, 6, 11, 17] {
+        for idx in [0usize, 4, 5, 6, 11, 17, 36, 39] {
             assert!(
                 !has_stereo(&INSTRUMENTS[idx]),
                 "{} (idx {idx}) unexpectedly exposes Stereo",
@@ -5747,6 +5818,56 @@ mod tests {
                 ("rumble_highpass", " Hz"),
                 ("rumble_lowpass", " Hz"),
                 ("rumble_release", " ms"),
+                ("ion_drop", " Hz"),
+                ("ion_bloom", " %"),
+                ("ion_impact", " %"),
+                ("ion_pressure", " %"),
+                ("ferro_tension", " %"),
+                ("ferro_coupling", " %"),
+                ("ferro_impact", " %"),
+                ("ferro_noise", " %"),
+                ("ferro_wire", " %"),
+                ("prism_spread", " %"),
+                ("prism_density", " %"),
+                ("prism_color", " %"),
+                ("prism_bite", " %"),
+                ("orbit_material", " %"),
+                ("orbit_bounce", " %"),
+                ("orbit_gravity", " %"),
+                ("orbit_drift", " %"),
+                ("orbit_mod_rate", " Hz"),
+                ("orbit_release", " ms"),
+                ("orbit_drive", " %"),
+                ("neon_drop", " Hz"),
+                ("neon_shape", " %"),
+                ("neon_snap", " %"),
+                ("neon_drive", " %"),
+                ("arc_amount", " st"),
+                ("arc_speed", " %"),
+                ("arc_shape", " %"),
+                ("arc_fm", " %"),
+                ("tidal_morph", " %"),
+                ("tidal_bell", " %"),
+                ("tidal_tone_drop", " st"),
+                ("tidal_drop_speed", " %"),
+                ("tidal_spread", " %"),
+                ("tidal_tide", " %"),
+                ("tidal_lfo_rate", " Hz"),
+                ("tidal_lfo_depth", " %"),
+                ("mobius_material", " %"),
+                ("mobius_twist", " %"),
+                ("mobius_rotation", " Hz"),
+                ("mobius_chaos", " %"),
+                ("mobius_strike", " %"),
+                ("mobius_width", " %"),
+                ("abyss_drop", " st"),
+                ("abyss_length", " ms"),
+                ("abyss_ratio", " x"),
+                ("abyss_index", " %"),
+                ("abyss_fm_tail", " %"),
+                ("abyss_fundamental", " %"),
+                ("abyss_fold", " %"),
+                ("abyss_drive", " %"),
             ]
         );
 

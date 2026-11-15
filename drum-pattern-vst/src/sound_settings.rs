@@ -796,6 +796,35 @@ mod tests {
         assert!(!state.instruments[5].freq_mode());
     }
 
+    #[test]
+    fn forge_layout_settings_and_every_plock_survive_persistence() {
+        use crate::synthesis::{DrumVoice, VoiceSettings};
+        use crate::instrument_registry::INSTRUMENTS;
+        use crate::plock::{PersistentPlockState, SPECIAL_FIELD_START};
+        for track in TrackInstrumentKind::ALL.into_iter().skip(29).take(9) {
+            let voice=DrumVoice::from_index(track.drum_voice_index()).unwrap();
+            let mut layout=TrackLayoutState::default_layout();
+            layout.slots[0]=TrackSlot::active_with_kind(track);
+            let encoded=serde_json::to_string(&layout).unwrap();
+            let layout:TrackLayoutState=serde_json::from_str(&encoded).unwrap();
+            assert_eq!(layout.slots[0].kind,track);
+            let state=SoundSettingsState::new(&layout);
+            let saved=state.read_all();let restored=SoundSettingsState::new(&layout);
+            restored.write_all(&saved);assert_eq!(restored.read_all(),saved);
+            let locks=PersistentPlockState::new();let global=VoiceSettings::forge(voice);
+            for p in INSTRUMENTS[voice as usize].special_params {
+                locks.state.set_field(0,p.special_index,SPECIAL_FIELD_START+p.special_index,p.max);
+            }
+            let blob=locks.map(|v|v.clone());let back=PersistentPlockState::new();back.set(blob);
+            for p in INSTRUMENTS[voice as usize].special_params {
+                let hit=back.state.get_settings(0,p.special_index,&global).unwrap();
+                assert_eq!(hit.special[p.special_index],p.max,"{}",p.name);
+                assert_eq!(hit.frequency,global.frequency);assert_eq!(hit.attack,global.attack);
+            }
+            assert!(back.state.get_settings(1,0,&global).is_none());
+        }
+    }
+
     /// Regression for [105]: every instrument kind must initialise its global
     /// Frequency to a strictly positive value so the plock sound menu never
     /// defaults to 0 Hz. Voices whose Freq slider is a RELATIVE pitch

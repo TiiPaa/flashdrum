@@ -21,6 +21,7 @@ mod fmt;
 mod grid;
 mod header;
 mod help;
+mod lane_editor_layout;
 mod local_param_slider;
 mod macros_panel;
 mod menus;

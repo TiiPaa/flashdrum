@@ -70,7 +70,10 @@ pub fn standard(voice: usize, field: F) -> String {
             }
         }
         F::Decay => {
-            if sampler || voice == V::OneShot as usize {
+            if is(voice, &[V::IonBloom,V::Ferroskin,V::PrismHat,V::OrbitClay,V::NeonTom,
+                V::ArcZap,V::TidalAlloy,V::MobiusSkin,V::AbyssFm]) {
+                "Decay of this engine's native body/resonance, not an AHD envelope. The hit also has a final fade. Tidal Alloy stops at 2.2 s; Orbit Clay has its own Release, and Abyss FM has an independent Length."
+            } else if sampler || voice == V::OneShot as usize {
                 "Decay: length of the fade-out, as a share of the sample."
             } else {
                 "Decay: how long the sound takes to die away."
@@ -336,6 +339,54 @@ Off: every hit plays the Sample chosen below.";
         "rift_resonance" | "oneshot_resonance" => "Resonance: emphasis at the filter cutoff; high values ring.",
         "rift_crush" => "Crush: fewer bits, for a gritty lo-fi sound.",
         "rift_decimate" => "Decimate: lower sample rate, for an aliased lo-fi sound.",
+        "ion_drop" | "neon_drop" => "Drop: initial pitch rise above the fundamental, in hertz. It falls back toward the tuned body.",
+        "ion_bloom" => "Bloom: late subharmonic layer, and the speed of the initial pitch drop.",
+        "ion_impact" => "Impact: level of the short, high-passed noise transient.",
+        "ion_pressure" => "Pressure: native drive/soft saturation of the kick, before lane Volume.",
+        "ferro_tension" => "Tension: tunes the two coupled membranes and their wire resonances.",
+        "ferro_coupling" => "Coupling: interaction and balance of the membranes, with native saturation.",
+        "ferro_impact" => "Impact: softer onset at 0, stronger crack/accent at 100. Shapes the first 12 ms around the native crack; 52 preserves the native attack, and the body/tail level stays unchanged.",
+        "ferro_noise" => "Noise: amount of filtered noise under the membranes.",
+        "ferro_wire" => "Wires: level of the resonant wire tones.",
+        "prism_spread" => "Dispersion: spacing of the six inharmonic oscillators; not stereo width.",
+        "prism_density" => "Density: balance of oscillator bank, ring modulation and noise.",
+        "prism_color" => "Color: dark-to-bright tilt of the whole sound, plus the native noise coloration. 0 is darker, 100 brighter; 66 preserves the native balance. Also works with Density at 100.",
+        "prism_bite" => "Bite: native amplitude quantisation and drive.",
+        "orbit_material" => "Material: interpolate the modal ratios from wood-like to metal-like; also changes losses and excitation.",
+        "orbit_bounce" => "Bounces: one to six internal strikes, in discrete steps along this amount.",
+        "orbit_gravity" => "Gravity: spacing and slowing of the successive bounces.",
+        "orbit_drift" => "Pitch / Filter Mod: depth of the modal pitch motion and moving filter.",
+        "orbit_mod_rate" => "Mod Rate: speed of the coupled pitch and filter modulation, in hertz.",
+        "orbit_release" => "Release: final smooth fade of the native hit, in milliseconds; independent from Resonance. It is not a MIDI note-off release.",
+        "orbit_drive" => "Deformation: gentle native saturation of the modal sum, before Volume.",
+        "neon_shape" => "Shape: sine-to-triangle blend and pitch-drop duration.",
+        "neon_snap" => "Snap: amount of the short filtered-noise attack, not an attack time.",
+        "neon_drive" => "Push: native parallel saturation of the tom, before Volume.",
+        "arc_amount" | "abyss_drop" => "Pitch rise at the beginning of the hit, in semitones, falling toward the base pitch.",
+        "arc_speed" => "Zap Speed: how quickly the pitch sweep reaches its destination. Higher = faster.",
+        "arc_shape" => "Shape: sine-to-triangle blend.",
+        "arc_fm" => "FM: phase-modulation depth on the sine component.",
+        "tidal_morph" => "Ride / Crash: interpolate the body, noise and decay character from ride to crash.",
+        "tidal_bell" => "Bell: level of the two pitched bell partials.",
+        "tidal_tone_drop" => "Tonal Drop: initial pitch rise of the bell partials, in semitones; not the whole noise bank.",
+        "tidal_drop_speed" => "Drop Speed: how quickly the pitched bell partials settle. 0 is a very slow fall, 100 a short zap; 42 keeps the native sweep. Needs Bell above 0 and Tonal Drop above 0; it does not pitch the noise bank.",
+        "tidal_spread" => "Dispersion: spacing of the twelve metallic partials; distinct from the Stereo switch.",
+        "tidal_tide" => "Tide: opposing slow drift of the metallic partials, plus gentle native coloration.",
+        "tidal_lfo_rate" => "Stereo LFO Rate: chorus speed in hertz. Only audible with Stereo on, as in the original engine.",
+        "tidal_lfo_depth" => "Stereo LFO Depth: chorus delay modulation and wet amount. Only audible with Stereo on.",
+        "mobius_material" => "Material: damping and nonlinear coloration inside the three-line resonator.",
+        "mobius_twist" => "Twist: energy rotation between the three delay lines.",
+        "mobius_rotation" => "Rotation: speed of the rotating output and internal delay motion.",
+        "mobius_chaos" => "Chaos: depth of the small delay-length modulations.",
+        "mobius_strike" => "Strike: strength and duration of the noise excitation.",
+        "mobius_width" => "Stereo Width: separates the rotating readout angles. Only audible with Stereo on; mono is unchanged.",
+        "abyss_length" => "Length: total duration of the hit, with its closing fade. Independent of Body decay and FM Tail.",
+        "abyss_ratio" => "FM Ratio: modulator frequency divided by the carrier frequency.",
+        "abyss_index" => "FM Index: initial phase-modulation depth; FM Tail controls its decay.",
+        "abyss_fm_tail" => "FM Tail: how long the FM harmonics remain, independently from the pure sub.",
+        "abyss_fundamental" => "Fundamental: increases the preserved pure sub and reduces the FM component.",
+        "abyss_fold" => "Fold: native sine wavefolding of the combined sub/FM signal.",
+        "abyss_drive" => "Weight: native parallel saturation, before lane Volume.",
         _ => "",
     }
 }

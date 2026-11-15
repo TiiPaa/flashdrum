@@ -76,6 +76,15 @@ pub enum TrackInstrumentKind {
     Rumble = 27,
     /// [95] MIDI Out - external notes, CCs and Program Change, no audio.
     MidiOut = 28,
+    IonBloom = 29,
+    Ferroskin = 30,
+    PrismHat = 31,
+    OrbitClay = 32,
+    NeonTom = 33,
+    ArcZap = 34,
+    TidalAlloy = 35,
+    MobiusSkin = 36,
+    AbyssFm = 37,
 }
 
 /// Instrument category used to group the kind pickers/menus
@@ -117,7 +126,7 @@ impl InstrumentCategory {
 }
 
 impl TrackInstrumentKind {
-    pub const COUNT: usize = 29;
+    pub const COUNT: usize = 38;
 
     /// Every kind, in stable declaration order.
     pub const ALL: [Self; Self::COUNT] = [
@@ -150,6 +159,15 @@ impl TrackInstrumentKind {
         Self::Delay,
         Self::Rumble,
         Self::MidiOut,
+        Self::IonBloom,
+        Self::Ferroskin,
+        Self::PrismHat,
+        Self::OrbitClay,
+        Self::NeonTom,
+        Self::ArcZap,
+        Self::TidalAlloy,
+        Self::MobiusSkin,
+        Self::AbyssFm,
     ];
 
     /// Musical family of this kind (grouping for pickers/menus).
@@ -175,6 +193,12 @@ impl TrackInstrumentKind {
             Self::Buzz | Self::Rift => InstrumentCategory::Fx,
             Self::Ride | Self::Cymbal | Self::MidiOut => InstrumentCategory::Other,
             Self::Reverb | Self::Delay | Self::Rumble => InstrumentCategory::Effect,
+            Self::IonBloom | Self::AbyssFm => InstrumentCategory::BassDrum,
+            Self::Ferroskin => InstrumentCategory::Snare,
+            Self::PrismHat => InstrumentCategory::HiHat,
+            Self::OrbitClay | Self::NeonTom | Self::MobiusSkin => InstrumentCategory::Perc,
+            Self::ArcZap => InstrumentCategory::Fx,
+            Self::TidalAlloy => InstrumentCategory::Other,
         }
     }
 
@@ -241,6 +265,15 @@ impl TrackInstrumentKind {
             26 => Some(Self::Delay),
             27 => Some(Self::Rumble),
             28 => Some(Self::MidiOut),
+            29 => Some(Self::IonBloom),
+            30 => Some(Self::Ferroskin),
+            31 => Some(Self::PrismHat),
+            32 => Some(Self::OrbitClay),
+            33 => Some(Self::NeonTom),
+            34 => Some(Self::ArcZap),
+            35 => Some(Self::TidalAlloy),
+            36 => Some(Self::MobiusSkin),
+            37 => Some(Self::AbyssFm),
             _ => None,
         }
     }
@@ -280,6 +313,15 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::Delay => "DL",
             TrackInstrumentKind::Rumble => "RU",
             TrackInstrumentKind::MidiOut => "MI",
+            Self::IonBloom => "IB",
+            Self::Ferroskin => "FS",
+            Self::PrismHat => "PH",
+            Self::OrbitClay => "OC",
+            Self::NeonTom => "NT",
+            Self::ArcZap => "AZ",
+            Self::TidalAlloy => "TA",
+            Self::MobiusSkin => "MS",
+            Self::AbyssFm => "AF",
         }
     }
 
@@ -314,6 +356,15 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::Delay => "Delay",
             TrackInstrumentKind::Rumble => "Rumble",
             TrackInstrumentKind::MidiOut => "MIDI Out",
+            Self::IonBloom => "ION BLOOM",
+            Self::Ferroskin => "FERROSKIN",
+            Self::PrismHat => "PRISM HAT",
+            Self::OrbitClay => "ORBIT CLAY",
+            Self::NeonTom => "NEON TOM",
+            Self::ArcZap => "ARC ZAP",
+            Self::TidalAlloy => "TIDAL ALLOY",
+            Self::MobiusSkin => "MÖBIUS SKIN",
+            Self::AbyssFm => "ABYSS FM",
         }
     }
 
@@ -349,6 +400,15 @@ impl TrackInstrumentKind {
             // GM ride cymbal 2 - free.
             TrackInstrumentKind::OneShot => 59,
             TrackInstrumentKind::MidiOut => 60,
+            Self::IonBloom => 61,
+            Self::Ferroskin => 62,
+            Self::PrismHat => 63,
+            Self::OrbitClay => 64,
+            Self::NeonTom => 65,
+            Self::ArcZap => 66,
+            Self::TidalAlloy => 67,
+            Self::MobiusSkin => 68,
+            Self::AbyssFm => 69,
             // An effect bus plays no note and listens to none; 0 is never matched
             // (`slots_listening_to` skips effect kinds).
             TrackInstrumentKind::Reverb | TrackInstrumentKind::Delay | TrackInstrumentKind::Rumble => 0,
@@ -390,6 +450,15 @@ impl TrackInstrumentKind {
             TrackInstrumentKind::Delay => 28,
             TrackInstrumentKind::Rumble => 29,
             TrackInstrumentKind::MidiOut => 30,
+            Self::IonBloom => 31,
+            Self::Ferroskin => 32,
+            Self::PrismHat => 33,
+            Self::OrbitClay => 34,
+            Self::NeonTom => 35,
+            Self::ArcZap => 36,
+            Self::TidalAlloy => 37,
+            Self::MobiusSkin => 38,
+            Self::AbyssFm => 39,
         }
     }
 
@@ -425,6 +494,15 @@ impl TrackInstrumentKind {
             28 => Some(Self::Delay),
             29 => Some(Self::Rumble),
             30 => Some(Self::MidiOut),
+            31 => Some(Self::IonBloom),
+            32 => Some(Self::Ferroskin),
+            33 => Some(Self::PrismHat),
+            34 => Some(Self::OrbitClay),
+            35 => Some(Self::NeonTom),
+            36 => Some(Self::ArcZap),
+            37 => Some(Self::TidalAlloy),
+            38 => Some(Self::MobiusSkin),
+            39 => Some(Self::AbyssFm),
             _ => None,
         }
     }
@@ -527,7 +605,9 @@ impl Default for TrackRouting {
 
 /// [303] The insert chain order packed 4 bits per position (for one atomic).
 fn pack_insert_order(order: [u8; crate::synthesis::inserts::INSERT_COUNT]) -> u32 {
-    order.iter().enumerate().fold(0u32, |bits, (pos, n)| bits | (u32::from(*n & 0xF) << (4 * pos)))
+    order.iter().enumerate().fold(0u32, |bits, (pos, n)| {
+        bits | (u32::from(*n & 0xF) << (4 * pos))
+    })
 }
 
 /// [304] How many LFOs of a lane can follow the tempo (Rift has two).
@@ -1081,14 +1161,18 @@ impl AtomicTrackLayout {
             slot_midi_notes: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
-            slot_fx_send_mute: std::array::from_fn(|_| std::array::from_fn(|_| AtomicBool::new(false))),
+            slot_fx_send_mute: std::array::from_fn(|_| {
+                std::array::from_fn(|_| AtomicBool::new(false))
+            }),
             slot_lfo_sync: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU8::new(0))),
             slot_randomize_density: std::array::from_fn(|_| AtomicU32::new(0)),
             slot_own_swing: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_swing: std::array::from_fn(|_| AtomicU32::new(0)),
             slot_swing_groove: std::array::from_fn(|_| AtomicU8::new(default_swing_groove())),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
-            slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
+            slot_insert_order: std::array::from_fn(|_| {
+                AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))
+            }),
             slot_insert_values: std::array::from_fn(|_| {
                 std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0)))
             }),
@@ -1334,14 +1418,18 @@ impl Default for AtomicTrackLayout {
             slot_midi_notes: std::array::from_fn(|_| AtomicU8::new(0)),
             slot_linked: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_fx_send: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
-            slot_fx_send_mute: std::array::from_fn(|_| std::array::from_fn(|_| AtomicBool::new(false))),
+            slot_fx_send_mute: std::array::from_fn(|_| {
+                std::array::from_fn(|_| AtomicBool::new(false))
+            }),
             slot_lfo_sync: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU8::new(0))),
             slot_randomize_density: std::array::from_fn(|_| AtomicU32::new(0)),
             slot_own_swing: std::array::from_fn(|_| AtomicBool::new(false)),
             slot_swing: std::array::from_fn(|_| AtomicU32::new(0)),
             slot_swing_groove: std::array::from_fn(|_| AtomicU8::new(default_swing_groove())),
             slot_insert_on: std::array::from_fn(|_| AtomicU8::new(0)),
-            slot_insert_order: std::array::from_fn(|_| AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))),
+            slot_insert_order: std::array::from_fn(|_| {
+                AtomicU32::new(pack_insert_order(crate::synthesis::inserts::DEFAULT_ORDER))
+            }),
             slot_insert_values: std::array::from_fn(|_| {
                 std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0)))
             }),

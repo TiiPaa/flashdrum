@@ -26,6 +26,10 @@ use sequencer::{Pattern, SharedPattern};
 use synthesis::DrumSynthesizer;
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--forge-benchmark") {
+        forge_benchmark();
+        return;
+    }
     println!("Flash Drum - Test Standalone");
     println!("==========================================");
     println!();
@@ -75,4 +79,60 @@ fn main() {
 
     println!();
     println!("Test complete!");
+}
+
+/// Real production code, without the debug-only allocation watchdog or the
+/// full unit-test executable. Run with cargo run --release --bin test_standalone
+/// -- --forge-benchmark. The timed loop does not allocate or print.
+fn forge_benchmark() {
+    use synthesis::{DrumVoice, VoiceSettings};
+    use track::{TrackInstrumentKind as K, TrackLayoutState, TrackSlot};
+    let kinds = [
+        K::IonBloom,
+        K::Ferroskin,
+        K::PrismHat,
+        K::OrbitClay,
+        K::NeonTom,
+        K::ArcZap,
+        K::TidalAlloy,
+        K::MobiusSkin,
+        K::AbyssFm,
+    ];
+    for (label, sr, stereo, extreme) in [
+        ("mono48", 48000.0, false, false),
+        ("stereo48", 48000.0, true, false),
+        ("extreme96", 96000.0, true, true),
+    ] {
+        let mut total = 0.0;
+        for kind in kinds {
+            let mut layout = TrackLayoutState::empty_layout();
+            layout.slots[0] = TrackSlot::active_with_kind(kind);
+            let mut synth = DrumSynthesizer::new();
+            synth.initialize_with_layout(sr, &layout);
+            let voice = DrumVoice::from_index(kind.drum_voice_index()).unwrap();
+            let mut settings = VoiceSettings::forge(voice);
+            settings.stereo = if stereo { 1.0 } else { 0.0 };
+            if extreme {
+                for p in instrument_registry::INSTRUMENTS[voice as usize].special_params {
+                    settings.special[p.special_index] = p.max;
+                }
+            }
+            synth.set_voice_settings(0, settings);
+            synth.trigger(0, 1.0);
+            let mut outputs = [[0.0; 2]; track::MAX_TRACKS];
+            let seconds = 0.25;
+            let start = std::time::Instant::now();
+            for _ in 0..(sr * seconds) as usize {
+                synth.process_voice_samples_stereo(&mut outputs);
+                std::hint::black_box(&outputs);
+            }
+            let percent = start.elapsed().as_secs_f64() / seconds as f64 * 100.0;
+            total += percent;
+            println!(
+                "{label} {kind:?}: {percent:.2}% of one core; Forge pool {} KiB",
+                synth.forge_buffer_bytes() / 1024
+            );
+        }
+        println!("{label} sum of nine separate measurements: {total:.2}% of one core");
+    }
 }

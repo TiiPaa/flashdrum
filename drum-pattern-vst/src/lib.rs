@@ -33,6 +33,9 @@ mod ui;
 mod instrument_images;
 mod user_textures;
 
+#[cfg(test)]
+mod forge_control_tests;
+
 use generator::{GeneratorType, Style};
 use pattern_bank::SONG_BLOCKS;
 use plock::{PersistentPlockState, PersistentSequencerPlockState};
@@ -5565,6 +5568,85 @@ mod tests {
             energy += outs[12][0].powi(2) + outs[12][1].powi(2);
         }
         assert!(energy > 0.01, "the bus must return the kick ({energy})");
+    }
+
+    /// [324] Test the actual editor source -> version poll -> step merge ->
+    /// production voice path. A nonzero sample difference alone is not enough
+    /// to make an Impact control useful against the snare's full-level noise.
+    #[test]
+    fn ferroskin_impact_has_clear_attack_contrast_from_editor_and_step_locks() {
+        use crate::ui::param_source::{AlgoSink, GlobalSource, ParamSource, PlockSource};
+        use crate::param_id::ParamId;
+        use crate::instrument_registry::{StandardField, INSTRUMENTS};
+        use nih_plug::params::persist::PersistentField;
+        struct Algo;
+        impl AlgoSink for Algo {
+            fn get(&self) -> u8 { 0 }
+            fn set(&self, _: u8) {}
+        }
+        fn render(impact: f32, retrigger: bool, stereo: bool, locked: bool, hit: u32) -> Vec<[f32; 2]> {
+            let mut vst = DrumFlashVst::default();
+            let kind = crate::track::TrackInstrumentKind::Ferroskin;
+            let voice = synthesis::DrumVoice::Ferroskin as usize;
+            let mut layout = crate::track::TrackLayoutState::empty_layout();
+            layout.slots[0] = crate::track::TrackSlot::active_with_kind(kind);
+            PersistentField::<crate::track::TrackLayoutState>::set(&vst.params.track_layout, layout.clone());
+            vst.synthesizer.initialize_with_layout(48000.0, &layout);
+            vst.sound_settings_state.reset_slot_to_defaults(0, kind, 0.0);
+            let mut voices = [None; crate::track::MAX_TRACKS];
+            voices[0] = Some(voice);
+            vst.sound_settings_state.bump_version();
+            vst.push_sound_settings(&voices);
+            let mut out = [[0.0; 2]; crate::track::MAX_TRACKS];
+            if retrigger {
+                vst.synthesizer.set_hit_index(0, 73);
+                vst.synthesizer.trigger(0, 1.0);
+                for _ in 0..6000 { vst.synthesizer.process_voice_samples_stereo(&mut out); }
+            }
+            let def = INSTRUMENTS[voice].special_params.iter().find(|p| p.name == "ferro_impact").unwrap();
+            let id = ParamId::Special(def.special_index);
+            let mut global = GlobalSource::new(&vst.sound_settings_state, 0, voice, &Algo);
+            global.set(ParamId::Std(StandardField::Stereo), if stereo { 1.0 } else { 0.0 });
+            if locked {
+                let mut source = PlockSource::new(&vst.params.plock_state.state, 7, global);
+                source.set(id, impact);
+                source.commit();
+            } else {
+                global.set(id, impact);
+                global.commit();
+            }
+            vst.push_sound_settings(&voices);
+            let now = vst.voice_settings_at_step(0, voice, 7);
+            assert_eq!(now.special[def.special_index], impact, "the editor/lock value must reach DSP");
+            vst.synthesizer.set_hit_index(0, hit);
+            vst.synthesizer.set_voice_settings(0, now);
+            vst.synthesizer.trigger(0, 1.0);
+            let mut samples = Vec::with_capacity(4800);
+            for n in 0..4800 {
+                if n % 64 == 0 { vst.push_sound_settings(&voices); }
+                vst.synthesizer.process_voice_samples_stereo(&mut out);
+                samples.push(out[0]);
+            }
+            samples
+        }
+        for (retrigger, stereo, locked) in [(false, false, false), (true, false, false), (true, true, true)] {
+            let (mut low, mut high, mut tail_error, mut tail_power) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            for hit in 0..4 {
+                let a = render(0.0, retrigger, stereo, locked, hit);
+                let b = render(100.0, retrigger, stereo, locked, hit);
+                for (i, (a, b)) in a.iter().zip(&b).enumerate() {
+                    for ch in 0..2 {
+                        if i < 576 { low += (a[ch] as f64).powi(2); high += (b[ch] as f64).powi(2); }
+                        if i >= 2400 { tail_error += (a[ch] as f64-b[ch] as f64).powi(2); tail_power += (a[ch] as f64).powi(2); }
+                    }
+                }
+            }
+            let db = 10.0*(high/low.max(1e-20)).log10();
+            let tail_nrmse = (tail_error/tail_power.max(1e-20)).sqrt();
+            eprintln!("Impact 0/100: retrigger={retrigger} stereo={stereo} locked={locked}, attack contrast={db:.2} dB, tail NRMSE={tail_nrmse:.8}");
+            assert!(db >= 4.0, "Impact needs a clear transient contrast, measured {db:.2} dB");
+            assert!(tail_nrmse < 1e-5, "Impact must leave the sustained body/tail unchanged");
+        }
     }
 
     /// [304] A synced LFO rate follows the tempo: one cycle per note value; Free keeps the

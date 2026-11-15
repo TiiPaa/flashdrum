@@ -154,6 +154,12 @@ fn remap_roles_to_slots(
             TrackInstrumentKind::Rift => 12,  // [221] borrow the Perc1 role too
             TrackInstrumentKind::OneShot => 12, // [243] same: borrow the Perc1 role
             TrackInstrumentKind::MidiOut => 12, // [95] external MIDI uses the Perc1 role
+            TrackInstrumentKind::IonBloom | TrackInstrumentKind::AbyssFm => 0,
+            TrackInstrumentKind::Ferroskin => 1,
+            TrackInstrumentKind::PrismHat => 2,
+            TrackInstrumentKind::OrbitClay | TrackInstrumentKind::ArcZap | TrackInstrumentKind::MobiusSkin => 12,
+            TrackInstrumentKind::NeonTom => 4,
+            TrackInstrumentKind::TidalAlloy => 8,
             TrackInstrumentKind::Sdrex => 1,  // borrow the Snare role
             TrackInstrumentKind::Bd6Ac => 0,
             TrackInstrumentKind::Sd6Ac => 1,
@@ -500,6 +506,21 @@ mod tests {
                     slot, step
                 );
             }
+        }
+    }
+
+    #[test]
+    fn forge_engines_borrow_their_approved_generator_roles() {
+        use TrackInstrumentKind as K;
+        let pairs=[(K::IonBloom,K::Kick),(K::Ferroskin,K::Snare),(K::PrismHat,K::HiHat),
+            (K::OrbitClay,K::Perc1),(K::NeonTom,K::Tom),(K::ArcZap,K::Perc1),
+            (K::TidalAlloy,K::Ride),(K::MobiusSkin,K::Perc1),(K::AbyssFm,K::Kick)];
+        for (engine,role) in pairs {
+            let mut roles=Pattern::empty();roles.steps[5].instruments[role.drum_voice_index()]=true;
+            let layout=layout_from_kinds(&[engine]);
+            let remapped=remap_roles_to_slots(&roles,&layout,0.0,&mut ||0.5);
+            assert!(remapped.steps[5].instruments[0],"{engine:?} lost its generator role");
+            assert_eq!(remapped.steps.iter().filter(|s|s.instruments[0]).count(),1);
         }
     }
 

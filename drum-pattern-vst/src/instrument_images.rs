@@ -286,6 +286,15 @@ pub fn embedded(kind: TrackInstrumentKind) -> (&'static str, &'static [u8]) {
         K::Delay => ("instrument-delay", include_bytes!("../assets/instruments/banners/delay.png")),
         K::Rumble => ("instrument-rumble", include_bytes!("../assets/instruments/banners/rumble.png")),
         K::MidiOut => ("instrument-midi-out", include_bytes!("../assets/instruments/banners/midi_out.png")),
+        // New engines reuse the existing family artwork, not a different lane's
+        // custom image. The banner title is rendered separately from this image.
+        K::IonBloom | K::AbyssFm => embedded(K::Kick),
+        K::Ferroskin => embedded(K::Snare),
+        K::PrismHat => embedded(K::HiHat),
+        K::OrbitClay | K::NeonTom => embedded(K::Tom),
+        K::ArcZap => embedded(K::Buzz),
+        K::TidalAlloy => embedded(K::Ride),
+        K::MobiusSkin => embedded(K::Perc1),
     }
 }
 
