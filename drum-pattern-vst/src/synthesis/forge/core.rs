@@ -176,16 +176,25 @@ impl Channel {
                 let grav = p.gravity / 100.0;
                 let drift = (p.drift / 100.0).powf(0.8);
                 if t == 0.0 {
-                    self.interval = 0.045 + (1.0 - grav) * 0.085;
+                    self.interval = p.bounce_interval;
                     self.pulse_len = (sr * (0.0035 + mat * 0.0015)).floor().max(1.0) as usize;
                 }
                 let bounces = 1 + (p.bounce / 100.0 * 5.0).floor() as usize;
                 if self.bounce < bounces && t >= self.next_bounce {
+                    // [327] Widely spaced Light rebounds expose the native
+                    // 3.5–5 ms excitation as separate clicks. Lengthen only
+                    // later pulses; the first hit and Earth/Heavy stay native.
+                    if self.bounce > 0 && p.bounce_smoothing > 0.0 {
+                        self.pulse_len = (sr
+                            * (0.0035 + mat * 0.0015 + p.bounce_smoothing))
+                            .floor()
+                            .max(1.0) as usize;
+                    }
                     self.pulse_pos = 0;
                     self.pulse_amp = 0.58f64.powi(self.bounce as i32);
                     self.bounce += 1;
                     self.next_bounce += self.interval;
-                    self.interval *= 1.18 + grav * 0.42;
+                    self.interval *= p.bounce_growth;
                 }
                 if self.pulse_pos < self.pulse_len {
                     let excite = (PI * self.pulse_pos as f64 / self.pulse_len as f64).sin()
@@ -201,7 +210,8 @@ impl Channel {
                 let mut sum = 0.0;
                 for k in 0..5 {
                     let fk = k as f64;
-                    let mode = WOOD[k] * (1.0 - mat) + METAL[k] * mat;
+                    let mode = (WOOD[k] * (1.0 - mat) + METAL[k] * mat)
+                        * (1.0 + p.mode_deformation * fk * fk * 0.035);
                     let wobble = (TAU * p.mod_rate * (0.7 + mat * 0.7 + fk * 0.13) * t + fk * 0.91)
                         .sin()
                         + (TAU * p.mod_rate * (0.23 + grav * 0.22) * t + fk * 1.63).sin() * 0.35;
@@ -223,7 +233,7 @@ impl Channel {
                     .max(380.0);
                 self.low += (1.0 - (-TAU * cutoff / sr).exp()) * (sum - self.low);
                 sum = sum * (1.0 - drift * 0.82) + self.low * drift * 0.82;
-                clean_soft(sum * 0.27, (p.drive / 100.0).powf(1.5) * 0.3)
+                clean_soft(sum * 0.27, p.soft_drive)
             }
             Parameters::Neon(p) => {
                 let dc = p.common.decay as f64;

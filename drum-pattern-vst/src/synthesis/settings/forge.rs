@@ -43,15 +43,63 @@ forge_settings!(PrismHatSettings {
     color: 2,
     bite: 3
 });
-forge_settings!(OrbitClaySettings {
-    material: 0,
-    bounce: 1,
-    gravity: 2,
-    drift: 3,
-    mod_rate: 5,
-    release: 6,
-    drive: 7
-});
+/// Orbit keeps derived production controls out of persistence. The source
+/// conversion below always describes the original engine; `forge.rs` may then
+/// adapt those derived values without touching `core.rs`' source equations.
+#[derive(Clone, Copy, Debug)]
+pub struct OrbitClaySettings {
+    pub common: VoiceSettings,
+    pub material: f64,
+    pub bounce: f64,
+    pub gravity: f64,
+    pub drift: f64,
+    pub mod_rate: f64,
+    pub release: f64,
+    pub drive: f64,
+    pub bounce_interval: f64,
+    pub bounce_growth: f64,
+    pub bounce_smoothing: f64,
+    pub mode_deformation: f64,
+    pub soft_drive: f64,
+}
+impl From<VoiceSettings> for OrbitClaySettings {
+    fn from(v: VoiceSettings) -> Self {
+        let gravity = v.special[2] as f64;
+        let drive = v.special[7] as f64;
+        Self {
+            common: v,
+            material: v.special[0] as f64,
+            bounce: v.special[1] as f64,
+            gravity,
+            drift: v.special[3] as f64,
+            mod_rate: v.special[5] as f64,
+            release: v.special[6] as f64,
+            drive,
+            bounce_interval: 0.045 + (1.0 - gravity / 100.0) * 0.085,
+            bounce_growth: 1.18 + gravity / 100.0 * 0.42,
+            bounce_smoothing: 0.0,
+            mode_deformation: 0.0,
+            soft_drive: (drive / 100.0).powf(1.5) * 0.3,
+        }
+    }
+}
+impl From<OrbitClaySettings> for VoiceSettings {
+    fn from(s: OrbitClaySettings) -> Self {
+        let mut v = s.common;
+        for (index, value) in [
+            (0, s.material),
+            (1, s.bounce),
+            (2, s.gravity),
+            (3, s.drift),
+            (5, s.mod_rate),
+            (6, s.release),
+            (7, s.drive),
+        ] {
+            v.special[index] = value as f32;
+        }
+        v
+    }
+}
 forge_settings!(NeonTomSettings {
     drop: 0,
     shape: 1,

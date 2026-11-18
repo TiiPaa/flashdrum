@@ -2448,8 +2448,9 @@ fn emit_midi_out_control_messages(
 }
 
 /// Silence every other active slot sharing `slot_idx`'s choke group.
-/// Generalizes the old HH→OH choke to any instrument, driven by the per-slot
-/// `choke_group` (0 = none) set in the Track tab. Lock-free, audio-thread safe.
+/// Generalizes the old HH→OH choke to any instrument and effect bus ([330]),
+/// driven by the per-slot `choke_group` (0 = none) in the Track tab. Effects
+/// are targets only: they have no triggers and never initiate a choke.
 fn apply_choke_groups(
     synthesizer: &mut synthesis::DrumSynthesizer,
     layout: &track::AtomicTrackLayout,
@@ -5249,6 +5250,69 @@ mod tests {
         apply_choke_groups(&mut synth, &atomic, 2); // kick's group = 2
         let oh_still = render(&mut synth, 1, 256);
         assert!(oh_still > 0.0, "slot with another group must not choke OH");
+    }
+
+    #[test]
+    fn choke_group_fades_and_clears_effect_tails_without_choking_other_groups() {
+        use crate::track::{AtomicTrackLayout, TrackInstrumentKind as K, TrackLayoutState, TrackSlot, FX_FIRST_SLOT};
+        fn step(
+            synth: &mut synthesis::DrumSynthesizer,
+            sends: &[[f32; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
+        ) -> [[f32; 2]; crate::track::MAX_TRACKS] {
+            let mut outputs = [[0.0; 2]; crate::track::MAX_TRACKS];
+            synth.process_voice_samples_stereo(&mut outputs);
+            synth.process_fx(&mut outputs, sends, [false, false]);
+            outputs
+        }
+        for effect in [K::Reverb, K::Delay, K::Rumble] {
+            let mut layout = TrackLayoutState::empty_layout();
+            layout.slots[0] = TrackSlot::active_with_kind(K::Kick);
+            layout.slots[FX_FIRST_SLOT] = TrackSlot::active_with_kind(effect);
+            layout.slots[FX_FIRST_SLOT + 1] = TrackSlot::active_with_kind(K::Delay);
+            layout.slots[0].routing.choke_group = 1;
+            layout.slots[FX_FIRST_SLOT].routing.choke_group = 1;
+            layout.slots[FX_FIRST_SLOT + 1].routing.choke_group = 2;
+            let atomic = AtomicTrackLayout::from_state(&layout);
+            let mut synth = synthesis::DrumSynthesizer::new();
+            synth.initialize_with_layout(44100.0, &layout);
+            let mut delay = synthesis::VoiceSettings::delay();
+            delay.special[synthesis::delay_sp::TIME] = 100.0;
+            delay.special[synthesis::delay_sp::FEEDBACK] = 0.8;
+            synth.set_voice_settings(FX_FIRST_SLOT + 1, delay);
+            if effect == K::Delay {
+                synth.set_voice_settings(FX_FIRST_SLOT, delay);
+            }
+            let mut sends = [[0.0; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
+            sends[0] = [1.0, 1.0];
+            synth.trigger(0, 1.0);
+            for _ in 0..44100 { step(&mut synth, &sends); }
+            let (mut before, mut before_other) = (0.0f32, 0.0f32);
+            for _ in 0..64 {
+                let out = step(&mut synth, &sends);
+                before += out[FX_FIRST_SLOT][0].abs() + out[FX_FIRST_SLOT][1].abs();
+                before_other += out[FX_FIRST_SLOT + 1][0].abs() + out[FX_FIRST_SLOT + 1][1].abs();
+            }
+            assert!(before > 1e-7, "{effect:?} has no tail to choke");
+            assert!(before_other > 1e-7, "control bus has no tail");
+            // Stop the source so only the already-ringing tails are measured.
+            synth.reset_voice(0);
+            apply_choke_groups(&mut synth, &atomic, 0);
+            let mut during = 0.0f32;
+            let mut faded = 0.0f32;
+            let mut other = 0.0f32;
+            for n in 0..512 {
+                let out = step(&mut synth, &sends);
+                let energy = out[FX_FIRST_SLOT][0].abs() + out[FX_FIRST_SLOT][1].abs();
+                if n < 132 { faded += energy; } else { during += energy; }
+                other += out[FX_FIRST_SLOT + 1][0].abs() + out[FX_FIRST_SLOT + 1][1].abs();
+            }
+            assert!(faded > 0.0, "{effect:?} was cut outright instead of fading");
+            assert_eq!(during, 0.0, "{effect:?} tail must be cleared after its 3 ms fade");
+            assert!(other > 0.0, "the other group's delay was choked by mistake");
+            // Once cleared, the bus stays silent until genuinely fed again.
+            let after = step(&mut synth, &sends);
+            assert_eq!(after[FX_FIRST_SLOT], [0.0, 0.0]);
+        }
     }
 
     #[test]

@@ -137,6 +137,56 @@ fn reported_forge_controls_work_through_step_locks_and_live_polls() {
 }
 
 #[test]
+fn orbit_material_extremes_do_not_hit_the_safety_ceiling() {
+    for stereo in [false, true] {
+        for (material, gravity) in [(0.0, 47.0), (38.0, 47.0), (100.0, 47.0), (0.0, 0.0), (100.0, 0.0)] {
+            let audio = render(Kind::OrbitClay, stereo, &[
+                ("orbit_material", material), ("orbit_gravity", gravity), ("orbit_bounce", 100.0),
+            ], false, false);
+            let peak = audio.iter().fold(0.0f32, |peak, x| peak.max(x[0].abs()).max(x[1].abs()));
+            eprintln!("Orbit peak: material={material} gravity={gravity} stereo={stereo}: {peak:.6}");
+            assert!(peak < 0.99, "Material must not saturate after reverting [328]: peak {peak}");
+        }
+    }
+}
+
+#[test]
+fn orbit_light_rebounds_have_no_sample_discontinuity() {
+    for stereo in [false, true] {
+        let audio = render(Kind::OrbitClay, stereo, &[("orbit_gravity", 0.0)], false, false);
+        for ms in [0.0, 220.0, 638.0] {
+            let centre = (ms * 48.0) as usize;
+            let mut peak = 0.0f64;
+            for n in centre.saturating_sub(24).max(1)..(centre + 25).min(audio.len()) {
+                for channel in 0..2 {
+                    let delta = (audio[n][channel] as f64 - audio[n - 1][channel] as f64).abs();
+                    peak = peak.max(delta);
+                }
+            }
+            assert!(peak < 0.006, "click at {ms} ms, stereo={stereo}: sample delta {peak}");
+        }
+    }
+}
+
+#[test]
+fn orbit_gravity_and_timbre_deformation_are_clear_in_production() {
+    for (stereo, locked, live) in [(false, false, false), (true, true, false), (true, false, true)] {
+        for (name, low, high) in [("orbit_gravity", 0.0, 100.0), ("orbit_drive", 0.0, 100.0)] {
+            let a = render(Kind::OrbitClay, stereo, &[(name, low)], locked, live);
+            let b = render(Kind::OrbitClay, stereo, &[(name, high)], locked, live);
+            let start = if live { 6000 } else { 0 };
+            let difference = relative_difference(&a[start..], &b[start..]);
+            assert!(difference > 0.15, "{name}: stereo={stereo} locked={locked} live={live} difference={difference}");
+            if name == "orbit_drive" {
+                let tilt = brightness(&b[start..]) - brightness(&a[start..]);
+                assert!(tilt > 1.0, "Deformation must lift the upper resonances: {tilt:.2} dB");
+            }
+            if live { assert_eq!(&a[..4800], &b[..4800]); }
+        }
+    }
+}
+
+#[test]
 fn reported_forge_controls_production_contrast() {
     let cases = [
         (Kind::TidalAlloy, "tidal_drop_speed", 0.0, 100.0),

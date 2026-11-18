@@ -505,7 +505,8 @@ pub const TRACK_FX_SEND: &str = "Send: how much of this lane goes into the effec
 
 pub const LFO_SYNC: &str = "Sync: Free = the rate knob above, in Hz. A note value (1/16, 1/8., 1/4...) locks this LFO to the host tempo, one cycle per note value, and greys the rate knob. A lane setting: it is never locked per step.";
 
-pub const TRACK_CHOKE: &str = "Choke group: when this lane plays, it cuts the other lanes of the same group (a closed hi-hat cutting the open one). None = never cut.";
+pub const TRACK_CHOKE: &str = "Choke group: when this lane plays, it cuts the other lanes of the same group (a closed hi-hat cutting the open one), including their effect tails. None = never cut.";
+pub const TRACK_CHOKE_FX: &str = "Choke group: an instrument playing in this group cuts this effect's tail with a short 3 ms fade. The effect has no steps and never chokes another lane itself. None = never cut.";
 
 pub const TRACK_CHANNEL: &str = "MIDI channel of the notes sent. It is shared by all lanes: change it in Settings > Global MIDI Channel.";
 

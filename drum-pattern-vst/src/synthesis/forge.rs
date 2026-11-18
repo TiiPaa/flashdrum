@@ -259,6 +259,34 @@ fn production_parameters(kind: ForgeKind, settings: VoiceSettings) -> Parameters
             p.drop_speed = (0.5 - tidal_drop_time(p.drop_speed)) / 0.44 * 100.0;
         }
     }
+    if let Parameters::Orbit(p) = &mut params {
+        // [326] Light/Heavy now covers clearly separated bounce rhythms. At
+        // Earth (47), retain the native 90.05 ms interval and 1.3774 growth.
+        if p.gravity != 47.0 {
+            let native = p.bounce_interval;
+            if p.gravity < 47.0 {
+                let amount = (47.0 - p.gravity) / 47.0;
+                p.bounce_interval = native * (0.22 / native).powf(amount);
+                p.bounce_growth = 1.3774 + (1.9 - 1.3774) * amount;
+                // [327] Up to 18 ms extra attack on secondary rebounds only.
+                p.bounce_smoothing = amount * 0.018;
+            } else {
+                let amount = (p.gravity - 47.0) / 53.0;
+                p.bounce_interval = native * (0.018 / native).powf(amount);
+                p.bounce_growth = 1.3774 + (1.12 - 1.3774) * amount;
+            }
+        }
+        // Deformation now bends the upper resonances instead of merely adding
+        // cleanSoft drive. 10 is exactly the original, unbent spectrum.
+        if p.drive != 10.0 {
+            p.mode_deformation = if p.drive < 10.0 {
+                p.drive / 10.0 - 1.0
+            } else {
+                (p.drive - 10.0) / 90.0
+            };
+            p.soft_drive = 0.1f64.powf(1.5) * 0.3;
+        }
+    }
     params
 }
 

@@ -1,6 +1,7 @@
 use super::*;
 use crate::instrument_registry::{StandardField, INSTRUMENTS};
 use crate::track::{TrackInstrumentKind, TrackLayoutState};
+use crate::synthesis::settings::forge::OrbitClaySettings;
 
 fn voice(kind: ForgeKind, sr: f32) -> ForgeVoice {
     let mut v = ForgeVoice::new(sr, kind);
@@ -420,7 +421,7 @@ fn forge_color_and_drop_adaptations_preserve_defaults_and_extend_their_action() 
             let sample = (n as f64 * 0.37).sin();
             assert_eq!(prism_color(sample, 66.0, &mut low, coef), sample);
         }
-        for kind in [ForgeKind::TidalAlloy, ForgeKind::PrismHat] {
+        for kind in [ForgeKind::TidalAlloy, ForgeKind::PrismHat, ForgeKind::OrbitClay] {
             let settings = VoiceSettings::forge(kind.voice());
             let mut native = Channel::new(kind, 42);
             let mut production = Channel::new(kind, 42);
@@ -433,6 +434,48 @@ fn forge_color_and_drop_adaptations_preserve_defaults_and_extend_their_action() 
                     "{kind:?}: native defaults must remain unchanged");
             }
         }
+    }
+}
+
+#[test]
+fn orbit_gravity_and_deformation_adaptations_have_clear_ranges() {
+    fn adapted(gravity: f32, drive: f32) -> OrbitClaySettings {
+        let mut settings = VoiceSettings::forge(DrumVoice::OrbitClay);
+        settings.special[2] = gravity;
+        settings.special[7] = drive;
+        match production_parameters(ForgeKind::OrbitClay, settings) {
+            Parameters::Orbit(p) => p,
+            _ => unreachable!(),
+        }
+    }
+    let earth = adapted(47.0, 10.0);
+    assert_eq!(earth.bounce_interval, 0.045 + (1.0 - 0.47) * 0.085);
+    assert_eq!(earth.bounce_growth, 1.18 + 0.47 * 0.42);
+    assert_eq!(earth.mode_deformation, 0.0);
+    assert_eq!(earth.bounce_smoothing, 0.0);
+    assert_eq!(earth.soft_drive, 0.1f64.powf(1.5) * 0.3);
+    let light = adapted(0.0, 0.0);
+    let heavy = adapted(100.0, 100.0);
+    assert!((light.bounce_interval - 0.22).abs() < 1e-12);
+    assert!((light.bounce_growth - 1.9).abs() < 1e-12);
+    assert!((heavy.bounce_interval - 0.018).abs() < 1e-12);
+    assert!((heavy.bounce_growth - 1.12).abs() < 1e-12);
+    assert!((light.bounce_smoothing - 0.018).abs() < 1e-12);
+    assert_eq!(heavy.bounce_smoothing, 0.0);
+    let third_light = light.bounce_interval * (1.0 + light.bounce_growth);
+    let third_heavy = heavy.bounce_interval * (1.0 + heavy.bounce_growth);
+    assert!(third_light > 0.6 && third_heavy < 0.04);
+    assert!(third_light / third_heavy > 16.0);
+    assert_eq!(light.mode_deformation, -1.0);
+    assert_eq!(heavy.mode_deformation, 1.0);
+    // No extra drive at the extremes: this control now bends resonances.
+    assert_eq!(light.soft_drive, earth.soft_drive);
+    assert_eq!(heavy.soft_drive, earth.soft_drive);
+    for gravity in 1..=100 {
+        let previous = adapted((gravity - 1) as f32, 10.0);
+        let current = adapted(gravity as f32, 10.0);
+        assert!(current.bounce_interval < previous.bounce_interval);
+        assert!(current.bounce_growth < previous.bounce_growth);
     }
 }
 

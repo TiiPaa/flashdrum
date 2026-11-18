@@ -1549,6 +1549,9 @@ pub struct DrumSynthesizer {
     fx_rumble: [RumbleCore; crate::track::FX_SLOT_COUNT],
     /// A bus that was muted: its tail was flushed once, not every sample.
     fx_bypassed: [bool; crate::track::FX_SLOT_COUNT],
+    /// [330] Remaining samples in a bus's click-free choke fade. At zero the
+    /// effect core has already been cleared; no allocation or lock is involved.
+    fx_choke_remaining: [usize; crate::track::FX_SLOT_COUNT],
     /// Smoothed send level of every lane to every bus.
     send_state: [[f32; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
     send_coef: f32,
@@ -1564,6 +1567,7 @@ pub struct DrumSynthesizer {
 
 const VELOCITY_SMOOTH_MS: f32 = 1.5;
 const SEND_SMOOTH_MS: f32 = 5.0;
+const FX_CHOKE_MS: f32 = 3.0;
 
 impl DrumSynthesizer {
     /// Diagnostic for the standalone benchmark; counts only Forge buffer storage.
@@ -1594,6 +1598,7 @@ impl DrumSynthesizer {
             inserts: Box::new(std::array::from_fn(|_| inserts::InsertRack::new(44100.0))),
             send_muted: [[false; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
             fx_bypassed: [false; crate::track::FX_SLOT_COUNT],
+            fx_choke_remaining: [0; crate::track::FX_SLOT_COUNT],
             send_state: [[0.0; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
             send_override: [[None; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS],
             send_coef: 1.0 - (-1.0 / (44100.0 * SEND_SMOOTH_MS * 0.001f32)).exp(),
@@ -1852,9 +1857,11 @@ impl DrumSynthesizer {
                 0
             };
             if which == 0 {
+                self.fx_choke_remaining[bus] = 0;
                 continue;
             }
             if bypass[bus] {
+                self.fx_choke_remaining[bus] = 0;
                 if !self.fx_bypassed[bus] {
                     self.fx_reverb[bus].reset();
                     self.fx_delay[bus].reset();
@@ -1877,11 +1884,24 @@ impl DrumSynthesizer {
                 in_l += outputs[lane][0] * *level;
                 in_r += outputs[lane][1] * *level;
             }
-            let (l, r) = match which {
+            let (mut l, mut r) = match which {
                 1 => self.fx_reverb[bus].process(in_l, in_r),
                 2 => self.fx_delay[bus].process(in_l, in_r),
                 _ => self.fx_rumble[bus].process(in_l, in_r),
             };
+            let remaining = self.fx_choke_remaining[bus];
+            if remaining > 0 {
+                let total = (self.sample_rate * FX_CHOKE_MS * 0.001).round().max(1.0) as usize;
+                let gain = (remaining - 1) as f32 / total as f32;
+                l *= gain;
+                r *= gain;
+                self.fx_choke_remaining[bus] = remaining - 1;
+                if remaining == 1 {
+                    self.fx_reverb[bus].reset();
+                    self.fx_delay[bus].reset();
+                    self.fx_rumble[bus].reset();
+                }
+            }
             outputs[slot] = [l, r];
         }
     }
@@ -1904,6 +1924,7 @@ impl DrumSynthesizer {
         }
         self.send_state = [[0.0; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
         self.send_override = [[None; crate::track::FX_SLOT_COUNT]; crate::track::MAX_TRACKS];
+        self.fx_choke_remaining = [0; crate::track::FX_SLOT_COUNT];
     }
 
     pub fn set_voice_settings(&mut self, slot_idx: usize, settings: VoiceSettings) {
@@ -1947,6 +1968,16 @@ impl DrumSynthesizer {
         if let Some(Some(voice)) = self.voices.get_mut(slot_idx) {
             voice.reset();
         }
+        // [330] An effect bus is a choke TARGET, never a trigger source. Fade
+        // its wet return before clearing the tail; repeated hits during the
+        // fade do not raise its level again.
+        if crate::track::is_fx_slot(slot_idx) {
+            let bus = slot_idx - crate::track::FX_FIRST_SLOT;
+            if self.fx_choke_remaining[bus] == 0 {
+                self.fx_choke_remaining[bus] =
+                    (self.sample_rate * FX_CHOKE_MS * 0.001).round().max(1.0) as usize;
+            }
+        }
     }
 
     pub fn set_slot_active(&mut self, slot_idx: usize, active: bool) {
@@ -1988,6 +2019,7 @@ impl DrumSynthesizer {
         // [286] A new kind on an effect slot starts with a clean tail.
         if crate::track::is_fx_slot(slot_idx) {
             let bus = slot_idx - crate::track::FX_FIRST_SLOT;
+            self.fx_choke_remaining[bus] = 0;
             self.fx_reverb[bus].reset();
             self.fx_delay[bus].reset();
             self.fx_rumble[bus].reset();

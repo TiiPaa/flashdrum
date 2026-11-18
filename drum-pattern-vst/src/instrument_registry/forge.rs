@@ -258,7 +258,7 @@ pub(super) const ORBIT_CLAY: InstrumentDef = def(
     0.61,
     ORBIT_STD,
     &[
-        sp_unit(
+        sp_display(
             "orbit_material",
             "Material",
             38.0,
@@ -266,9 +266,9 @@ pub(super) const ORBIT_CLAY: InstrumentDef = def(
             100.0,
             0,
             ParamFamily::Osc,
-            " %",
+            SpecialValueDisplay::Named(&["Wood", "Clay", "Metal"]),
         ),
-        sp_unit(
+        sp_display(
             "orbit_bounce",
             "Bounces",
             56.0,
@@ -276,9 +276,9 @@ pub(super) const ORBIT_CLAY: InstrumentDef = def(
             100.0,
             1,
             ParamFamily::Osc,
-            " %",
+            SpecialValueDisplay::Count { min: 1, max: 6 },
         ),
-        sp_unit(
+        sp_display(
             "orbit_gravity",
             "Gravity",
             47.0,
@@ -286,7 +286,7 @@ pub(super) const ORBIT_CLAY: InstrumentDef = def(
             100.0,
             2,
             ParamFamily::Osc,
-            " %",
+            SpecialValueDisplay::Named(&["Light", "Earth", "Heavy"]),
         ),
         sp_unit(
             "orbit_drift",
@@ -325,7 +325,7 @@ pub(super) const ORBIT_CLAY: InstrumentDef = def(
             0.0,
             100.0,
             7,
-            ParamFamily::Saturation,
+            ParamFamily::Osc,
             " %",
         ),
     ],

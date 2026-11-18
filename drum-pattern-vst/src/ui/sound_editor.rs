@@ -385,6 +385,7 @@ pub fn draw_editor_slider_row_curved(
         suffix,
         0.0,
         curve,
+        crate::instrument_registry::SpecialValueDisplay::Number,
     )
 }
 
@@ -411,7 +412,45 @@ pub fn draw_editor_slider_row_full(
         suffix,
         step,
         1.0,
+        crate::instrument_registry::SpecialValueDisplay::Number,
     )
+}
+
+fn format_special_display(
+    display: crate::instrument_registry::SpecialValueDisplay,
+    value: f32,
+    min_value: f32,
+    max_value: f32,
+    unit: Option<&str>,
+) -> String {
+    use crate::instrument_registry::SpecialValueDisplay;
+    let normalized = ((value - min_value) / (max_value - min_value).max(f32::EPSILON)).clamp(0.0, 1.0);
+    match display {
+        SpecialValueDisplay::Number => format_editor_value(value, unit),
+        SpecialValueDisplay::Named(names) => {
+            let index = ((normalized * names.len() as f32) as usize).min(names.len() - 1);
+            names[index].to_string()
+        }
+        SpecialValueDisplay::Count { min, max } => {
+            let count = min as f32 + (normalized * (max - min) as f32).floor();
+            (count.clamp(min as f32, max as f32) as u8).to_string()
+        }
+    }
+}
+
+#[cfg(test)]
+fn format_special_value(def: &crate::instrument_registry::SpecialParamDef, value: f32) -> String {
+    format_special_display(def.display, value, def.min, def.max, def.unit)
+}
+
+fn special_slider_step(def: &crate::instrument_registry::SpecialParamDef) -> f32 {
+    match def.display {
+        crate::instrument_registry::SpecialValueDisplay::Count { min, max } => {
+            (def.max - def.min) / (max - min) as f32
+        }
+        _ if !def.continuous => 1.0,
+        _ => 0.0,
+    }
 }
 
 /// Shared body of every editor slider row. A row is either stepped or curved,
@@ -429,6 +468,7 @@ fn draw_editor_slider_row_inner(
     suffix: Option<&str>,
     step: f32,
     curve: f32,
+    display: crate::instrument_registry::SpecialValueDisplay,
 ) -> egui::Response {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -462,7 +502,7 @@ fn draw_editor_slider_row_inner(
             draw_editor_slider_track(ui, value, min, max, default, logarithmic, track_w)
         };
 
-        editor_value_readout(ui, &format_editor_value(*value, suffix));
+        editor_value_readout(ui, &format_special_display(display, *value, min, max, suffix));
         response
     })
     .inner
@@ -1353,37 +1393,37 @@ fn draw_track_tab(
         })
     });
 
-    // [286] An effect lane has no choke group, no MIDI note, no humanize and
-    // no sends of its own: only its name, type, preset and routing apply.
-    if !slot.kind.is_effect() {
-        // Choke group (dropdown) — when this slot triggers, every other active
-        // slot in the same group is silenced (classic HH→OH, generalized).
-        let current_choke = slot
-            .routing
-            .choke_group
-            .min(crate::track::CHOKE_GROUP_COUNT) as usize;
-        let choke_labels = ["None", "1", "2", "3", "4"];
-        help::zone(ui, "track_choke", help::TRACK_CHOKE, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                editor_label(ui, "Choke");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let (_, Some(i)) = crate::ui::widgets::styled_select(
-                        ui,
-                        "track_choke",
-                        current_choke,
-                        &choke_labels,
-                        146.0,
-                    ) {
-                        if i != current_choke {
-                            new_state.slots[slot_idx].routing.choke_group = i as u8;
-                            changed = true;
-                        }
+    // [330] Choke also applies to an effect bus as a TARGET: an instrument in
+    // its group cuts the wet tail. The bus has no steps and chokes nothing itself.
+    let current_choke = slot
+        .routing
+        .choke_group
+        .min(crate::track::CHOKE_GROUP_COUNT) as usize;
+    let choke_labels = ["None", "1", "2", "3", "4"];
+    let choke_help = if slot.kind.is_effect() { help::TRACK_CHOKE_FX } else { help::TRACK_CHOKE };
+    help::zone(ui, "track_choke", choke_help, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            editor_label(ui, "Choke");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let (_, Some(i)) = crate::ui::widgets::styled_select(
+                    ui,
+                    "track_choke",
+                    current_choke,
+                    &choke_labels,
+                    146.0,
+                ) {
+                    if i != current_choke {
+                        new_state.slots[slot_idx].routing.choke_group = i as u8;
+                        changed = true;
                     }
-                });
-            })
-        });
+                }
+            });
+        })
+    });
 
+    // An effect lane has no MIDI note, no humanize and no sends of its own.
+    if !slot.kind.is_effect() {
         // ---- MIDI ----
         editor_section_header(ui, "MIDI");
 
@@ -4587,33 +4627,21 @@ fn special_row_widget(
         let mut value = current;
         let logarithmic = def.min > 0.0 && def.max / def.min >= 20.0;
         let default = src.inherited(ParamId::Special(def.special_index));
-        // [95] Numeric discrete settings (MIDI CC/program numbers and values)
-        // move in integer steps; continuous settings keep their response curve.
-        let row = if def.continuous {
-            draw_editor_slider_row_curved(
-                ui,
-                def.label,
-                &mut value,
-                def.min,
-                def.max,
-                default,
-                logarithmic,
-                def.unit,  // [182] specials carry a unit too
-                def.curve, // [189] response curve from the registry
-            )
-        } else {
-            draw_editor_slider_row_full(
-                ui,
-                def.label,
-                &mut value,
-                def.min,
-                def.max,
-                default,
-                logarithmic,
-                def.unit,
-                1.0,
-            )
-        };
+        // [326] Count controls snap to their actual audible states, while the
+        // stored range and all old p-locks remain unchanged.
+        let row = draw_editor_slider_row_inner(
+            ui,
+            def.label,
+            &mut value,
+            def.min,
+            def.max,
+            default,
+            logarithmic,
+            def.unit,
+            special_slider_step(def),
+            def.curve,
+            def.display,
+        );
         page_lock_menu(
             &row,
             plock,
@@ -5279,6 +5307,30 @@ mod tests {
             }
         }
         fn salt(&self) -> (u8, usize, usize) { (0, 0, 0) }
+    }
+
+    #[test]
+    fn orbit_controls_show_materials_gravity_and_real_bounce_counts() {
+        let def = &crate::instrument_registry::INSTRUMENTS[DrumVoice::OrbitClay as usize];
+        let material = def.special_params.iter().find(|p| p.name == "orbit_material").unwrap();
+        let bounces = def.special_params.iter().find(|p| p.name == "orbit_bounce").unwrap();
+        let gravity = def.special_params.iter().find(|p| p.name == "orbit_gravity").unwrap();
+        let deformation = def.special_params.iter().find(|p| p.name == "orbit_drive").unwrap();
+        assert_eq!(format_special_value(material, 0.0), "Wood");
+        assert_eq!(format_special_value(material, 38.0), "Clay");
+        assert_eq!(format_special_value(material, 100.0), "Metal");
+        assert_eq!(format_special_value(gravity, 0.0), "Light");
+        assert_eq!(format_special_value(gravity, 47.0), "Earth");
+        assert_eq!(format_special_value(gravity, 100.0), "Heavy");
+        for (stored, count) in [(0.0, "1"), (19.99, "1"), (20.0, "2"), (56.0, "3"), (80.0, "5"), (100.0, "6")] {
+            assert_eq!(format_special_value(bounces, stored), count);
+        }
+        assert_eq!(special_slider_step(bounces), 20.0);
+        assert_eq!(special_slider_step(material), 0.0, "Material remains a continuous morphable crossfade");
+        assert_eq!(deformation.family, crate::instrument_registry::ParamFamily::Osc);
+        for name in ["Wood", "Clay", "Metal", "Light", "Earth", "Heavy"] {
+            assert!(name.len() <= 6, "readout must fit the fixed value column");
+        }
     }
 
     #[test]

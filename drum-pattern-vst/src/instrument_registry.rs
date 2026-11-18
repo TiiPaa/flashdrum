@@ -157,6 +157,17 @@ pub struct StandardParamDef {
     pub widget: ParamWidget,
 }
 
+/// How a special slider presents its stored value. Display-only: persistence,
+/// p-locks and DSP keep the existing numeric range ([326]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpecialValueDisplay {
+    Number,
+    /// Continuous crossfade with readable regions instead of a meaningless %.
+    Named(&'static [&'static str]),
+    /// An integer count mapped over the stored range, inclusive at both ends.
+    Count { min: u8, max: u8 },
+}
+
 /// Metadata for a special (per-instrument) parameter exposed in the Sound Panel.
 pub struct SpecialParamDef {
     pub name: &'static str,
@@ -180,6 +191,7 @@ pub struct SpecialParamDef {
     /// parameters by the wording of their label - declare the list here
     /// instead, it works for any instrument without touching the UI.
     pub options: Option<&'static [&'static str]>,
+    pub display: SpecialValueDisplay,
 }
 
 /// [287] Specials added after sessions existed: an older lane stores 0 for
@@ -284,6 +296,7 @@ const fn sp(
         unit: None,
         curve: 1.0,
         options: None,
+        display: SpecialValueDisplay::Number,
     }
 }
 
@@ -310,6 +323,34 @@ const fn sp_unit(
         unit: Some(unit),
         curve: 1.0,
         options: None,
+        display: SpecialValueDisplay::Number,
+    }
+}
+
+/// Continuous stored control with a semantic readout ([326]).
+const fn sp_display(
+    name: &'static str,
+    label: &'static str,
+    default: f32,
+    min: f32,
+    max: f32,
+    special_index: usize,
+    family: ParamFamily,
+    display: SpecialValueDisplay,
+) -> SpecialParamDef {
+    SpecialParamDef {
+        name,
+        label,
+        default,
+        min,
+        max,
+        special_index,
+        family,
+        continuous: true,
+        unit: None,
+        curve: 1.0,
+        options: None,
+        display,
     }
 }
 
@@ -346,6 +387,7 @@ const fn sp_curved(
         unit: None,
         curve,
         options: None,
+        display: SpecialValueDisplay::Number,
     }
 }
 
@@ -371,6 +413,7 @@ const fn sp_options(
         unit: None,
         curve: 1.0,
         options: Some(options),
+        display: SpecialValueDisplay::Number,
     }
 }
 
@@ -396,6 +439,7 @@ const fn sp_discrete(
         unit: None,
         curve: 1.0,
         options: None,
+        display: SpecialValueDisplay::Number,
     }
 }
 
@@ -5831,9 +5875,7 @@ mod tests {
                 ("prism_density", " %"),
                 ("prism_color", " %"),
                 ("prism_bite", " %"),
-                ("orbit_material", " %"),
-                ("orbit_bounce", " %"),
-                ("orbit_gravity", " %"),
+                // [326] Material/Bounces/Gravity have semantic readouts, not %.
                 ("orbit_drift", " %"),
                 ("orbit_mod_rate", " Hz"),
                 ("orbit_release", " ms"),
