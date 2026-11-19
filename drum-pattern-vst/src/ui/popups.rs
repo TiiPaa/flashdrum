@@ -222,23 +222,30 @@ pub fn draw_settings_popup_if_any(
         return;
     }
 
-    // [282] Wide enough for its longest row with the +1 text size ("Number
-    // lanes from the root note" + Auto-assign): narrower, the rows overflowed
-    // and the close button sat mid-way.
-    const SETTINGS_W: f32 = 280.0;
-    let anchor = ui.max_rect().right_top() + Vec2::new(-(SETTINGS_W + 30.0), 60.0);
+    // [331] A real modal instead of the old 280 px corner popup: the settings
+    // had grown into one narrow column mixing interface, audio, MIDI and
+    // randomize options. Same frame and keycaps as the Presets modal.
+    let size = Vec2::new(560.0, 430.0);
+    let screen = ui.ctx().screen_rect();
+    let origin = egui::pos2(
+        screen.center().x - size.x / 2.0,
+        (screen.center().y - size.y / 2.0).max(screen.top() + 8.0),
+    );
     let area_id = ui.id().with("settings_popup");
+    let tabs = ["Interface", "Audio", "MIDI", "Randomize", "About"];
+    let mut tab = state.settings_tab.min(tabs.len() - 1);
+    let mut close = false;
 
     let response = egui::Area::new(area_id)
         .kind(egui::UiKind::Popup)
         .order(egui::Order::Foreground)
-        .fixed_pos(anchor)
+        .fixed_pos(origin)
         .show(ui.ctx(), |ui| {
             page_menu_frame(ui, BLUE(), |ui| {
-                ui.set_min_width(SETTINGS_W);
-                ui.set_max_width(SETTINGS_W);
+                ui.set_min_width(size.x - 24.0);
+                ui.set_max_width(size.x - 24.0);
+                ui.set_height(size.y - 24.0);
 
-                // Header with close button
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Settings").font(f_sans_sb(11.0)).color(BLUE()));
                     ui.add_space((ui.available_width() - 22.0).max(0.0));
@@ -253,10 +260,38 @@ pub fn draw_settings_popup_if_any(
                     .help(help::SET_CLOSE)
                     .clicked()
                     {
-                        state.settings_open = false;
+                        close = true;
                     }
                 });
-                ui.add_space(12.0);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    for (index, name) in tabs.iter().enumerate() {
+                        let keycap = if tab == index {
+                            crate::ui::widgets::KeycapState::PressedBlue
+                        } else {
+                            crate::ui::widgets::KeycapState::Rest
+                        };
+                        if crate::ui::controls::keycap_button(
+                            ui,
+                            name,
+                            92.0,
+                            keycap,
+                            true,
+                            f_sans_med(10.5),
+                        )
+                        .clicked()
+                        {
+                            tab = index;
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+                state.settings_tab = tab;
+
+                if tab == 1 {
 
                 // ---- Audio ----
                 ui.label(RichText::new("Audio").font(f_sans_sb(11.0)).color(BLUE()));
@@ -311,8 +346,9 @@ pub fn draw_settings_popup_if_any(
                     let _ = state.global_config.save();
                 }
 
-                ui.add_space(14.0);
+                }
 
+                if tab == 2 {
                 // ---- MIDI ----
                 ui.label(RichText::new("MIDI").font(f_sans_sb(11.0)).color(BLUE()));
                 ui.add_space(6.0);
@@ -427,6 +463,9 @@ pub fn draw_settings_popup_if_any(
 
                 ui.add_space(14.0);
 
+                }
+
+                if tab == 3 {
                 // ---- [285] Randomize Lane: the density each instrument type starts with ----
                 ui.label(RichText::new("Randomize Lane").font(f_sans_sb(11.0)).color(BLUE()));
                 ui.add_space(6.0);
@@ -484,11 +523,36 @@ pub fn draw_settings_popup_if_any(
                     let _ = state.global_config.save();
                 }
 
-                ui.add_space(14.0);
+                }
 
-                // ---- Others ----
-                ui.label(RichText::new("Others").font(f_sans_sb(11.0)).color(BLUE()));
+                if tab == 0 {
+                // ---- Interface: look and motion ----
+                ui.label(RichText::new("Interface").font(f_sans_sb(11.0)).color(BLUE()));
                 ui.add_space(6.0);
+
+                // [331] Banner flash intensity: 0 turns the animation off, so the
+                // setting is also the "no motion" switch.
+                let flash_label = ui.label(
+                    RichText::new("Banner Flash")
+                        .font(f_sans_med(10.5))
+                        .color(INK3()),
+                );
+                ui.add_space(4.0);
+                let mut flash = state.global_config.banner_flash.clamp(0.0, 1.0);
+                let flash_slider = ui.add(
+                    LocalParamSlider::new(&mut flash, 0.0..=1.0).reset_value(1.0),
+                );
+                help::rect(
+                    ui,
+                    flash_label.rect.union(flash_slider.rect),
+                    "set_banner_flash",
+                    help::SET_BANNER_FLASH,
+                );
+                if flash_slider.changed() {
+                    state.global_config.banner_flash = flash.clamp(0.0, 1.0);
+                    let _ = state.global_config.save();
+                }
+                ui.add_space(10.0);
 
                 // Auto-Edit (moved here from the header).
                 help::zone(ui, "set_auto_edit", help::SET_AUTO_EDIT, |ui| ui.horizontal(|ui| {
@@ -554,11 +618,9 @@ pub fn draw_settings_popup_if_any(
                         state.settings_open = false;
                     }
                 }
+                }
 
-                ui.add_space(14.0);
-                ui.separator();
-                ui.add_space(8.0);
-
+                if tab == 4 {
                 // About — credit for the ported *(AC) voices (MIT license:
                 // attribution required, and well deserved).
                 ui.label(RichText::new("About").font(f_sans_sb(11.0)).color(BLUE()));
@@ -577,6 +639,7 @@ pub fn draw_settings_popup_if_any(
                         .color(BLUE()),
                     "https://github.com/analogcode/606-Inspired-Synth-Drums",
                 );
+                }
             });
         })
         .response;
@@ -589,7 +652,7 @@ pub fn draw_settings_popup_if_any(
                 .interact_pos()
                 .map_or(false, |pos| !response.rect.contains(pos))
     });
-    if clicked_outside {
+    if close || clicked_outside {
         state.settings_open = false;
     }
 }

@@ -2643,6 +2643,26 @@ fn draw_volume_strip(ui: &mut egui::Ui, voice_idx: usize, src: &mut dyn ParamSou
     Some(response)
 }
 
+/// [331] Adds light instead of veiling: the vertices are premultiplied with zero
+/// alpha, so the renderer sums the sampled RGB over the artwork and leaves what
+/// is underneath untouched. That is what makes the banner read as lit by a neon.
+fn paint_banner_glow(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    texture: &egui::TextureHandle,
+    pulse: f32,
+) {
+    let level = (pulse.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let color = Color32::from_rgba_premultiplied(level, level, level, 0);
+    let mut mesh = egui::Mesh::with_texture(texture.id());
+    mesh.add_rect_with_uv(
+        rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.11), egui::pos2(1.0, 0.89)),
+        color,
+    );
+    ui.painter().add(egui::Shape::mesh(mesh));
+}
+
 /// A continuous top-to-bottom alpha shadow as a 1×64 texture. Unlike stacked
 /// rectangles, texture interpolation cannot produce visible shadow bands.
 fn instrument_shadow_texture(ctx: &egui::Context) -> egui::TextureHandle {
@@ -2697,6 +2717,8 @@ fn draw_instrument_identity(ui: &mut egui::Ui, cx: &PanelCtx, state: &mut Editor
             let images = &cx.params.instrument_images;
             let custom_path = images.path(cx.slot);
             let custom = custom_path.as_ref().and_then(|_| images.image(cx.slot));
+            // [331] The artwork's URI and bytes, also used for the neon analysis.
+            let mut artwork: Option<(String, std::sync::Arc<[u8]>)> = None;
             if let Some(image) = custom {
                 egui::Image::from_bytes(image.uri.clone(), image.bytes.clone())
                     .uv(egui::Rect::from_min_max(
@@ -2706,6 +2728,7 @@ fn draw_instrument_identity(ui: &mut egui::Ui, cx: &PanelCtx, state: &mut Editor
                     .corner_radius(5.0)
                     .fit_to_exact_size(image_rect.size())
                     .paint_at(ui, image_rect);
+                artwork = Some((image.uri.clone(), image.bytes.clone()));
             } else if custom_path.is_none() {
                 let (uri, bytes) = crate::instrument_images::embedded(cx.layout_snapshot.slots[cx.slot].kind);
                 egui::Image::from_bytes(uri, bytes)
@@ -2716,6 +2739,7 @@ fn draw_instrument_identity(ui: &mut egui::Ui, cx: &PanelCtx, state: &mut Editor
                     .corner_radius(5.0)
                     .fit_to_exact_size(image_rect.size())
                     .paint_at(ui, image_rect);
+                artwork = Some((uri.to_string(), std::sync::Arc::from(bytes)));
             } else {
                 ui.painter().text(
                     image_rect.center(),
@@ -2724,6 +2748,25 @@ fn draw_instrument_identity(ui: &mut egui::Ui, cx: &PanelCtx, state: &mut Editor
                     f_sans_sb(12.5),
                     INK(),
                 );
+            }
+            // [331] The neon pulse lights the banner's own dominant tone. Effect
+            // buses never pulse; the impulse comes from the audio thread.
+            let now = ui.ctx().input(|i| i.time);
+            let (seq, velocity) = cx.sound_settings.lane_hit(cx.slot);
+            let is_effect = cx.layout_snapshot.slots[cx.slot].kind.is_effect();
+            let pulse = state.advance_banner_pulse(cx.slot, now, seq, velocity, is_effect);
+            let level = state.global_config.banner_flash_level();
+            let pulse = if level > 0.0 { pulse * level } else { 0.0 };
+            if pulse > 0.01 {
+                if let Some((uri, bytes)) = &artwork {
+                    if let Some(glow) =
+                        crate::instrument_images::banner_glow(ui.ctx(), uri, bytes)
+                    {
+                        paint_banner_glow(ui, image_rect.shrink(2.0), &glow.texture, pulse);
+                    }
+                }
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(16));
             }
             // Smooth interpolated texture over the artwork: no banding, and
             // the rounded image keeps the module's exact corner shape.
@@ -5256,6 +5299,53 @@ mod tests {
     /// than the column widened it and shifted every right-aligned row under it.
     /// [282] And it must fit the params column: with the Hz / Note switch in
     /// the row it overflowed by ~70 px, which widened the whole section.
+    #[test]
+    fn banner_glow_paints_added_light_not_a_veil() {
+        let ctx = egui::Context::default();
+        crate::ui::install_egui_fonts(&ctx);
+        let pixels = vec![255u8; 4 * 4 * 4];
+        let image = egui::ColorImage::from_rgba_premultiplied([4, 4], &pixels);
+        let texture = ctx.load_texture("banner_glow_test", image, egui::TextureOptions::LINEAR);
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(300.0, 120.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        paint_banner_glow(
+                            ui,
+                            egui::Rect::from_min_size(
+                                egui::pos2(10.0, 10.0),
+                                Vec2::new(120.0, 30.0),
+                            ),
+                            &texture,
+                            0.8,
+                        );
+                    });
+            },
+        );
+        let mesh = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Mesh(mesh) => Some(mesh),
+                _ => None,
+            })
+            .expect("the pulse must paint a mesh");
+        assert_eq!(mesh.vertices.len(), 4);
+        assert!(
+            mesh.vertices.iter().all(|v| v.color.a() == 0),
+            "alpha must stay 0: the RGB is ADDED, not blended over the artwork"
+        );
+        assert!(mesh.vertices[0].color.r() > 190, "the vertex carries the intensity");
+    }
+
     #[test]
     fn frequency_row_keeps_its_footprint_between_hz_and_notes() {
         let (hz_h, hz_w) = frequency_row_footprint(false);

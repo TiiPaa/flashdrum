@@ -161,6 +161,7 @@ fn remap_roles_to_slots(
             TrackInstrumentKind::NeonTom => 4,
             TrackInstrumentKind::TidalAlloy => 8,
             TrackInstrumentKind::Sdrex => 1,  // borrow the Snare role
+            TrackInstrumentKind::Crown => 1,  // [334] borrow the Snare role
             TrackInstrumentKind::Bd6Ac => 0,
             TrackInstrumentKind::Sd6Ac => 1,
             TrackInstrumentKind::Hh6Ac => 2,

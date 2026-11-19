@@ -6,6 +6,7 @@ mod bd606;
 mod buzz;
 mod ch606;
 mod clap;
+mod crown;
 mod cymbal;
 mod delay;
 mod dsp;
@@ -55,6 +56,7 @@ pub use delay::{DelayCore, DelayParams, DelayVoice};
 #[allow(unused_imports)]
 pub use dsp::{decay_curve_amount, shape_decay_curve};
 pub use forge::ForgeVoice;
+pub use crown::CrownVoice;
 use forge::{ForgeKind, ForgeMemory};
 pub use hihat::HiHatVoice;
 pub use kick::KickVoice;
@@ -162,10 +164,12 @@ pub enum DrumVoice {
     TidalAlloy = 37,
     MobiusSkin = 38,
     AbyssFm = 39,
+    /// [334] The synthesised 80s snare.
+    Crown = 40,
 }
 
 impl DrumVoice {
-    pub const COUNT: usize = 40;
+    pub const COUNT: usize = 41;
 
     /// [286] An effect (Reverb, Delay), not a sound source: no steps, no note.
     pub const fn is_effect_index(index: usize) -> bool {
@@ -216,6 +220,7 @@ impl DrumVoice {
             37 => Some(Self::TidalAlloy),
             38 => Some(Self::MobiusSkin),
             39 => Some(Self::AbyssFm),
+            40 => Some(Self::Crown),
             _ => None,
         }
     }
@@ -330,6 +335,10 @@ impl VoiceSettings {
             settings.special[p.special_index] = p.default;
         }
         settings
+    }
+    /// [334] CROWN: the synthesised 80s snare, defaults from the registry.
+    pub fn crown() -> Self {
+        Self::forge(DrumVoice::Crown)
     }
     #[cfg(test)]
     pub fn ion_bloom() -> Self {
@@ -1329,6 +1338,8 @@ drum_voice_kinds! {
     Oh6Ac(AcVoice),
     Cl6Ac(AcVoice),
     Tm6Ac(AcVoice),
+    /// [334] CROWN: the synthesised 80s snare.
+    Crown(CrownVoice),
 }
 
 fn create_voice_for_kind(
@@ -1452,6 +1463,7 @@ fn create_voice_for_kind(
             AcEngineKind::Clap,
             AcVoiceSettings::from(VoiceSettings::cl6ac()),
         )),
+        K::Crown => DrumVoiceKind::Crown(CrownVoice::new(sample_rate)),
         K::Tm6Ac => DrumVoiceKind::Tm6Ac(AcVoice::new(
             sample_rate,
             AcEngineKind::Tom,
@@ -2782,6 +2794,7 @@ mod tests {
                 K::Delay => VoiceSettings::delay(),
                 K::Rumble => VoiceSettings::rumble(),
                 K::MidiOut => VoiceSettings::midi_out(),
+                K::Crown => VoiceSettings::crown(),
                 K::IonBloom
                 | K::Ferroskin
                 | K::PrismHat

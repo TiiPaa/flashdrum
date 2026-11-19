@@ -145,6 +145,11 @@ pub enum GenAction {
     FullRandom,
 }
 
+/// [331] Banner neon pulse: exponential decay constant, and the shortest gap
+/// between two flashes (about 11 per second) to avoid strobing on fast lanes.
+const BANNER_DECAY_S: f64 = 0.09;
+const BANNER_MIN_GAP_S: f64 = 0.09;
+
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct EditorUIState {
     pub selected_instrument: usize,
@@ -312,6 +317,10 @@ pub struct EditorUIState {
     /// True when the global settings popup is open.
     #[serde(skip)]
     pub settings_open: bool,
+    /// [331] Active tab of the Settings modal (Interface / Audio / MIDI /
+    /// Randomize / About). UI-only.
+    #[serde(skip)]
+    pub settings_tab: usize,
     /// [242] True when the Macros assignment modal is open.
     #[serde(skip)]
     pub macros_open: bool,
@@ -323,6 +332,24 @@ pub struct EditorUIState {
     /// after 3 s or on a click elsewhere ([283]).
     #[serde(skip)]
     pub clear_program_confirm: Option<f64>,
+    /// [331] Banner neon pulse: per-lane envelope, the hit counter it has already
+    /// consumed, when the current flash started, and the frame clock used to
+    /// advance it. Editor-only, never persisted.
+    #[serde(skip)]
+    pub banner_pulse: [f32; crate::track::MAX_TRACKS],
+    #[serde(skip)]
+    pub banner_hit_seen: [u32; crate::track::MAX_TRACKS],
+    #[serde(skip)]
+    pub banner_flash_at: [f64; crate::track::MAX_TRACKS],
+    #[serde(skip)]
+    pub banner_velocity: [f32; crate::track::MAX_TRACKS],
+    #[serde(skip)]
+    pub banner_time: f64,
+    /// [331] Last playhead the grid saw: while it moves, the editor must keep
+    /// repainting, otherwise a hit can land between two frames and its flash is
+    /// only seen at the next mouse move (the [238] repaint trap).
+    #[serde(skip)]
+    pub last_play_step: usize,
 }
 
 
@@ -639,6 +666,56 @@ pub enum SoundScratch {
 }
 
 impl EditorUIState {
+    /// [331] Advance one lane's banner pulse and return its current intensity.
+    /// `now` is egui's clock, which restarts when the editor window is reopened
+    /// ([311]): the delta is clamped instead of trusted.
+    pub fn advance_banner_pulse(
+        &mut self,
+        slot: usize,
+        now: f64,
+        seq: u32,
+        velocity: f32,
+        is_effect: bool,
+    ) -> f32 {
+        if slot >= crate::track::MAX_TRACKS {
+            return 0.0;
+        }
+        let dt = if self.banner_time > 0.0 {
+            (now - self.banner_time).clamp(0.0, 0.1)
+        } else {
+            0.0
+        };
+        self.banner_time = now;
+        if is_effect {
+            // Effect buses have no hits: their banner never pulses.
+            self.banner_hit_seen[slot] = seq;
+            self.banner_pulse[slot] = 0.0;
+            return 0.0;
+        }
+        if seq != self.banner_hit_seen[slot] {
+            let first = self.banner_hit_seen[slot] == 0;
+            self.banner_hit_seen[slot] = seq;
+            // A floor between two flashes: fast passages flash once per cluster
+            // instead of strobing, which reads as a fault rather than as light.
+            let since = now - self.banner_flash_at[slot];
+            if first || since >= BANNER_MIN_GAP_S {
+                let v = velocity.clamp(0.0, 1.0);
+                self.banner_flash_at[slot] = now;
+                self.banner_velocity[slot] = v;
+                self.banner_pulse[slot] = 0.55 + 0.45 * v;
+                // A fresh flash starts at full: the frame's elapsed time belongs
+                // to the previous state, decaying it now would eat the attack.
+                return self.banner_pulse[slot];
+            }
+        }
+        let decay = (-dt / BANNER_DECAY_S).exp() as f32;
+        self.banner_pulse[slot] = (self.banner_pulse[slot] * decay).clamp(0.0, 1.0);
+        if self.banner_pulse[slot] < 0.01 {
+            self.banner_pulse[slot] = 0.0;
+        }
+        self.banner_pulse[slot]
+    }
+
     /// [285] The Randomize Lane density of `slot`: the lane's own, else (an older lane,
     /// a lane from a preset) its instrument type's default from the Settings.
     pub fn lane_randomize_density(&self, params: &DrumFlashParams, slot: usize) -> f32 {
@@ -1085,6 +1162,37 @@ pub mod serde_pos2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [331] One flash per onset cluster, then silence; effect buses never pulse.
+    #[test]
+    fn banner_pulse_floors_the_rate_and_decays_to_zero() {
+        let mut state = EditorUIState::default();
+        let first = state.advance_banner_pulse(0, 10.0, 1, 1.0, false);
+        assert!(first > 0.99, "a full-velocity hit flashes at full: {first}");
+
+        // A hit 20 ms later is inside the 90 ms floor: the pulse keeps decaying
+        // instead of restarting, so fast lanes do not strobe.
+        let floored = state.advance_banner_pulse(0, 10.02, 2, 1.0, false);
+        assert!(floored < 0.95, "90 ms floor ignored: {floored}");
+
+        // Past the floor, a new hit restarts the flash.
+        let restarted = state.advance_banner_pulse(0, 10.12, 3, 1.0, false);
+        assert!(restarted > 0.95, "a later hit must flash again: {restarted}");
+
+        // Decay: ~250 ms after the flash it is effectively out.
+        let mut t = 10.12;
+        let mut pulse = restarted;
+        for _ in 0..14 {
+            t += 0.05;
+            pulse = state.advance_banner_pulse(0, t, 3, 1.0, false);
+        }
+        assert_eq!(pulse, 0.0, "the flash must end by itself: {pulse}");
+
+        // Velocity scales it, and effect buses stay dark.
+        let quiet = state.advance_banner_pulse(1, 20.0, 1, 0.2, false);
+        assert!(quiet > 0.55 && quiet < 0.65, "velocity must scale: {quiet}");
+        assert_eq!(state.advance_banner_pulse(2, 20.0, 1, 1.0, true), 0.0);
+    }
 
     /// [283] A lane linked to the one above shows and plays that lane's
     /// steps: its lane-menu actions act on those shared steps, not on the

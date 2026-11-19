@@ -2829,6 +2829,12 @@ impl DrumFlashVst {
             &self.params.track_layout.state,
             slot_idx,
         );
+        // [331] Banner pulse: a counter, so the editor can fire once per hit even
+        // when this lane is muted. Effect buses are never triggered.
+        if !crate::track::is_fx_slot(slot_idx) {
+            self.sound_settings_state
+                .publish_lane_hit(slot_idx, velocity);
+        }
         let (lane_note, global_channel) = self.resolve_midi_output_for_slot(slot_idx);
         // [95] MIDI Out's Note and Channel are sound settings: the step's
         // p-lock wins over the lane/global values, as for its CCs and Program.
@@ -3906,6 +3912,10 @@ impl DrumFlashVst {
                 let settings = self.voice_settings_at_step(slot_idx, voice_idx, 0);
                 self.synthesizer.set_voice_settings(slot_idx, settings);
                 self.synthesizer.trigger(slot_idx, 0.8);
+                // [331] The Test button is a hit too: the banner confirms it.
+                if !crate::track::is_fx_slot(slot_idx) {
+                    self.sound_settings_state.publish_lane_hit(slot_idx, 0.8);
+                }
             }
         }
     }

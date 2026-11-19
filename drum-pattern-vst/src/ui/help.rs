@@ -360,6 +360,8 @@ pub const HDR_SETTINGS: &str =
 
 pub const SET_CLOSE: &str = "Close the settings (clicking outside also closes them).";
 
+pub const SET_BANNER_FLASH: &str = "Banner Flash: how strongly the instrument banner lights its dominant tone on every hit. 0 turns the animation off completely, for a still, low-distraction interface. This setting is saved globally, not per project.";
+
 pub const SET_OUTPUTS: &str = "Routes every lane to the aux output of its own number, once: lane 1 to Out 1, lane 2 to Out 2... Each routed lane leaves the main mix; switch Main Mix back on in its Track tab if you want both.\n\
 Each lane's routing can be changed afterwards in its Track tab.";
 

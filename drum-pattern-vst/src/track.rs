@@ -85,6 +85,8 @@ pub enum TrackInstrumentKind {
     TidalAlloy = 35,
     MobiusSkin = 36,
     AbyssFm = 37,
+    /// [334] CROWN - the synthesised 80s snare.
+    Crown = 38,
 }
 
 /// Instrument category used to group the kind pickers/menus
@@ -126,7 +128,7 @@ impl InstrumentCategory {
 }
 
 impl TrackInstrumentKind {
-    pub const COUNT: usize = 38;
+    pub const COUNT: usize = 39;
 
     /// Every kind, in stable declaration order.
     pub const ALL: [Self; Self::COUNT] = [
@@ -168,6 +170,7 @@ impl TrackInstrumentKind {
         Self::TidalAlloy,
         Self::MobiusSkin,
         Self::AbyssFm,
+        Self::Crown,
     ];
 
     /// Musical family of this kind (grouping for pickers/menus).
@@ -182,7 +185,8 @@ impl TrackInstrumentKind {
             | Self::Clap
             | Self::Sdrex
             | Self::Sd6Ac
-            | Self::Cl6Ac => InstrumentCategory::Snare,
+            | Self::Cl6Ac
+            | Self::Crown => InstrumentCategory::Snare,
             Self::HiHat
             | Self::OpenHiHat
             | Self::Ch6smp
@@ -274,6 +278,7 @@ impl TrackInstrumentKind {
             35 => Some(Self::TidalAlloy),
             36 => Some(Self::MobiusSkin),
             37 => Some(Self::AbyssFm),
+            38 => Some(Self::Crown),
             _ => None,
         }
     }
@@ -322,6 +327,7 @@ impl TrackInstrumentKind {
             Self::TidalAlloy => "TA",
             Self::MobiusSkin => "MS",
             Self::AbyssFm => "AF",
+            Self::Crown => "CR",
         }
     }
 
@@ -365,6 +371,7 @@ impl TrackInstrumentKind {
             Self::TidalAlloy => "TIDAL ALLOY",
             Self::MobiusSkin => "MÖBIUS SKIN",
             Self::AbyssFm => "ABYSS FM",
+            Self::Crown => "CROWN",
         }
     }
 
@@ -409,6 +416,7 @@ impl TrackInstrumentKind {
             Self::TidalAlloy => 67,
             Self::MobiusSkin => 68,
             Self::AbyssFm => 69,
+            Self::Crown => 70,
             // An effect bus plays no note and listens to none; 0 is never matched
             // (`slots_listening_to` skips effect kinds).
             TrackInstrumentKind::Reverb | TrackInstrumentKind::Delay | TrackInstrumentKind::Rumble => 0,
@@ -459,6 +467,7 @@ impl TrackInstrumentKind {
             Self::TidalAlloy => 37,
             Self::MobiusSkin => 38,
             Self::AbyssFm => 39,
+            Self::Crown => 40,
         }
     }
 
@@ -503,6 +512,7 @@ impl TrackInstrumentKind {
             37 => Some(Self::TidalAlloy),
             38 => Some(Self::MobiusSkin),
             39 => Some(Self::AbyssFm),
+            40 => Some(Self::Crown),
             _ => None,
         }
     }

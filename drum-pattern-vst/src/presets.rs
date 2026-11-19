@@ -581,7 +581,7 @@ const DEFAULT_USER_PRESETS: &[(&str, &str, &[u8])] =
 /// new starter presets ship: every install then gets the missing ones once
 /// (v2, 2026-10-26: Apollo, Battlestar, LastWinterV2, Wire; a starter preset the
 /// user had deleted comes back that one time, a file already there never moves).
-const DEFAULT_USER_PRESETS_MARKER: &str = ".default-presets-v2";
+const DEFAULT_USER_PRESETS_MARKER: &str = ".default-presets-v3";
 
 /// Copy the starter presets into `Documents/Flash Drum/presets/` the first
 /// time the editor opens. UI thread only (file I/O).
@@ -1020,11 +1020,11 @@ mod tests {
             std::thread::current().id()
         ));
         std::fs::remove_dir_all(&root).ok();
-        assert_eq!(seed_default_user_presets_into(&root).unwrap(), 25);
+        assert_eq!(seed_default_user_presets_into(&root).unwrap(), 38);
         assert!(root.join(DEFAULT_USER_PRESETS_MARKER).is_file());
         assert_eq!(
             list_dir(&root.join("instruments"), PresetKind::Instrument).len(),
-            4
+            17
         );
         assert_eq!(
             list_dir(&root.join("patterns"), PresetKind::Pattern).len(),

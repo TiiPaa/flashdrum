@@ -82,6 +82,9 @@ pub const BUZZ_ALGOS: &[AlgoDef] = &[AlgoDef { name: "Smooth" }, AlgoDef { name:
 
 pub const SDREX_ALGOS: &[AlgoDef] = &[AlgoDef { name: "Standard" }];
 
+/// [334] CROWN has no alternative algorithms.
+pub const CROWN_ALGOS: &[AlgoDef] = &[AlgoDef { name: "Standard" }];
+
 // ── AC606 voices (ported analogcode engines) ────────────────────────────────
 
 pub const AC606_ALGOS: &[AlgoDef] = &[AlgoDef { name: "Standard" }];
@@ -114,6 +117,8 @@ pub fn algos_for(voice: DrumVoice) -> &'static [AlgoDef] {
         DrumVoice::Rift => RIFT_ALGOS,
         DrumVoice::OneShot => ONE_SHOT_ALGOS,
         DrumVoice::MidiOut => MIDI_OUT_ALGOS,
+        // [334] CROWN: one algo.
+        DrumVoice::Crown => CROWN_ALGOS,
         DrumVoice::IonBloom
         | DrumVoice::Ferroskin
         | DrumVoice::PrismHat

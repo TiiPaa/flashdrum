@@ -10,6 +10,7 @@ pub mod bd606;
 pub mod buzz;
 pub mod ch606;
 pub mod clap;
+pub mod crown;
 pub mod cymbal;
 pub mod forge;
 pub mod hihat;

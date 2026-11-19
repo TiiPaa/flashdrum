@@ -10,6 +10,8 @@
 use crate::synthesis::DrumVoice;
 #[path = "instrument_registry/forge.rs"]
 mod forge;
+#[path = "instrument_registry/crown.rs"]
+mod crown;
 
 pub const SOUND_SETTINGS_FIELD_COUNT: usize = 13;
 
@@ -5447,6 +5449,7 @@ pub const INSTRUMENTS: [InstrumentDef; DrumVoice::COUNT] = [
     forge::TIDAL_ALLOY,
     forge::MOBIUS_SKIN,
     forge::ABYSS_FM,
+    crown::CROWN,
 ];
 
 /// Highest algo index across all instruments. Used as the shared range of the
@@ -5675,7 +5678,7 @@ mod tests {
         use DrumVoice as V;
         let native = [V::Bd6Ac, V::Sd6Ac, V::Hh6Ac, V::Oh6Ac, V::Cl6Ac, V::Tm6Ac,
             V::IonBloom, V::Ferroskin, V::PrismHat, V::OrbitClay, V::NeonTom, V::ArcZap,
-            V::TidalAlloy, V::MobiusSkin, V::AbyssFm, V::MidiOut, V::Reverb, V::Delay, V::Rumble];
+            V::TidalAlloy, V::MobiusSkin, V::AbyssFm, V::Crown, V::MidiOut, V::Reverb, V::Delay, V::Rumble];
         for def in &INSTRUMENTS {
             let expected = !native.iter().any(|v| *v as usize == def.index);
             assert_eq!(def.has_ahd_amp_graph(), expected, "{}", def.name);
@@ -5910,6 +5913,24 @@ mod tests {
                 ("abyss_fundamental", " %"),
                 ("abyss_fold", " %"),
                 ("abyss_drive", " %"),
+                ("crown_sweep", " st"),
+                ("crown_sweep_time", " ms"),
+                ("crown_drift", " st"),
+                ("crown_partial_ratio", " x"),
+                ("crown_noise_highpass", " Hz"),
+                ("crown_noise_lowpass", " Hz"),
+                ("crown_noise_peak", " Hz"),
+                ("crown_noise_peak_gain", " dB"),
+                ("crown_noise_attack", " ms"),
+                ("crown_noise_decay", " ms"),
+                ("crown_tail_decay", " ms"),
+                ("crown_phase", " tr"),
+                ("crown_snap_width", " ms"),
+                ("crown_click_freq", " Hz"),
+                ("crown_click_decay", " ms"),
+                ("crown_delay", " ms"),
+                ("crown_gate", " ms"),
+                ("crown_gate_release", " ms"),
             ]
         );
 

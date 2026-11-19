@@ -34,6 +34,10 @@ pub struct GlobalConfig {
     /// `track::DEFAULT_RANDOMIZE_DENSITY`.
     #[serde(default)]
     pub randomize_density: std::collections::BTreeMap<String, f32>,
+    /// [331] Banner neon pulse intensity (Settings → Interface). 0 turns the
+    /// animation off entirely; older config files load it at full.
+    #[serde(default = "default_banner_flash")]
+    pub banner_flash: f32,
 }
 
 /// [282] The zoom levels offered in Settings.
@@ -41,6 +45,10 @@ pub const ZOOM_STEPS: [u16; 3] = [100, 125, 150];
 
 fn default_zoom_percent() -> u16 {
     100
+}
+
+fn default_banner_flash() -> f32 {
+    1.0
 }
 
 fn default_skin() -> String {
@@ -57,11 +65,20 @@ impl Default for GlobalConfig {
             help_mode: false,
             zoom_percent: default_zoom_percent(),
             randomize_density: Default::default(),
+            banner_flash: default_banner_flash(),
         }
     }
 }
 
 impl GlobalConfig {
+    /// [331] Safe banner flash intensity: 0 disables the animation.
+    pub fn banner_flash_level(&self) -> f32 {
+        if self.banner_flash.is_finite() {
+            self.banner_flash.clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    }
     /// [285] The Randomize Lane density a new lane of `kind` starts with.
     pub fn randomize_density_for(&self, kind: crate::track::TrackInstrumentKind) -> f32 {
         self.randomize_density
@@ -126,6 +143,7 @@ impl GlobalConfig {
         if !ZOOM_STEPS.contains(&self.zoom_percent) {
             self.zoom_percent = default_zoom_percent();
         }
+        self.banner_flash = self.banner_flash_level();
         self
     }
 }
@@ -147,6 +165,24 @@ mod tests {
         let back: GlobalConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.randomize_density_for(TrackInstrumentKind::HiHat), 0.35);
         assert_eq!(back.randomize_density_for(TrackInstrumentKind::Kick), DEFAULT_RANDOMIZE_DENSITY);
+    }
+
+    /// [331] Banner flash: off by choice, full by default, and a config written
+    /// before the setting existed loads at full rather than at zero.
+    #[test]
+    fn banner_flash_defaults_to_full_and_survives_a_round_trip() {
+        let old = r#"{"default_analog":0.5,"global_midi_channel":10}"#;
+        let mut config: GlobalConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(config.banner_flash_level(), 1.0, "an older config animates");
+        config.banner_flash = 0.0;
+        let json = serde_json::to_string(&config).unwrap();
+        let back: GlobalConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.banner_flash_level(), 0.0, "0 must stay off");
+        for (stored, expected) in [(-2.0, 0.0), (0.4, 0.4), (3.0, 1.0), (f32::NAN, 1.0)] {
+            let mut c = GlobalConfig::default();
+            c.banner_flash = stored;
+            assert_eq!(c.banner_flash_level(), expected);
+        }
     }
 
     #[test]

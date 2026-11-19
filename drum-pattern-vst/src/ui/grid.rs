@@ -42,6 +42,20 @@ pub fn draw_grid_v2(
     let master_length = params.pattern_length.value().clamp(1, 64) as usize;
     let play_step = current_step.load(Ordering::Relaxed) as usize;
     let play_page = play_step / 16;
+    // [331] A moving playhead is the only reliable "the audio is running" signal
+    // the editor has. Without it, a hit between two frames lights nothing until
+    // some unrelated input draws the next frame.
+    let playing = play_step != usize::MAX && play_step != state.last_play_step;
+    state.last_play_step = play_step;
+    if playing {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    }
+    if !params.use_internal_sequencer.value() {
+        // External MIDI: a pad hit lands on the audio thread with no UI event, so
+        // keep a slow heartbeat while that mode is on, or the banner flash (and
+        // the meters) would wait for the next mouse move.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+    }
 
     draw_page_bar_v2(
         ui,

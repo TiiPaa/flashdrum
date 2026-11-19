@@ -321,6 +321,11 @@ pub struct SoundSettingsState {
     /// [302] Each lane's output peak (linear, f32 bits) since the editor last read it, for
     /// the meter at the end of the lane.
     pub lane_peak: [AtomicU32; crate::track::MAX_TRACKS],
+    /// [331] Sequence number of each lane's last trigger, and its velocity (f32 bits).
+    /// A counter, not a level: the banner pulse must fire once per hit even when the
+    /// lane is muted, and must not steal the peak the lane meter consumes.
+    pub lane_hit_seq: [AtomicU32; crate::track::MAX_TRACKS],
+    pub lane_hit_velocity: [AtomicU32; crate::track::MAX_TRACKS],
     /// [241] MIDI learn of a lane's note: 0 = off, `MIDI_LEARN_ARMED` = the editor
     /// waits for a note, `MIDI_LEARN_GOT | note` = the audio thread caught one.
     midi_learn: AtomicU16,
@@ -389,6 +394,32 @@ impl SoundSettingsState {
         self.lane_peak.get(slot).map_or(0.0, |cell| f32::from_bits(cell.swap(0, Ordering::Relaxed)))
     }
 
+    /// [331] Audio thread: one hit on `slot`. Only a counter and the velocity are
+    /// published: the editor derives its own envelope, so a muted lane still flashes
+    /// and the lane meter keeps its own atomic.
+    pub fn publish_lane_hit(&self, slot: usize, velocity: f32) {
+        if let Some(cell) = self.lane_hit_seq.get(slot) {
+            cell.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(cell) = self.lane_hit_velocity.get(slot) {
+            let v = if velocity.is_finite() { velocity.clamp(0.0, 1.0) } else { 1.0 };
+            cell.store(v.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// [331] Editor: the lane's hit counter and the velocity of its latest hit.
+    pub fn lane_hit(&self, slot: usize) -> (u32, f32) {
+        let seq = self
+            .lane_hit_seq
+            .get(slot)
+            .map_or(0, |cell| cell.load(Ordering::Relaxed));
+        let velocity = self
+            .lane_hit_velocity
+            .get(slot)
+            .map_or(1.0, |cell| f32::from_bits(cell.load(Ordering::Relaxed)));
+        (seq, velocity)
+    }
+
     /// [303] Editor: the largest gain reduction since the last read, and reset it.
     pub fn take_insert_gr(&self, slot: usize) -> f32 {
         self.insert_gr.get(slot).map_or(0.0, |cell| f32::from_bits(cell.swap(0, Ordering::Relaxed)))
@@ -454,6 +485,8 @@ impl SoundSettingsState {
             fx_live_on: std::array::from_fn(|_| AtomicBool::new(false)),
             insert_gr: std::array::from_fn(|_| AtomicU32::new(0)),
             lane_peak: std::array::from_fn(|_| AtomicU32::new(0)),
+            lane_hit_seq: std::array::from_fn(|_| AtomicU32::new(0)),
+            lane_hit_velocity: std::array::from_fn(|_| AtomicU32::new(1.0f32.to_bits())),
             midi_learn: AtomicU16::new(0),
         })
     }
